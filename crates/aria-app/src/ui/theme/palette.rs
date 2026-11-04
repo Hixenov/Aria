@@ -181,4 +181,14 @@ mod tests {
         assert_eq!(v.panel_fill, Palette::dark().surface);
         assert_eq!(v.window_fill, Palette::dark().surface_raised);
     }
+    #[test]
+    fn text_follows_widget_state() {
+        for (p, dark) in [(Palette::dark(), true), (Palette::light(), false)] {
+            let p = p.with_accent(None);
+            let v = visuals(&p, dark);
+            assert!(v.override_text_color.is_none());
+            assert_eq!(v.widgets.active.fg_stroke.color, p.on_accent());
+            assert_eq!(v.widgets.noninteractive.fg_stroke.color, p.text_muted);
+        }
+    }
 }

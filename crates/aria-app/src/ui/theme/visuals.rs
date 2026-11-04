@@ -23,7 +23,6 @@ pub fn visuals(p: &Palette, dark: bool) -> Visuals {
     } else {
         Visuals::light()
     };
-    v.override_text_color = Some(p.text);
     v.panel_fill = p.surface;
     v.window_fill = p.surface_raised;
     v.window_stroke = Stroke::new(1.0, p.border);
