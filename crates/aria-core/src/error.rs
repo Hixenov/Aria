@@ -52,3 +52,14 @@ pub enum I18nError {
         detail: String,
     },
 }
+
+/// Errors raised while setting up logging.
+#[derive(thiserror::Error, Debug)]
+pub enum LoggingError {
+    /// The logging subscriber or its file appender could not be initialised.
+    #[error("logging initialisation failed: {0}")]
+    Init(String),
+    /// An I/O operation failed.
+    #[error("logging I/O error: {0}")]
+    Io(#[from] io::Error),
+}

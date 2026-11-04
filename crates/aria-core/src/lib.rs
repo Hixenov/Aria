@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod i18n;
+pub mod logging;
 pub mod notice;
 pub mod paths;
 pub mod redact;
