@@ -24,6 +24,7 @@ panic = "unwind"
 
 [workspace.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "persistence", "accesskit", "clipboard", "links", "default_fonts", "wayland", "x11"] }
+aria-core = { path = "crates/aria-core" }
 egui = "0.37"
 egui_kittest = "0.37"
 tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time", "macros"] }
@@ -41,3 +42,4 @@ tracing-appender = "0.2.5"
 thiserror = "2"
 anyhow = "1"
 tempfile = "3.27"
+ttf-parser = "0.25.1"
