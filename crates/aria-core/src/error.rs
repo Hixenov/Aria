@@ -39,3 +39,16 @@ pub enum SettingsError {
     #[error("unsupported settings schema version {0}")]
     UnsupportedVersion(u32),
 }
+
+/// Errors raised while building localization bundles.
+#[derive(thiserror::Error, Debug)]
+pub enum I18nError {
+    /// A locale's Fluent source has syntax errors or defines an id twice.
+    #[error("cannot load the {lang} translations: {detail}")]
+    Parse {
+        /// Code of the language that failed, e.g. `ru`.
+        lang: &'static str,
+        /// The parser or bundle errors.
+        detail: String,
+    },
+}
