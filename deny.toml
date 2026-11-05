@@ -1,5 +1,17 @@
 [advisories]
 version = 2
+# "Unmaintained" notices with no safe upgrade. None of these is a vulnerability. Review each
+# one whenever egui/eframe is upgraded.
+ignore = [
+    # ttf-parser: a dev-dependency, used only by the font-coverage test (and by egui's text
+    # stack through ab_glyph). It never ships alone.
+    { id = "RUSTSEC-2026-0192", reason = "dev-only use; no maintained replacement in egui's stack yet" },
+    # zbus_names / zvariant / zvariant_derive: Linux-only, pulled in by eframe 0.37 ->
+    # accesskit_unix (screen-reader support). They were folded into zbus upstream.
+    { id = "RUSTSEC-2026-0370", reason = "transitive via eframe accesskit_unix; fixed by a future eframe" },
+    { id = "RUSTSEC-2026-0371", reason = "transitive via eframe accesskit_unix; fixed by a future eframe" },
+    { id = "RUSTSEC-2026-0372", reason = "transitive via eframe accesskit_unix; fixed by a future eframe" },
+]
 
 [licenses]
 version = 2
