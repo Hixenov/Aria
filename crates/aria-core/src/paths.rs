@@ -3,6 +3,7 @@
 use crate::error::PathError;
 use directories::ProjectDirs;
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
@@ -24,9 +25,10 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
-    /// Resolves paths, honouring the `ARIA_CONFIG_DIR` environment variable.
+    /// Resolves paths, honouring the `ARIA_CONFIG_DIR` environment variable. An empty
+    /// value counts as unset.
     pub fn resolve() -> Result<Self, PathError> {
-        Self::resolve_with(std::env::var_os(CONFIG_DIR_ENV).map(PathBuf::from))
+        Self::resolve_with(config_override(std::env::var_os(CONFIG_DIR_ENV)))
     }
 
     /// Resolves paths; `config_override` replaces only `config_dir`.
@@ -60,6 +62,11 @@ impl AppPaths {
     }
 }
 
+/// The config directory named by the value of `ARIA_CONFIG_DIR`, if it names one.
+fn config_override(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 fn create(path: &Path) -> Result<(), PathError> {
     fs::create_dir_all(path).map_err(|source| PathError::Io {
         path: path.to_path_buf(),
@@ -77,6 +84,16 @@ mod tests {
         assert_eq!(p.config_dir, PathBuf::from("/tmp/x"));
         assert_eq!(p.settings_file(), PathBuf::from("/tmp/x/settings.toml"));
         assert!(p.log_dir.ends_with("logs"));
+    }
+
+    #[test]
+    fn empty_override_counts_as_unset() {
+        assert_eq!(config_override(Some(OsString::new())), None);
+        assert_eq!(config_override(None), None);
+        assert_eq!(
+            config_override(Some("portable".into())),
+            Some(PathBuf::from("portable"))
+        );
     }
 
     #[test]

@@ -33,14 +33,35 @@ pub fn filter_directive(level: LogLevel, env_override: Option<&str>) -> String {
 }
 
 /// Keeps logging alive: dropping it flushes and stops the file writer.
+///
+/// `main` holds it to the very end, so errors logged after the window has closed still
+/// reach the file. The app gets a [`LogLevelHandle`] from [`Self::level`] instead.
 pub struct LoggingHandle {
     _guard: Option<WorkerGuard>,
-    reload: reload::Handle<EnvFilter, Registry>,
-    env_overridden: bool,
+    level: LogLevelHandle,
 }
 
 impl LoggingHandle {
     /// Changes the active log level; a no-op when `ARIA_LOG` was set at startup.
+    pub fn set_level(&self, level: LogLevel) {
+        self.level.set_level(level);
+    }
+
+    /// A handle that changes the log level live, without keeping the file writer alive.
+    pub fn level(&self) -> LogLevelHandle {
+        self.level.clone()
+    }
+}
+
+/// Changes the log level of the running subscriber.
+#[derive(Clone)]
+pub struct LogLevelHandle {
+    reload: reload::Handle<EnvFilter, Registry>,
+    env_overridden: bool,
+}
+
+impl LogLevelHandle {
+    /// Changes the active log level; a no-op when a valid `ARIA_LOG` was set at startup.
     pub fn set_level(&self, level: LogLevel) {
         if self.env_overridden {
             return;
@@ -56,14 +77,63 @@ impl LoggingHandle {
     }
 }
 
+/// The filter logging starts with.
+struct StartFilter {
+    filter: EnvFilter,
+    /// Whether a valid `ARIA_LOG` chose it, so the settings' level must not replace it.
+    env_overridden: bool,
+    /// An `ARIA_LOG` value that did not parse, and why. The settings' level applies instead.
+    rejected: Option<(String, String)>,
+}
+
+/// Picks the start filter: a non-empty `env_override` that parses, else Aria's crates at
+/// `level`.
+fn start_filter(level: LogLevel, env_override: Option<&str>) -> Result<StartFilter, LoggingError> {
+    let from_level = || {
+        EnvFilter::try_new(filter_directive(level, None))
+            .map_err(|err| LoggingError::Init(err.to_string()))
+    };
+    let Some(value) = env_override.filter(|value| !value.is_empty()) else {
+        return Ok(StartFilter {
+            filter: from_level()?,
+            env_overridden: false,
+            rejected: None,
+        });
+    };
+    Ok(match EnvFilter::try_new(value) {
+        Ok(filter) => StartFilter {
+            filter,
+            env_overridden: true,
+            rejected: None,
+        },
+        Err(err) => StartFilter {
+            filter: from_level()?,
+            env_overridden: false,
+            rejected: Some((value.to_owned(), err.to_string())),
+        },
+    })
+}
+
 /// Installs the global subscriber. Logs to a daily-rotated file in `log_dir`
 /// (and to stderr in debug builds), or to stderr only when `log_dir` is `None`.
+///
+/// An `ARIA_LOG` that does not parse is not an error: `level` applies as if it were unset,
+/// and a warning says so once logging is up.
 pub fn init(log_dir: Option<&Path>, level: LogLevel) -> Result<LoggingHandle, LoggingError> {
-    let env = std::env::var(ENV_VAR).ok();
-    let env_overridden = env.as_deref().is_some_and(|v| !v.is_empty());
-    let directive = filter_directive(level, env.as_deref());
-    let filter =
-        EnvFilter::try_new(&directive).map_err(|err| LoggingError::Init(err.to_string()))?;
+    init_with(log_dir, level, std::env::var(ENV_VAR).ok().as_deref())
+}
+
+/// [`init`], with the value of `ARIA_LOG` passed in.
+fn init_with(
+    log_dir: Option<&Path>,
+    level: LogLevel,
+    env_override: Option<&str>,
+) -> Result<LoggingHandle, LoggingError> {
+    let StartFilter {
+        filter,
+        env_overridden,
+        rejected,
+    } = start_filter(level, env_override)?;
     let (filter_layer, reload) = reload::Layer::new(filter);
 
     let (file_layer, guard) = match log_dir {
@@ -91,10 +161,19 @@ pub fn init(log_dir: Option<&Path>, level: LogLevel) -> Result<LoggingHandle, Lo
         .try_init()
         .map_err(|err| LoggingError::Init(err.to_string()))?;
 
+    if let Some((value, error)) = rejected {
+        warn!(
+            %value,
+            %error,
+            "{ENV_VAR} is not a valid log filter; using the log level from the settings"
+        );
+    }
     Ok(LoggingHandle {
         _guard: guard,
-        reload,
-        env_overridden,
+        level: LogLevelHandle {
+            reload,
+            env_overridden,
+        },
     })
 }
 
@@ -172,6 +251,50 @@ mod tests {
             filter_directive(LogLevel::Info, Some("")),
             "warn,aria_core=info,aria=info"
         );
+    }
+
+    /// The filter built from `level` alone, as text.
+    fn level_filter(level: LogLevel) -> String {
+        EnvFilter::try_new(filter_directive(level, None))
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn valid_env_filter_overrides_the_level() {
+        let start = start_filter(LogLevel::Info, Some("aria=trace")).unwrap();
+        assert!(start.env_overridden);
+        assert!(start.rejected.is_none());
+        assert_eq!(start.filter.to_string(), "aria=trace");
+    }
+
+    #[test]
+    fn invalid_env_filter_falls_back_to_the_level() {
+        let start = start_filter(LogLevel::Debug, Some("aria=loud")).unwrap();
+        assert!(
+            !start.env_overridden,
+            "a rejected ARIA_LOG must not pin the level"
+        );
+        let (value, _) = start.rejected.expect("the rejected value is reported");
+        assert_eq!(value, "aria=loud");
+        assert_eq!(start.filter.to_string(), level_filter(LogLevel::Debug));
+    }
+
+    #[test]
+    fn empty_env_filter_counts_as_unset() {
+        let start = start_filter(LogLevel::Warn, Some("")).unwrap();
+        assert!(!start.env_overridden);
+        assert!(start.rejected.is_none());
+        assert_eq!(start.filter.to_string(), level_filter(LogLevel::Warn));
+    }
+
+    // The only test in this crate that installs the global subscriber, which can happen
+    // once per process.
+    #[test]
+    fn init_survives_an_invalid_env_filter() {
+        let handle = init_with(None, LogLevel::Info, Some("aria=loud"))
+            .expect("an invalid ARIA_LOG must not stop logging");
+        assert!(!handle.level().env_overridden);
     }
 
     #[test]

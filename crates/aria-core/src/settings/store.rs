@@ -20,7 +20,42 @@ pub struct LoadResult {
     pub settings: Settings,
     /// A notice to surface to the user, if recovery happened.
     pub notice: Option<Notice>,
+    /// Whether saving may replace the file. `false` when the file exists but could not be
+    /// read, or was unusable and could not be backed up: overwriting it would lose the only
+    /// copy of the user's settings.
+    pub writable: bool,
 }
+
+/// The file operations a backup uses. Tests swap in failing ones.
+struct BackupOps {
+    rename: fn(&Path, &Path) -> io::Result<()>,
+    copy: fn(&Path, &Path) -> io::Result<u64>,
+}
+
+/// The real file system.
+const FS: BackupOps = BackupOps {
+    rename: rename_file,
+    copy: copy_file,
+};
+
+fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
+}
+
+fn copy_file(from: &Path, to: &Path) -> io::Result<u64> {
+    fs::copy(from, to)
+}
+
+/// The file was unusable and a backup of it was kept.
+const RECOVERED: Notice = Notice {
+    level: NoticeLevel::Warning,
+    key: "notice-settings-recovered",
+};
+/// Settings cannot be saved this session.
+const READ_ONLY: Notice = Notice {
+    level: NoticeLevel::Warning,
+    key: "notice-settings-readonly",
+};
 
 /// Loads and saves settings at a fixed path.
 #[derive(Clone, Debug)]
@@ -41,39 +76,35 @@ impl SettingsStore {
 
     /// Load settings. Never fails: problems yield defaults and a [`Notice`].
     pub fn load(&self) -> LoadResult {
+        self.load_with(&FS)
+    }
+
+    fn load_with(&self, ops: &BackupOps) -> LoadResult {
+        let defaults = |notice, writable| LoadResult {
+            settings: Settings::default(),
+            notice,
+            writable,
+        };
         let bytes = match fs::read(&self.path) {
             Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return LoadResult {
-                    settings: Settings::default(),
-                    notice: None,
-                };
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return defaults(None, true),
             Err(e) => {
-                tracing::error!(path = %self.path.display(), error = %e, "cannot read settings file");
-                return LoadResult {
-                    settings: Settings::default(),
-                    notice: Some(Notice {
-                        level: NoticeLevel::Warning,
-                        key: "notice-settings-readonly",
-                    }),
-                };
+                tracing::error!(path = %self.path.display(), error = %e, "cannot read settings file; settings are read-only");
+                return defaults(Some(READ_ONLY), false);
             }
         };
         match parse(&bytes) {
             Ok(settings) => LoadResult {
                 settings,
                 notice: None,
+                writable: true,
             },
             Err(e) => {
                 tracing::warn!(path = %self.path.display(), error = %e, "settings file is unusable; backing it up");
-                self.back_up();
-                LoadResult {
-                    settings: Settings::default(),
-                    notice: Some(Notice {
-                        level: NoticeLevel::Warning,
-                        key: "notice-settings-recovered",
-                    }),
+                if self.back_up(ops) {
+                    defaults(Some(RECOVERED), true)
+                } else {
+                    defaults(Some(READ_ONLY), false)
                 }
             }
         }
@@ -104,13 +135,25 @@ impl SettingsStore {
         result
     }
 
-    fn back_up(&self) {
+    /// Moves the unusable file to a backup, or copies it there if it cannot be moved.
+    /// Returns whether a backup exists.
+    fn back_up(&self, ops: &BackupOps) -> bool {
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         let dest = unique_backup_path(&self.path, secs);
-        if let Err(e) = fs::rename(&self.path, &dest) {
-            tracing::error!(from = %self.path.display(), to = %dest.display(), error = %e, "cannot back up corrupt settings");
+        let Err(e) = (ops.rename)(&self.path, &dest) else {
+            return true;
+        };
+        tracing::warn!(from = %self.path.display(), to = %dest.display(), error = %e, "cannot move corrupt settings aside; copying them");
+        match (ops.copy)(&self.path, &dest) {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::error!(from = %self.path.display(), to = %dest.display(), error = %e, "cannot back up corrupt settings; settings are read-only");
+                // A partial copy is not a backup.
+                let _ = fs::remove_file(&dest);
+                false
+            }
         }
     }
 }
@@ -182,6 +225,21 @@ mod tests {
         }
     }
 
+    fn read_only() -> Notice {
+        Notice {
+            level: NoticeLevel::Warning,
+            key: "notice-settings-readonly",
+        }
+    }
+
+    fn rename_fails(_: &Path, _: &Path) -> io::Result<()> {
+        Err(io::Error::other("the file is in use"))
+    }
+
+    fn copy_fails(_: &Path, _: &Path) -> io::Result<u64> {
+        Err(io::Error::other("the disk is full"))
+    }
+
     fn backups(dir: &Path) -> Vec<PathBuf> {
         fs::read_dir(dir)
             .unwrap()
@@ -202,6 +260,7 @@ mod tests {
         let r = store.load();
         assert_eq!(r.settings, Settings::default());
         assert_eq!(r.notice, None);
+        assert!(r.writable);
         assert!(!store.path().exists());
     }
 
@@ -242,10 +301,75 @@ mod tests {
         let r = SettingsStore::new(path.clone()).load();
         assert_eq!(r.settings, Settings::default());
         assert_eq!(r.notice, Some(recovered()));
+        assert!(r.writable);
         assert!(!path.exists());
         let b = backups(tmp.path());
         assert_eq!(b.len(), 1);
         assert_eq!(fs::read(&b[0]).unwrap(), b"theme = [[[");
+    }
+
+    #[test]
+    fn corrupt_file_that_cannot_be_moved_is_copied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        fs::write(&path, "theme = [[[").unwrap();
+        let ops = BackupOps {
+            rename: rename_fails,
+            copy: copy_file,
+        };
+        let r = SettingsStore::new(path.clone()).load_with(&ops);
+        assert_eq!(r.settings, Settings::default());
+        assert_eq!(r.notice, Some(recovered()));
+        assert!(
+            r.writable,
+            "a copy is a backup, so saving may replace the file"
+        );
+        let b = backups(tmp.path());
+        assert_eq!(b.len(), 1);
+        assert_eq!(fs::read(&b[0]).unwrap(), b"theme = [[[");
+    }
+
+    #[test]
+    fn corrupt_file_without_a_backup_is_read_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        fs::write(&path, "theme = [[[").unwrap();
+        let ops = BackupOps {
+            rename: rename_fails,
+            copy: copy_fails,
+        };
+        let r = SettingsStore::new(path.clone()).load_with(&ops);
+        assert_eq!(r.settings, Settings::default());
+        assert_eq!(r.notice, Some(read_only()), "no backup was kept");
+        assert!(!r.writable, "saving would destroy the only copy");
+        assert_eq!(fs::read(&path).unwrap(), b"theme = [[[");
+        assert!(backups(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn unreadable_file_is_read_only() {
+        // A directory where the file should be: reading it fails, and not with NotFound.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        fs::create_dir(&path).unwrap();
+        let r = SettingsStore::new(path).load();
+        assert_eq!(r.settings, Settings::default());
+        assert_eq!(r.notice, Some(read_only()));
+        assert!(!r.writable);
+    }
+
+    #[test]
+    fn failed_save_keeps_the_target_and_removes_the_tmp_file() {
+        // A directory at the target path makes the final rename fail.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("keep"), "old contents").unwrap();
+        let store = SettingsStore::new(path.clone());
+        assert!(store.save(&Settings::default()).is_err());
+        assert!(path.is_dir());
+        assert_eq!(fs::read(path.join("keep")).unwrap(), b"old contents");
+        assert!(!tmp.path().join("settings.toml.tmp").exists());
     }
 
     #[test]

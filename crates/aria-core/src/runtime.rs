@@ -15,7 +15,7 @@
 //! together. Events travel over `crossbeam_channel::unbounded`, so the UI can
 //! `try_recv` without an async context.
 
-use std::{io, sync::Arc, thread, time::Duration};
+use std::{io, mem, sync::Arc, thread, time::Duration};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use tokio::{
@@ -85,6 +85,10 @@ impl Backend {
     /// With `sink: None` the backend is read-only: updates are accepted and
     /// nothing is written, and a reset still announces the defaults.
     ///
+    /// A failed save keeps its settings pending, without a deadline: the next
+    /// update replaces them and schedules a new write, and shutdown retries
+    /// them once. Only the first failure in a row is reported to the UI.
+    ///
     /// # Errors
     ///
     /// Fails if the runtime cannot be built or the thread cannot be spawned.
@@ -107,6 +111,7 @@ impl Backend {
             debounce: cfg.debounce,
             pending: None,
             deadline: None,
+            failing: false,
         };
         let done_guard = DoneGuard(done_tx);
         let thread = thread::Builder::new()
@@ -193,15 +198,23 @@ impl Drop for DoneGuard {
 
 /// State of the backend loop.
 struct Worker {
-    /// `None` in read-only mode, or after the sink panicked.
+    /// `None` in read-only mode, or after the sink panicked, and also while a save
+    /// has taken the sink to its blocking thread. Telling these apart is safe for
+    /// now: every save is awaited inside the `select!` arm that started it, so no
+    /// command is handled while the sink is away. Replace this with an explicit
+    /// state enum once services that save concurrently arrive.
     sink: Option<Box<dyn SettingsSink>>,
     events: Sender<Event>,
     waker: Waker,
     debounce: Duration,
     /// The newest settings not yet written.
     pending: Option<Settings>,
-    /// When `pending` is written, unless another update arrives first.
+    /// When `pending` is written, unless another update arrives first. `None`
+    /// while `pending` holds settings whose save failed.
     deadline: Option<Instant>,
+    /// The last save failed. Further failures are not reported again until a
+    /// save succeeds.
+    failing: bool,
 }
 
 impl Worker {
@@ -217,14 +230,17 @@ impl Worker {
                 () = deadline_reached(self.deadline) => self.flush().await,
             }
         }
-        // Shutdown, or the handle was dropped. Nobody reads events any more,
-        // so the outcome of this last write is only logged (by `save`).
+        // Shutdown, or the handle was dropped. This writes the newest settings,
+        // or retries the ones whose save failed, once. Nobody reads events any
+        // more, so the outcome is only logged (by `save`).
         if let Some(settings) = self.pending.take() {
             self.save(settings).await;
         }
     }
 
     fn update(&mut self, settings: Settings) {
+        // `None` here means read-only: no save is in flight, since saves are
+        // awaited where they start.
         if self.sink.is_none() {
             // Read-only: nothing will be written, so nothing is scheduled.
             return;
@@ -258,15 +274,21 @@ impl Worker {
     }
 
     /// Writes `settings` on a blocking thread and logs the outcome. Returns
-    /// the event that reports it to the UI, or `None` in read-only mode.
+    /// the event that reports it to the UI, or `None` in read-only mode and
+    /// for a failure after one already reported.
+    ///
+    /// Settings that fail to save stay pending, with no deadline, unless newer
+    /// ones are already pending.
     async fn save(&mut self, settings: Settings) -> Option<Event> {
+        // `None` here means read-only: no other save is in flight, since saves
+        // are awaited where they start.
         let mut sink = self.sink.take()?;
         let task = tokio::task::spawn_blocking(move || {
             let result = sink.save(&settings);
-            (sink, result)
+            (sink, settings, result)
         });
         let saved = match task.await {
-            Ok((sink, result)) => {
+            Ok((sink, settings, result)) => {
                 self.sink = Some(sink);
                 match result {
                     Ok(()) => {
@@ -274,7 +296,10 @@ impl Worker {
                         true
                     }
                     Err(error) => {
-                        tracing::error!(%error, "cannot save settings");
+                        tracing::error!(%error, "cannot save settings; keeping them for a retry");
+                        if self.pending.is_none() {
+                            self.pending = Some(settings);
+                        }
                         false
                     }
                 }
@@ -286,11 +311,15 @@ impl Worker {
                 false
             }
         };
-        Some(if saved {
-            Event::SettingsSaved
+        if saved {
+            self.failing = false;
+            Some(Event::SettingsSaved)
+        } else if mem::replace(&mut self.failing, true) {
+            // Already reported; the toast for it is still on screen or was dismissed.
+            None
         } else {
-            Event::Notice(SAVE_FAILED)
-        })
+            Some(Event::Notice(SAVE_FAILED))
+        }
     }
 
     /// Sends a batch of events, then wakes the UI once.
@@ -517,12 +546,66 @@ mod tests {
         handle.send(Command::UpdateSettings(dark.clone()));
         let events = drain_until(&handle, |e| e.contains(&save_failed()));
         assert!(!events.contains(&Event::SettingsSaved));
-        // The failed value is not kept pending; the next update retries.
+        // The failed value stays pending until the next update replaces it.
         let light = with_theme(Theme::Light);
         handle.send(Command::UpdateSettings(light.clone()));
         drain_until(&handle, |e| e.contains(&Event::SettingsSaved));
         assert!(handle.shutdown(MAX));
         assert_eq!(*calls.lock().unwrap(), [dark, light]);
+    }
+
+    #[test]
+    fn shutdown_retries_a_failed_save() {
+        let (sink, calls) = recording_sink(1);
+        let (waker, _) = counting_waker();
+        let handle = Backend::start(Some(sink), waker, FAST).unwrap();
+        let dark = with_theme(Theme::Dark);
+        handle.send(Command::UpdateSettings(dark.clone()));
+        drain_until(&handle, |e| e.contains(&save_failed()));
+        // No deadline is left: nothing is retried before shutdown.
+        thread::sleep(FAST.debounce * 4);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert!(handle.shutdown(MAX));
+        assert_eq!(*calls.lock().unwrap(), [dark.clone(), dark]);
+    }
+
+    #[test]
+    fn failed_reset_is_retried_at_shutdown() {
+        let (sink, calls) = recording_sink(1);
+        let (waker, _) = counting_waker();
+        let handle = Backend::start(Some(sink), waker, SLOW).unwrap();
+        handle.send(Command::ResetSettings);
+        drain_until(&handle, |e| e.contains(&save_failed()));
+        assert!(handle.shutdown(MAX));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [Settings::default(), Settings::default()]
+        );
+    }
+
+    #[test]
+    fn repeated_failures_are_reported_once() {
+        let (sink, calls) = recording_sink(3);
+        let (waker, _) = counting_waker();
+        let handle = Backend::start(Some(sink), waker, FAST).unwrap();
+        let mut events = Vec::new();
+        for (n, theme) in [Theme::Dark, Theme::Light, Theme::System]
+            .into_iter()
+            .enumerate()
+        {
+            handle.send(Command::UpdateSettings(with_theme(theme)));
+            assert!(wait_until(|| calls.lock().unwrap().len() > n, MAX));
+        }
+        // Leave room for the last outcome to arrive.
+        thread::sleep(FAST.debounce * 2);
+        events.extend(handle.drain());
+        let failures = events.iter().filter(|e| **e == save_failed()).count();
+        assert_eq!(failures, 1, "events: {events:?}");
+
+        // A success ends the streak.
+        handle.send(Command::UpdateSettings(with_theme(Theme::Dark)));
+        drain_until(&handle, |e| e.contains(&Event::SettingsSaved));
+        assert!(handle.shutdown(MAX));
     }
 
     #[test]
