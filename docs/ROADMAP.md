@@ -18,8 +18,9 @@ Spotify's developer terms. Local files get the full audio engine (Phase 2).
    library storage, the working player bar.
 3. **Spotify.** Library, search and playlist access through the Web API (OAuth PKCE) and
    Spotify Connect remote control. No in-app audio streaming.
-4. **System integration.** System tray (including the minimize-to-tray preference stored in
-   Phase 1), media keys and notifications.
-5. **Lyrics, equalizer and visualizer.** LRCLIB lyrics, plus an equalizer and visualizer for
-   local audio.
-6. **Mini-player and installers.** A compact mini-player window and platform installers.
+4. **Desktop experience.** System tray (including the minimize-to-tray preference stored in
+   Phase 1), media keys, shortcuts, notifications, startup integration and the mini-player.
+5. **Advanced functionality.** LRCLIB lyrics, an equalizer and audio visualizer for local
+   playback, additional themes, advanced queue management, and optional Winamp skin support.
+6. **Production release.** Full testing, performance profiling, security and dependency
+   audits, cross-platform builds and installers, documentation, and the 1.0 release.
