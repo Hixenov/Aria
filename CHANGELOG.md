@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-05 (pre-release: Phase 1, foundation)
+
 ### Added
 
 - Native egui/eframe window with the final layout shell: sidebar, content area, bottom player bar and collapsible right panel.
