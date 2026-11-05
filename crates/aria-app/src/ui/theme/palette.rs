@@ -188,7 +188,7 @@ mod tests {
             let v = visuals(&p, dark);
             assert!(v.override_text_color.is_none());
             assert_eq!(v.widgets.active.fg_stroke.color, p.on_accent());
-            assert_eq!(v.widgets.noninteractive.fg_stroke.color, p.text_muted);
+            assert_eq!(v.widgets.noninteractive.fg_stroke.color, p.text);
         }
     }
 }

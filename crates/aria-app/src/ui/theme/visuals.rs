@@ -42,7 +42,8 @@ pub fn visuals(p: &Palette, dark: bool) -> Visuals {
     w.noninteractive.bg_fill = p.surface;
     w.noninteractive.weak_bg_fill = p.surface;
     w.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
-    w.noninteractive.fg_stroke = Stroke::new(1.0, p.text_muted);
+    // Plain labels use primary text; secondary text asks for `text_muted` explicitly.
+    w.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
 
     w.inactive.bg_fill = p.surface_raised;
     w.inactive.weak_bg_fill = p.surface_raised;
