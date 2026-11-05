@@ -14,6 +14,7 @@ name = "aria"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = { workspace = true }
 aria-core = { workspace = true }
 eframe = { workspace = true }
 open = { workspace = true }

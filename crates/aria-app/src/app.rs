@@ -1,6 +1,10 @@
 //! Application state and the per-frame shell: player bar, sidebar, right panel and page.
 
-use std::{io, mem, path::PathBuf, time::Duration};
+use std::{
+    io, mem,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use aria_core::{
     command::Command,
@@ -86,6 +90,8 @@ pub struct AriaApp {
     /// Resets sent to the backend that it has not answered yet. Each answer brings the
     /// defaults, which are applied already, and changes made since are newer: it is ignored.
     outstanding_resets: u32,
+    /// When the process started, until the first frame logs how long it took to arrive.
+    startup: Option<Instant>,
 }
 
 impl AriaApp {
@@ -114,7 +120,15 @@ impl AriaApp {
             folders: FolderOpener::default(),
             modal_open: false,
             outstanding_resets: 0,
+            startup: None,
         }
+    }
+
+    /// Has the first frame log `startup stage=first_frame ms=<n>`, measured from `started`.
+    /// Without it, as in tests, nothing is logged.
+    pub fn with_startup_instant(mut self, started: Instant) -> AriaApp {
+        self.startup = Some(started);
+        self
     }
 
     /// The route on screen.
@@ -134,6 +148,10 @@ impl AriaApp {
 
     /// Draws one whole frame into the root `ui`.
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        if let Some(started) = self.startup.take() {
+            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            tracing::info!(stage = %"first_frame", ms, "startup");
+        }
         let ctx = ui.ctx().clone();
         // Events first, so settings the backend replaced are styled in this very frame.
         self.drain_events(&ctx);
@@ -544,6 +562,24 @@ mod tests {
         };
         let localizer = Localizer::new(Language::En).unwrap();
         AriaApp::new(settings, localizer, AppDeps::none(), notices)
+    }
+
+    #[test]
+    fn no_startup_instant_by_default() {
+        assert!(app(vec![]).startup.is_none());
+    }
+
+    #[test]
+    fn first_frame_takes_the_startup_instant_once() {
+        let app = app(vec![]).with_startup_instant(Instant::now());
+        assert!(app.startup.is_some());
+        let mut harness =
+            Harness::builder().build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+        harness.step();
+        assert!(
+            harness.state().startup.is_none(),
+            "the first frame logs its timing and forgets the instant"
+        );
     }
 
     #[test]
