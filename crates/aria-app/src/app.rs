@@ -1,13 +1,13 @@
 //! Application state and the per-frame shell: player bar, sidebar, right panel and page.
 
-use std::{mem, time::Duration};
+use std::{io, mem, path::PathBuf, time::Duration};
 
 use aria_core::{
     command::Command,
     event::Event,
     i18n::{Localizer, os_language},
     logging::LoggingHandle,
-    notice::Notice,
+    notice::{Notice, NoticeLevel},
     paths::AppPaths,
     runtime::BackendHandle,
     settings::{SIDEBAR_MAX, SIDEBAR_MIN, Settings},
@@ -15,6 +15,7 @@ use aria_core::{
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
 use crate::{
+    folders::FolderOpener,
     nav::{History, Route},
     shortcuts::read_shortcuts,
     ui::{
@@ -27,11 +28,17 @@ use crate::{
             Palette, fonts,
             visuals::{self, SPACE},
         },
+        widgets::Toasts,
     },
 };
 
 /// How long [`eframe::App::on_exit`] waits for the backend to save and stop.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Shown when a folder could not be opened in the file manager.
+const OPEN_FOLDER_FAILED: Notice = Notice {
+    level: NoticeLevel::Warning,
+    key: "notice-open-folder-failed",
+};
 
 /// The handles the shell drives. Each is optional, so tests, and a start-up that lost one,
 /// still run.
@@ -58,7 +65,7 @@ pub struct AriaApp {
     localizer: Localizer,
     history: History,
     deps: AppDeps,
-    /// Notices waiting to be shown, oldest first.
+    /// Startup notices, until the first frame shows them as toasts.
     pending_notices: Vec<Notice>,
     /// Fonts go in on the first frame, once there is a context.
     fonts_installed: bool,
@@ -69,6 +76,16 @@ pub struct AriaApp {
     sidebar_width_dirty: bool,
     /// Last frame, the window was narrower than the saved sidebar width.
     sidebar_squeezed: bool,
+    /// Notices on screen.
+    toasts: Toasts,
+    /// Folders being opened in the file manager.
+    folders: FolderOpener,
+    /// Whether the Settings page's reset dialog is open. Navigation and panel shortcuts
+    /// wait while it is.
+    modal_open: bool,
+    /// Resets sent to the backend that it has not answered yet. Each answer brings the
+    /// defaults, which are applied already, and changes made since are newer: it is ignored.
+    outstanding_resets: u32,
 }
 
 impl AriaApp {
@@ -93,6 +110,10 @@ impl AriaApp {
             style_dirty: true,
             sidebar_width_dirty: true,
             sidebar_squeezed: false,
+            toasts: Toasts::new(player_bar::HEIGHT),
+            folders: FolderOpener::default(),
+            modal_open: false,
+            outstanding_resets: 0,
         }
     }
 
@@ -106,16 +127,21 @@ impl AriaApp {
         &self.settings
     }
 
-    /// Notices waiting to be shown, oldest first.
+    /// Startup notices not shown yet, oldest first. The first frame shows them as toasts.
     pub fn pending_notices(&self) -> &[Notice] {
         &self.pending_notices
     }
 
     /// Draws one whole frame into the root `ui`.
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        self.prepare_style(ui);
         let ctx = ui.ctx().clone();
+        // Events first, so settings the backend replaced are styled in this very frame.
         self.drain_events(&ctx);
+        self.prepare_style(ui);
+        for notice in mem::take(&mut self.pending_notices) {
+            self.notify(&ctx, notice);
+        }
+        self.collect_folder_failures(&ctx);
         self.handle_shortcuts(&ctx);
 
         let palette = Palette::for_theme(ctx.theme(), &self.settings);
@@ -136,6 +162,7 @@ impl AriaApp {
             self.settings.right_panel_open,
         );
         self.show_page(ui, &ctx, &palette);
+        self.toasts.show(&ctx, &self.localizer, &palette);
     }
 
     /// Installs the fonts on the first frame and applies the visuals when they changed.
@@ -159,15 +186,42 @@ impl AriaApp {
             None => return,
         };
         for event in events {
-            match event {
-                Event::Notice(notice) => self.pending_notices.push(notice),
-                Event::SettingsReplaced(settings) => self.apply_settings(ctx, settings),
-                Event::SettingsSaved => tracing::trace!("settings saved"),
+            self.handle_event(ctx, event);
+        }
+    }
+
+    fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
+        match event {
+            Event::Notice(notice) => self.notify(ctx, notice),
+            Event::SettingsReplaced(settings) => {
+                if self.outstanding_resets > 0 {
+                    self.outstanding_resets -= 1;
+                    tracing::debug!("the backend confirmed a reset");
+                } else {
+                    self.apply_settings(ctx, settings);
+                }
             }
+            Event::SettingsSaved => tracing::trace!("settings saved"),
+        }
+    }
+
+    /// Shows `notice` as a toast from now on.
+    fn notify(&mut self, ctx: &egui::Context, notice: Notice) {
+        self.toasts.push(notice, ctx.input(|i| i.time));
+    }
+
+    /// Turns folders that failed to open since the last frame into a toast.
+    fn collect_folder_failures(&mut self, ctx: &egui::Context) {
+        if self.folders.failures() > 0 {
+            self.notify(ctx, OPEN_FOLDER_FAILED);
         }
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.modal_open {
+            // The dialog is modal: nothing behind it changes until it is closed.
+            return;
+        }
         let shortcuts = ctx.input_mut(read_shortcuts);
         if shortcuts.toggle_right_panel {
             self.toggle_right_panel(ctx);
@@ -234,6 +288,7 @@ impl AriaApp {
             palette: *palette,
             settings: &self.settings,
             paths_available: self.deps.paths.is_some(),
+            modal_open: &mut self.modal_open,
             out: &mut actions,
         };
         let route = self.history.current();
@@ -254,12 +309,24 @@ impl AriaApp {
             PageAction::UpdateSettings(settings) => self.update_settings(ctx, settings),
             PageAction::ResetSettings => {
                 self.apply_settings(ctx, Settings::default());
+                self.outstanding_resets = self.outstanding_resets.saturating_add(1);
                 self.send(Command::ResetSettings);
             }
-            // No page offers these yet: opening folders arrives with the settings page.
-            PageAction::OpenConfigDir | PageAction::OpenLogDir => {
-                tracing::debug!(?action, "opening folders is not available yet");
-            }
+            PageAction::OpenConfigDir => self.open_folder(ctx, |paths| &paths.config_dir),
+            PageAction::OpenLogDir => self.open_folder(ctx, |paths| &paths.log_dir),
+        }
+    }
+
+    /// Opens the folder `pick` chooses in the file manager. Only folders Aria computed are
+    /// ever opened.
+    fn open_folder(&mut self, ctx: &egui::Context, pick: fn(&AppPaths) -> &PathBuf) {
+        let started = match &self.deps.paths {
+            Some(paths) => self.folders.open(ctx, pick(paths).clone()),
+            None => Err(io::Error::other("Aria's folders are unknown")),
+        };
+        if let Err(err) = started {
+            tracing::warn!(%err, "could not open the folder");
+            self.notify(ctx, OPEN_FOLDER_FAILED);
         }
     }
 
@@ -333,9 +400,142 @@ impl eframe::App for AriaApp {
 
 #[cfg(test)]
 mod tests {
-    use aria_core::{notice::NoticeLevel, settings::Language};
+    use std::{
+        io,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use aria_core::{
+        notice::NoticeLevel,
+        runtime::{Backend, BackendConfig, Waker},
+        settings::{Language, Theme},
+    };
+    use egui_kittest::Harness;
 
     use super::*;
+
+    fn paths() -> AppPaths {
+        AppPaths {
+            config_dir: "config".into(),
+            data_dir: "data".into(),
+            cache_dir: "cache".into(),
+            log_dir: "logs".into(),
+        }
+    }
+
+    const OPEN_FAILED: Notice = Notice {
+        level: NoticeLevel::Warning,
+        key: "notice-open-folder-failed",
+    };
+
+    #[test]
+    fn answers_to_own_resets_are_ignored() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        app.handle_page_action(&ctx, PageAction::ResetSettings);
+        app.handle_page_action(&ctx, PageAction::ResetSettings);
+        assert_eq!(app.settings, Settings::default());
+
+        // A change made after the resets, before the backend answered them.
+        let dark = Settings {
+            theme: Theme::Dark,
+            ..Settings::default()
+        };
+        app.update_settings(&ctx, dark.clone());
+        for _ in 0..2 {
+            app.handle_event(&ctx, Event::SettingsReplaced(Settings::default()));
+            assert_eq!(
+                app.settings, dark,
+                "a late answer to a reset undid a change"
+            );
+        }
+
+        // A replacement the app did not ask for is adopted.
+        let light = Settings {
+            theme: Theme::Light,
+            ..Settings::default()
+        };
+        app.handle_event(&ctx, Event::SettingsReplaced(light.clone()));
+        assert_eq!(app.settings, light);
+    }
+
+    #[test]
+    fn replaced_settings_are_styled_in_the_frame_that_brings_them() {
+        let woke = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woke);
+        let waker: Waker = Arc::new(move || flag.store(true, Ordering::SeqCst));
+        // Read-only: nothing is written, and a reset is still answered.
+        let backend = Backend::start(None, waker, BackendConfig::default()).unwrap();
+        let settings = Settings {
+            language: Some(Language::En),
+            theme: Theme::Light,
+            ..Settings::default()
+        };
+        let deps = AppDeps {
+            backend: Some(backend),
+            ..AppDeps::none()
+        };
+        let localizer = Localizer::new(Language::En).unwrap();
+        let app = AriaApp::new(settings, localizer, deps, vec![]);
+        let mut harness =
+            Harness::builder().build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+        assert_eq!(harness.ctx.theme(), egui::Theme::Light);
+
+        // Sent past the reset count, so the answer is a replacement the app adopts.
+        harness.state().send(Command::ResetSettings);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !woke.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(woke.load(Ordering::SeqCst), "the backend did not answer");
+
+        // The frame that receives the defaults already draws with their theme, which follows
+        // the OS: kittest reports none, so egui falls back to dark.
+        harness.step();
+        assert_eq!(harness.state().settings().theme, Theme::System);
+        assert_eq!(harness.ctx.theme(), egui::Theme::Dark);
+    }
+
+    #[test]
+    fn backend_notices_become_toasts() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let failed = Notice {
+            level: NoticeLevel::Error,
+            key: "notice-settings-save-failed",
+        };
+        app.handle_event(&ctx, Event::Notice(failed.clone()));
+        assert_eq!(app.toasts.notices().collect::<Vec<_>>(), [&failed]);
+    }
+
+    #[test]
+    fn failed_folder_open_shows_a_warning_toast() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        app.deps.paths = Some(paths());
+        app.folders = FolderOpener::new(|_| Err(io::Error::other("no file manager")));
+        app.handle_page_action(&ctx, PageAction::OpenLogDir);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.toasts.is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+            app.collect_folder_failures(&ctx);
+        }
+        assert_eq!(app.toasts.notices().collect::<Vec<_>>(), [&OPEN_FAILED]);
+    }
+
+    #[test]
+    fn folder_request_without_paths_warns_at_once() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        app.handle_page_action(&ctx, PageAction::OpenConfigDir);
+        assert_eq!(app.toasts.notices().collect::<Vec<_>>(), [&OPEN_FAILED]);
+    }
 
     fn app(notices: Vec<Notice>) -> AriaApp {
         let settings = Settings {

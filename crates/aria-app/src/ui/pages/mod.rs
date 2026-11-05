@@ -34,6 +34,9 @@ pub struct PageCtx<'a> {
     pub settings: &'a Settings,
     /// Whether Aria's directories are known, so they can be opened.
     pub paths_available: bool,
+    /// Whether the page has its modal dialog open. The app ignores navigation and panel
+    /// shortcuts while it is set.
+    pub modal_open: &'a mut bool,
     /// Requests for the app, handled after the page is drawn.
     pub out: &'a mut Vec<PageAction>,
 }

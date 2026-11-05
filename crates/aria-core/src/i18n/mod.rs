@@ -203,7 +203,8 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Every message id English must define (the Task 4 key list).
+    /// Every message id English must define: the Task 4 key list, plus the log level
+    /// names Task 10 added for the Settings page.
     const KEYS: &[&str] = &[
         "nav-home",
         "nav-search",
@@ -241,6 +242,11 @@ mod tests {
         "settings-minimize-to-tray-hint",
         "settings-advanced",
         "settings-log-level",
+        "settings-log-level-error",
+        "settings-log-level-warn",
+        "settings-log-level-info",
+        "settings-log-level-debug",
+        "settings-log-level-trace",
         "settings-open-config",
         "settings-open-logs",
         "settings-reset",

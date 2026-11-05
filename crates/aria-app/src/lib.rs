@@ -1,6 +1,7 @@
 //! Aria application library: UI building blocks shared by the binary and tests.
 
 pub mod app;
+mod folders;
 pub mod nav;
 mod shortcuts;
 pub mod ui;
