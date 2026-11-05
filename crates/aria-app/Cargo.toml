@@ -1,0 +1,34 @@
+[package]
+name = "aria-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "aria_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aria"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+aria-core = { workspace = true }
+eframe = { workspace = true }
+open = { workspace = true }
+tracing = { workspace = true }
+
+# The fatal-startup message box; elsewhere the error goes to stderr and the log only.
+[target.'cfg(windows)'.dependencies]
+rfd = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+egui_kittest = { workspace = true }
+tempfile = { workspace = true }
+ttf-parser = { workspace = true }
