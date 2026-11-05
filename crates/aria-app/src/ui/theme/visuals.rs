@@ -5,11 +5,14 @@ use eframe::egui::{
     self, Context, CornerRadius, FontFamily, FontId, Stroke, TextStyle, ThemePreference, Visuals,
 };
 
-use super::fonts::SEMIBOLD;
+use super::fonts::semibold;
 use super::palette::Palette;
 
 /// Spacing scale in points.
 pub const SPACE: [f32; 5] = [4.0, 8.0, 12.0, 16.0, 24.0];
+
+/// Text size of titles below the page heading: panel titles and empty-state titles.
+pub const TITLE_SIZE: f32 = 16.0;
 
 /// Corner radius of controls.
 const RADIUS_CONTROL: u8 = 6;
@@ -79,10 +82,7 @@ pub fn visuals(p: &Palette, dark: bool) -> Visuals {
 
 fn text_styles() -> [(TextStyle, FontId); 5] {
     [
-        (
-            TextStyle::Heading,
-            FontId::new(20.0, FontFamily::Name(SEMIBOLD.into())),
-        ),
+        (TextStyle::Heading, semibold(20.0)),
         (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
         (
             TextStyle::Small,

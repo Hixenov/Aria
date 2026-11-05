@@ -1,26 +1,24 @@
 //! The placeholder shown where content will appear.
 
-use eframe::egui::{Align2, FontFamily, FontId, Label, RichText, Sense, TextStyle, Ui, Vec2};
+use eframe::egui::{Align2, FontId, Label, RichText, Sense, TextStyle, Ui, Vec2};
 
 use crate::ui::theme::{
     Palette,
-    fonts::{SEMIBOLD, icon_font},
-    visuals::SPACE,
+    fonts::{icon_font, semibold},
+    visuals::{SPACE, TITLE_SIZE},
 };
 
 /// Diameter of the badge behind the icon.
 const BADGE_SIZE: f32 = 72.0;
 /// Size of the icon.
 const ICON_SIZE: f32 = 32.0;
-/// Text size of the title.
-const TITLE_SIZE: f32 = 16.0;
 /// Widest a line of text gets before it wraps.
 const MAX_TEXT_WIDTH: f32 = 360.0;
 
 /// A block centered in the remaining space: `icon` on a round badge, `title` in primary
 /// text, then `body` in muted text. An empty `body` is left out.
 pub fn empty_state(ui: &mut Ui, icon: &str, title: &str, body: &str, p: &Palette) {
-    let title_font = FontId::new(TITLE_SIZE, FontFamily::Name(SEMIBOLD.into()));
+    let title_font = semibold(TITLE_SIZE);
     let body_font = TextStyle::Body.resolve(ui.style());
     let text_width = ui.available_width().min(MAX_TEXT_WIDTH);
 

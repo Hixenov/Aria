@@ -66,6 +66,11 @@ pub fn icon_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(ICONS.into()))
 }
 
+/// The semibold font at `size` points, for headings, titles and other emphasis.
+pub fn semibold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
+}
+
 /// Installs the font chain on the context.
 pub fn install(ctx: &Context) {
     ctx.set_fonts(definitions());

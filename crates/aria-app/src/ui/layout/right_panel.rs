@@ -3,13 +3,14 @@
 //! There is no queue yet, so it shows an empty state.
 
 use aria_core::i18n::Localizer;
-use eframe::egui::{
-    Align, FontFamily, FontId, Label, Layout, Panel, RichText, TextStyle, Ui, vec2,
-};
+use eframe::egui::{Align, Label, Layout, Panel, RichText, TextStyle, Ui, vec2};
 
 use super::surface_frame;
 use crate::ui::{
-    theme::{Palette, fonts::SEMIBOLD, icons, visuals::SPACE},
+    theme::{
+        Palette, fonts, icons,
+        visuals::{SPACE, TITLE_SIZE},
+    },
     widgets::empty_state,
 };
 
@@ -17,8 +18,6 @@ use crate::ui::{
 const ID: &str = "aria_right_panel";
 /// Width of the panel.
 pub const WIDTH: f32 = 300.0;
-/// Text size of the panel title.
-const TITLE_SIZE: f32 = 16.0;
 
 /// Shows the panel while `open`, sliding it in and out as that changes.
 pub fn show(ui: &mut Ui, tr: &Localizer, p: &Palette, open: bool) {
@@ -34,7 +33,7 @@ pub fn show(ui: &mut Ui, tr: &Localizer, p: &Palette, open: bool) {
                 ui.text_style_height(&TextStyle::Heading),
             );
             ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
-                let font = FontId::new(TITLE_SIZE, FontFamily::Name(SEMIBOLD.into()));
+                let font = fonts::semibold(TITLE_SIZE);
                 let title = RichText::new(tr.tr("player-queue"))
                     .font(font)
                     .color(p.text);

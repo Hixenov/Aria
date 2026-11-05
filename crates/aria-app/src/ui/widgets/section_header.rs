@@ -1,8 +1,8 @@
 //! Page headings.
 
-use eframe::egui::{FontFamily, FontId, Response, Sense, Ui, WidgetInfo, accesskit::Role};
+use eframe::egui::{Response, Sense, Ui, WidgetInfo, accesskit::Role};
 
-use crate::ui::theme::fonts::SEMIBOLD;
+use crate::ui::theme::fonts::semibold;
 
 /// Text size of a heading.
 const HEADING_SIZE: f32 = 20.0;
@@ -12,7 +12,7 @@ const HEADING_SIZE: f32 = 20.0;
 /// Assistive technology sees it as a heading, which also tells it apart from the sidebar
 /// entry with the same text.
 pub fn section_header(ui: &mut Ui, text: &str) -> Response {
-    let font = FontId::new(HEADING_SIZE, FontFamily::Name(SEMIBOLD.into()));
+    let font = semibold(HEADING_SIZE);
     let color = ui.visuals().text_color();
     let galley = ui
         .painter()

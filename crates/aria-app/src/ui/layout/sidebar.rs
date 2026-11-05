@@ -5,8 +5,8 @@ use aria_core::{
     settings::{SIDEBAR_MAX, SIDEBAR_MIN},
 };
 use eframe::egui::{
-    Align, FontFamily, FontId, Label, Layout, Margin, Panel, RichText, ScrollArea, Separator, Ui,
-    UiBuilder, accesskit::Role, vec2,
+    Align, Label, Layout, Margin, Panel, RichText, ScrollArea, Separator, Ui, UiBuilder,
+    accesskit::Role, vec2,
 };
 
 use super::surface_frame;
@@ -14,7 +14,7 @@ use crate::{
     APP_NAME,
     nav::{History, Route},
     ui::{
-        theme::{Palette, fonts::SEMIBOLD, icons, visuals::SPACE},
+        theme::{Palette, fonts, icons, visuals::SPACE},
         widgets::{IconButton, NAV_ROW_HEIGHT, nav_item},
     },
 };
@@ -138,7 +138,7 @@ fn header(ui: &mut Ui, tr: &Localizer, p: &Palette, history: &History) -> Option
         }
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.add_space(SPACE[2]);
-            let font = FontId::new(WORDMARK_SIZE, FontFamily::Name(SEMIBOLD.into()));
+            let font = fonts::semibold(WORDMARK_SIZE);
             let wordmark = RichText::new(APP_NAME).font(font).color(p.text);
             ui.add(Label::new(wordmark).selectable(false).truncate());
         });

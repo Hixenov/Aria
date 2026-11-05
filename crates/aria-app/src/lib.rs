@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod nav;
+mod shortcuts;
 pub mod ui;
 
 /// Application name, shown as the sidebar wordmark.
