@@ -2,10 +2,16 @@
 
 use std::sync::Arc;
 
-use eframe::egui::{Context, FontData, FontDefinitions, FontFamily};
+use eframe::egui::{Context, FontData, FontDefinitions, FontFamily, FontId};
 
 /// Name of the semibold font family (`FontFamily::Name("semibold")`).
 pub const SEMIBOLD: &str = "semibold";
+
+/// Name of the icon font family (`FontFamily::Name("icons")`), which holds Phosphor alone.
+///
+/// Draw icons with [`icon_font`]: Inter also has glyphs in the Private Use Area and leads
+/// the Proportional chain, so there it would hide some Phosphor icons.
+pub const ICONS: &str = "icons";
 
 /// Embedded font faces as `(name, bytes)`; also used by the glyph coverage test.
 pub const FONT_FILES: [(&str, &[u8]); 4] = [
@@ -27,7 +33,8 @@ pub const FONT_FILES: [(&str, &[u8]); 4] = [
     ),
 ];
 
-/// Font definitions with Inter, Noto Armenian and Phosphor at the front of Proportional.
+/// Font definitions with Inter, Noto Armenian and Phosphor at the front of Proportional,
+/// plus the semibold family and the Phosphor-only [`ICONS`] family.
 pub fn definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     for (name, bytes) in FONT_FILES {
@@ -49,6 +56,14 @@ pub fn definitions() -> FontDefinitions {
             .to_vec(),
     );
     fonts
+        .families
+        .insert(FontFamily::Name(ICONS.into()), vec!["phosphor".to_owned()]);
+    fonts
+}
+
+/// The icon font at `size` points.
+pub fn icon_font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(ICONS.into()))
 }
 
 /// Installs the font chain on the context.

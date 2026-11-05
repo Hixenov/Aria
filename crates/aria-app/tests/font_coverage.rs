@@ -1,6 +1,9 @@
 //! Every character the bundled locales use must resolve to a glyph in the bundled fonts.
 
-use aria_app::ui::theme::{fonts::FONT_FILES, icons};
+use aria_app::ui::theme::{
+    fonts::{self, FONT_FILES},
+    icons,
+};
 use aria_core::i18n::SOURCES;
 
 fn faces() -> Vec<ttf_parser::Face<'static>> {
@@ -51,4 +54,17 @@ fn every_icon_exists_in_phosphor() {
             c as u32
         );
     }
+}
+
+#[test]
+fn icons_are_drawn_from_phosphor_alone() {
+    // Inter has glyphs in the Private Use Area too, and it leads the Proportional chain, so
+    // there it hides some Phosphor icons. The icon family must hold Phosphor alone.
+    let families = fonts::definitions().families;
+    let icons = &families[&eframe::egui::FontFamily::Name(fonts::ICONS.into())];
+    assert_eq!(icons, &["phosphor"]);
+    assert_eq!(
+        fonts::icon_font(18.0).family,
+        eframe::egui::FontFamily::Name(fonts::ICONS.into())
+    );
 }
