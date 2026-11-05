@@ -19,7 +19,7 @@ Phase 1 delivers the shell every later phase builds on:
 - Persistent settings (`settings.toml`), with backup and defaults when the file is corrupt
 - Localization: English, Russian, Armenian
 - File and panic logging
-- CI on Windows, Linux and macOS
+- CI configured for Windows, Linux and macOS (so far only Windows has been built and tested)
 
 There is no audio playback yet.
 
@@ -72,7 +72,7 @@ These numbers come from a single machine and are not a benchmark.
 - egui's colour-picker popup and the panel splitter's accessibility label are English only.
 - Alt+Left/Right and Ctrl+1...9 are app-wide shortcuts.
 - `ARIA_CONFIG_DIR` overrides only the config directory. Logs, cache and the window state still go to the OS defaults.
-- Linux and macOS are verified by CI build and tests only, not tested by hand.
+- CI is configured for Windows, Linux and macOS, but so far only Windows has been built and tested (hands-on, on one machine). Linux and macOS have never been built.
 
 ## License
 

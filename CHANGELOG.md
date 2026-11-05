@@ -13,5 +13,5 @@ All notable changes to this project are documented here. The format is based on
 - Settings page and persistent `settings.toml`, with backup and defaults on corruption.
 - Localization in English, Russian and Armenian, switchable live.
 - File logging with daily rotation, panic logging and startup stage timings.
-- GitHub Actions CI on Windows, Linux and macOS, and `cargo-deny` checks.
+- GitHub Actions CI configured for Windows, Linux and macOS (so far only Windows has been built and tested), and `cargo-deny` checks.
 - Repository documentation and MIT / Apache-2.0 licenses.

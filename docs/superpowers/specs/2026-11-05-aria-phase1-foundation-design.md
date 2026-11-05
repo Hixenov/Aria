@@ -184,7 +184,7 @@ installed via `ctx.set_visuals_of(egui::Theme::Dark, …)` and
 
 Directories come from `directories::ProjectDirs::from("", "", "Aria")`:
 
-- Windows: `%APPDATA%\Aria\config\settings.toml`, logs in `%LOCALAPPDATA%\Aria\data\logs\`
+- Windows: `%APPDATA%\Aria\config\settings.toml`, logs in `%APPDATA%\Aria\data\logs\` (corrected: `data_dir()` is Roaming on Windows; there is no Local Aria folder)
 - Linux: `$XDG_CONFIG_HOME/aria/settings.toml`, logs in `$XDG_DATA_HOME/aria/logs/`
 - macOS: `~/Library/Application Support/Aria/settings.toml`, logs alongside
 
