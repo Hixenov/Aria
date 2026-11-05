@@ -184,7 +184,7 @@ installed via `ctx.set_visuals_of(egui::Theme::Dark, …)` and
 
 Directories come from `directories::ProjectDirs::from("", "", "Aria")`:
 
-- Windows: `%APPDATA%\Aria\config\settings.toml`, logs in `%APPDATA%\Aria\data\logs\` (corrected: `data_dir()` is Roaming on Windows; there is no Local Aria folder)
+- Windows: `%APPDATA%\Aria\config\settings.toml`, logs in `%APPDATA%\Aria\data\logs\` (corrected: `data_dir()` is Roaming on Windows; the only Local Aria folder is the cache, `%LOCALAPPDATA%\Aria\cache`, which Phase 1 creates and leaves empty)
 - Linux: `$XDG_CONFIG_HOME/aria/settings.toml`, logs in `$XDG_DATA_HOME/aria/logs/`
 - macOS: `~/Library/Application Support/Aria/settings.toml`, logs alongside
 
@@ -258,8 +258,9 @@ Window size, position and maximized state go through eframe's `persistence` feat
 ## 7. Logging and diagnostics
 
 - `tracing` + `tracing-subscriber` (env-filter, fmt) + `tracing-appender`, with daily
-  rolling files `aria.log.YYYY-MM-DD` in the log dir. The last 7 files are kept, and older
-  ones are deleted at startup.
+  rolling files `aria.YYYY-MM-DD.log` in the log dir (corrected: the appender is built
+  with prefix `aria` and suffix `log`, which names files `aria.<date>.log`; the date is
+  UTC). The last 7 files are kept, and older ones are deleted at startup and on rollover.
 - Debug builds also log to stderr.
 - Level: `ARIA_LOG` env var if set, otherwise `settings.log_level`. A level change in
   Settings applies live through a `reload` handle.
@@ -376,9 +377,11 @@ Window size, position and maximized state go through eframe's `persistence` feat
 - `THIRD_PARTY_NOTICES.md`: fonts and their licenses.
 - `CHANGELOG.md` (Keep a Changelog format) with an `Unreleased` section.
 - `docs/ROADMAP.md`: the six phases, including the Spotify playback limitation.
-- `docs/PRIVACY.md`: states that Phase 1 sends no data over the network and stores only
-  `settings.toml`, eframe window state and logs, with their exact paths. The document is
-  extended each phase.
+- `docs/PRIVACY.md`: states that Phase 1 sends no data over the network and lists
+  everything it stores, with exact paths: `settings.toml` with its transient `.tmp` and its
+  `.bak-<secs>` backups, eframe window state, logs, `panic.log` and the (empty) cache
+  folder (corrected: an earlier version said "only" settings, window state and logs). The
+  document is extended each phase.
 - `.gitignore`, `.editorconfig`, `rustfmt.toml` (edition 2024 defaults).
 - GitHub repository: created after `gh auth login`. Public or private is confirmed with the
   user before creation.
