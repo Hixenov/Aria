@@ -181,18 +181,37 @@ fn history_buttons_follow_history() {
 #[test]
 fn pending_pages_say_which_phase() {
     let mut harness = harness(SIZE);
-    click_button(&mut harness, &en("nav-local"));
-    assert!(harness.query_by_label("Available in Phase 2").is_some());
+    let local = en(Route::LocalMusic.label_key());
+    click_button(&mut harness, &local);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Heading, &local)
+            .is_some(),
+        "no {local:?} heading"
+    );
+    assert!(
+        harness
+            .query_by_label(&en_phase("empty-phase-pending", 2))
+            .is_some()
+    );
 
     for route in Route::ALL {
         let Some(phase) = route.phase() else {
             continue;
         };
-        click_button(&mut harness, &en(route.label_key()));
+        let title = en(route.label_key());
+        click_button(&mut harness, &title);
         let pending = en_phase("empty-phase-pending", phase);
         assert!(
             harness.query_by_label(&pending).is_some(),
             "{route:?} should say {pending:?}"
+        );
+        // The heading names the page once; the empty state does not repeat it.
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Label, &title)
+                .is_none(),
+            "{route:?} shows its title twice"
         );
     }
 }
@@ -291,16 +310,21 @@ fn narrow_sidebar_truncates_long_labels() {
         ..Default::default()
     };
     let ru = localizer(Language::Ru);
-    let mut harness = harness_with(SIZE, settings);
-    for route in Route::ALL {
-        let label = ru.tr(route.label_key());
-        let rect = button_rect(&harness, &label);
-        assert!(
-            rect.width() <= SIDEBAR_MIN,
-            "{label} is {} wide",
-            rect.width()
-        );
-    }
+    let mut harness = harness_with(SIZE, settings.clone());
+    // The resize handle sits where it does for the short English labels at the same width:
+    // the panel did not grow to fit the Russian ones.
+    let english = harness_with(
+        SIZE,
+        Settings {
+            language: Some(Language::En),
+            ..settings
+        },
+    );
+    let (edge, expected) = (sidebar_edge(&harness).x, sidebar_edge(&english).x);
+    assert!(
+        (edge - expected).abs() <= 0.5,
+        "the sidebar's edge is at {edge}, not {expected}"
+    );
     assert_eq!(
         harness.state().settings().sidebar_width,
         SIDEBAR_MIN,

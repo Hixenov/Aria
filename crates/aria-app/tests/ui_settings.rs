@@ -3,7 +3,7 @@
 //!
 //! Page tests start on Home and reach Settings with Ctrl+9, as a user would.
 
-use std::time::Duration;
+use std::{path::Path, sync::Arc, time::Duration};
 
 use aria_app::{
     app::{AppDeps, AriaApp},
@@ -17,7 +17,8 @@ use aria_core::{
     i18n::{Localizer, os_language},
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
-    settings::{Language, LogLevel, Rgb, Settings, Theme},
+    runtime::{Backend, BackendConfig, Waker},
+    settings::{Language, LogLevel, Rgb, Settings, Theme, store::SettingsStore},
 };
 use eframe::egui::{self, Key, Modifiers, PointerButton, ViewportId, accesskit::Role};
 use egui_kittest::{
@@ -362,6 +363,65 @@ fn narrow_page_keeps_every_control_beside_the_right_panel() {
     }
 }
 
+// Persistence through the real backend and settings file.
+
+/// The Settings page, driven by a real backend that saves to `file`.
+fn persisting_settings_page(file: &Path) -> Harness<'static, AriaApp> {
+    let waker: Waker = Arc::new(|| {});
+    let store = SettingsStore::new(file.to_path_buf());
+    let backend = Backend::start(Some(Box::new(store)), waker, BackendConfig::default())
+        .unwrap_or_else(|err| panic!("the backend did not start: {err}"));
+    let deps = AppDeps {
+        backend: Some(backend),
+        ..AppDeps::none()
+    };
+    settings_page_with(english(), deps)
+}
+
+/// Closes the app as eframe does, which stops the backend once it has saved.
+fn exit(harness: &mut Harness<'_, AriaApp>) {
+    eframe::App::on_exit(harness.state_mut(), None);
+}
+
+#[test]
+fn chosen_theme_is_on_disk_after_exit() {
+    let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("tempdir: {err}"));
+    let file = dir.path().join("settings.toml");
+    let mut harness = persisting_settings_page(&file);
+    click_button(&mut harness, &en("settings-theme-dark"));
+    exit(&mut harness);
+
+    let loaded = SettingsStore::new(file).load();
+    assert_eq!(loaded.settings.theme, Theme::Dark);
+    assert_eq!(loaded.settings.language, Some(Language::En));
+    assert_eq!(loaded.notice, None);
+}
+
+#[test]
+fn reset_defaults_are_on_disk_after_exit() {
+    let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("tempdir: {err}"));
+    let file = dir.path().join("settings.toml");
+    // A file that differs from the defaults, so only a written reset can restore them.
+    let stored = Settings {
+        theme: Theme::Light,
+        log_level: LogLevel::Debug,
+        ..english()
+    };
+    SettingsStore::new(file.clone())
+        .save(&stored)
+        .unwrap_or_else(|err| panic!("seed the settings file: {err}"));
+
+    let mut harness = persisting_settings_page(&file);
+    click_button(&mut harness, &en("settings-theme-dark"));
+    click_button(&mut harness, &en("settings-reset"));
+    click_button(&mut harness, &en("settings-confirm"));
+    exit(&mut harness);
+
+    let loaded = SettingsStore::new(file).load();
+    assert_eq!(loaded.settings, Settings::default());
+    assert_eq!(loaded.notice, None);
+}
+
 // The reset dialog.
 
 #[test]
@@ -555,4 +615,51 @@ fn toast_timer_repaints_only_while_a_toast_can_expire() {
 fn idle_app_schedules_no_repaints() {
     let harness = settings_page(english());
     assert_eq!(repaint_delay(&harness), Duration::MAX);
+}
+
+#[test]
+fn narrowest_russian_theme_switch_stays_on_the_page() {
+    // The narrowest page: the smallest window, the widest sidebar and the queue open. The
+    // Russian theme names do not fit on one line there, so the switch wraps.
+    let settings = Settings {
+        right_panel_open: true,
+        sidebar_width: aria_core::settings::SIDEBAR_MAX,
+        language: Some(Language::Ru),
+        ..Default::default()
+    };
+    let app = AriaApp::new(settings, localizer(Language::Ru), AppDeps::none(), vec![]);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 600.0))
+        .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Num9);
+    harness.run();
+
+    let ru = localizer(Language::Ru);
+    let page_left = aria_core::settings::SIDEBAR_MAX;
+    let page_right = 900.0 - aria_app::ui::layout::right_panel::WIDTH;
+    let rects: Vec<egui::Rect> = [
+        "settings-theme-dark",
+        "settings-theme-light",
+        "settings-theme-system",
+    ]
+    .iter()
+    .map(|key| {
+        harness
+            .get_by_role_and_label(Role::Button, &ru.tr(key))
+            .rect()
+    })
+    .collect();
+    for (n, rect) in rects.iter().enumerate() {
+        assert!(
+            rect.min.x >= page_left && rect.max.x <= page_right,
+            "theme button {n} at {rect:?} leaves the page {page_left}..{page_right}"
+        );
+        for other in &rects[n + 1..] {
+            let overlap = rect.intersect(*other);
+            assert!(
+                overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                "{rect:?} overlaps {other:?}"
+            );
+        }
+    }
 }
