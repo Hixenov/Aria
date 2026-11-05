@@ -73,6 +73,7 @@ These numbers come from a single machine and are not a benchmark.
 - Alt+Left/Right and Ctrl+1...9 are app-wide shortcuts.
 - `ARIA_CONFIG_DIR` overrides only the config directory. Logs, cache and the window state still go to the OS defaults.
 - CI is configured for Windows, Linux and macOS, but so far only Windows has been built and tested (hands-on, on one machine). Linux and macOS have never been built.
+- In the narrowest layout (a 900 px window with the widest sidebar and the queue open), the Russian theme switch does not fit on one line, so its "System" button wraps under the other two inside one outline.
 - Release builds on Windows open no console window, so nothing printed to stderr is visible. Diagnostics go to the log files and `panic.log` (see [docs/PRIVACY.md](docs/PRIVACY.md) for where), and a failure to start is also shown in a message box. To see stderr, run a debug build (`cargo run -p aria-app`) from a terminal.
 - If any one of Aria's folders (config, data, cache or logs) cannot be created at startup, settings are read-only for the session and file logging (including `panic.log`) is off, even if the other folders are fine.
 
