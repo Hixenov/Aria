@@ -2,13 +2,15 @@
 //!
 //! `open::that` waits for the system's launcher. On Windows that is PowerShell, which takes
 //! about 0.3 s to start, and on some Linux desktops the launcher returns only once the file
-//! manager is closed. So each request runs on a short-lived thread that repaints the UI when
-//! it is done, and the UI collects the outcome on that frame.
+//! manager is closed. So each request runs on a short-lived thread. The thread reports its
+//! outcome first and only then repaints the UI, so the frame that repaint brings already
+//! sees the outcome.
 
 use std::{
     io,
     path::{Path, PathBuf},
-    thread::{self, JoinHandle},
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
 };
 
 use eframe::egui::Context;
@@ -22,16 +24,23 @@ pub(crate) type Open = fn(&Path) -> io::Result<()>;
 /// Requests to open a folder, until their outcome is collected.
 pub(crate) struct FolderOpener {
     open: Open,
-    /// Each thread returns whether its folder opened.
-    running: Vec<JoinHandle<bool>>,
+    /// Each thread sends whether its folder opened.
+    outcomes: Receiver<bool>,
+    /// Cloned into each thread.
+    report: Sender<bool>,
+    /// Requests whose outcome has not been collected yet.
+    outstanding: usize,
 }
 
 impl FolderOpener {
     /// Opens folders with `open`.
     pub(crate) fn new(open: Open) -> Self {
+        let (report, outcomes) = mpsc::channel();
         Self {
             open,
-            running: Vec::new(),
+            outcomes,
+            report,
+            outstanding: 0,
         }
     }
 
@@ -43,10 +52,17 @@ impl FolderOpener {
     /// Fails if no thread could be started, in which case nothing is opened.
     pub(crate) fn open(&mut self, ctx: &Context, dir: PathBuf) -> io::Result<()> {
         let open = self.open;
-        let ctx = ctx.clone();
-        let thread = thread::Builder::new()
+        let report = Report {
+            outcomes: self.report.clone(),
+            ctx: ctx.clone(),
+            opened: None,
+        };
+        thread::Builder::new()
             .name(THREAD_NAME.into())
             .spawn(move || {
+                // Bound whole: the closure would otherwise capture only `report.opened`,
+                // leaving the guard to drop on the calling thread.
+                let mut report = report;
                 let opened = match open(&dir) {
                     Ok(()) => true,
                     Err(err) => {
@@ -54,34 +70,30 @@ impl FolderOpener {
                         false
                     }
                 };
-                ctx.request_repaint();
-                opened
+                report.opened = Some(opened);
+                // Dropping `report` sends the outcome, then repaints.
             })?;
-        self.running.push(thread);
+        self.outstanding += 1;
         Ok(())
     }
 
     /// How many of the requests that finished since the last call failed. Requests still
-    /// running are kept for a later call.
+    /// running are counted by a later call.
     pub(crate) fn failures(&mut self) -> usize {
         let mut failures = 0;
-        let mut running = Vec::new();
-        for thread in self.running.drain(..) {
-            if !thread.is_finished() {
-                running.push(thread);
-                continue;
-            }
-            match thread.join() {
-                Ok(true) => {}
-                Ok(false) => failures += 1,
-                Err(_) => {
-                    tracing::error!("the thread opening a folder panicked");
-                    failures += 1;
-                }
+        for opened in self.outcomes.try_iter() {
+            self.outstanding = self.outstanding.saturating_sub(1);
+            if !opened {
+                failures += 1;
             }
         }
-        self.running = running;
         failures
+    }
+
+    /// Requests whose outcome [`Self::failures`] has not collected yet.
+    #[cfg(test)]
+    fn outstanding(&self) -> usize {
+        self.outstanding
     }
 }
 
@@ -92,6 +104,27 @@ impl Default for FolderOpener {
     }
 }
 
+/// Reports a request's outcome when its thread ends, then repaints the UI. As a drop guard
+/// it also reports a thread that panicked, as a failure.
+struct Report {
+    outcomes: Sender<bool>,
+    ctx: Context,
+    /// Set once the folder was opened, or failed to.
+    opened: Option<bool>,
+}
+
+impl Drop for Report {
+    fn drop(&mut self) {
+        let opened = self.opened.unwrap_or_else(|| {
+            tracing::error!("the thread opening a folder panicked");
+            false
+        });
+        // Fails only once the opener is gone, when nobody is waiting for the outcome.
+        let _ = self.outcomes.send(opened);
+        self.ctx.request_repaint();
+    }
+}
+
 /// Opens `path` with the system's default application.
 fn open_with_system(path: &Path) -> io::Result<()> {
     open::that(path)
@@ -99,7 +132,13 @@ fn open_with_system(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
 
     use super::*;
 
@@ -122,7 +161,7 @@ mod tests {
         opener.open(&ctx, "b".into()).unwrap();
         assert_eq!(failures_after(&mut opener, 2), 2);
         assert_eq!(opener.failures(), 0, "a failure was reported twice");
-        assert!(opener.running.is_empty());
+        assert_eq!(opener.outstanding(), 0);
     }
 
     #[test]
@@ -133,11 +172,13 @@ mod tests {
         });
         opener.open(&Context::default(), "logs".into()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while !opener.running.iter().all(JoinHandle::is_finished) && Instant::now() < deadline {
+        let mut failures = 0;
+        while opener.outstanding() > 0 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
+            failures += opener.failures();
         }
-        assert_eq!(opener.failures(), 0);
-        assert!(opener.running.is_empty());
+        assert_eq!(failures, 0);
+        assert_eq!(opener.outstanding(), 0);
     }
 
     #[test]
@@ -145,5 +186,31 @@ mod tests {
         let mut opener = FolderOpener::new(|_| panic!("opener panics on purpose"));
         opener.open(&Context::default(), "x".into()).unwrap();
         assert_eq!(failures_after(&mut opener, 1), 1);
+    }
+
+    #[test]
+    fn the_outcome_is_ready_when_the_repaint_is_requested() {
+        // The repaint callback holds the worker inside `request_repaint` until the "frame"
+        // below has collected, so the collection runs while the repaint is in progress.
+        let woken = Arc::new(Barrier::new(2));
+        let collected = Arc::new(Barrier::new(2));
+        let first = Arc::new(AtomicBool::new(true));
+        let ctx = Context::default();
+        {
+            let (woken, collected) = (Arc::clone(&woken), Arc::clone(&collected));
+            ctx.set_request_repaint_callback(move |_| {
+                if first.swap(false, Ordering::SeqCst) {
+                    woken.wait();
+                    collected.wait();
+                }
+            });
+        }
+        let mut opener = FolderOpener::new(|_| Err(io::Error::other("no file manager")));
+        opener.open(&ctx, "x".into()).unwrap();
+
+        woken.wait();
+        let failures = opener.failures();
+        collected.wait();
+        assert_eq!(failures, 1, "the woken frame did not see the failure");
     }
 }

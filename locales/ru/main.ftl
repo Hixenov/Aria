@@ -75,6 +75,11 @@ notice-settings-save-failed = Не удалось сохранить настр�
 notice-open-folder-failed = Не удалось открыть папку.
 notice-dismiss = Закрыть
 
+## Fatal startup errors (a message box shown before Aria quits)
+
+error-startup-title = Не удалось запустить Aria
+error-startup-window = Aria не удалось открыть окно.
+
 ## Language names: endonyms, identical in every locale
 
 lang-en = English

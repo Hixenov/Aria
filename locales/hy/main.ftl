@@ -77,6 +77,11 @@ notice-settings-save-failed = Չհաջողվեց պահպանել կարգավո
 notice-open-folder-failed = Չհաջողվեց բացել պանակը։
 notice-dismiss = Փակել
 
+## Fatal startup errors (a message box shown before Aria quits)
+
+error-startup-title = Չհաջողվեց գործարկել Aria-ն
+error-startup-window = Aria-ին չհաջողվեց բացել իր պատուհանը։
+
 ## Language names: endonyms, identical in every locale
 
 lang-en = English

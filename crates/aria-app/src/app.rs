@@ -10,7 +10,7 @@ use aria_core::{
     command::Command,
     event::Event,
     i18n::{Localizer, os_language},
-    logging::LoggingHandle,
+    logging::LogLevelHandle,
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
     runtime::BackendHandle,
@@ -34,6 +34,7 @@ use crate::{
         },
         widgets::Toasts,
     },
+    whole_ms,
 };
 
 /// How long [`eframe::App::on_exit`] waits for the backend to save and stop.
@@ -50,8 +51,9 @@ const OPEN_FOLDER_FAILED: Notice = Notice {
 pub struct AppDeps {
     /// The backend thread; without it nothing is saved.
     pub backend: Option<BackendHandle>,
-    /// Changes the log level live.
-    pub logging: Option<LoggingHandle>,
+    /// Changes the log level live. `main` keeps the logging guard itself, so the log file
+    /// stays open until after the window has closed.
+    pub logging: Option<LogLevelHandle>,
     /// Aria's directories, when they could be resolved.
     pub paths: Option<AppPaths>,
 }
@@ -90,7 +92,7 @@ pub struct AriaApp {
     /// Resets sent to the backend that it has not answered yet. Each answer brings the
     /// defaults, which are applied already, and changes made since are newer: it is ignored.
     outstanding_resets: u32,
-    /// When the process started, until the first frame logs how long it took to arrive.
+    /// When `main` began, until the first frame logs how long it took to arrive.
     startup: Option<Instant>,
 }
 
@@ -124,7 +126,8 @@ impl AriaApp {
         }
     }
 
-    /// Has the first frame log `startup stage=first_frame ms=<n>`, measured from `started`.
+    /// Has the first frame log `startup stage=first_frame ms=<n>`, measured from `started`,
+    /// the instant `main` began.
     /// Without it, as in tests, nothing is logged.
     pub fn with_startup_instant(mut self, started: Instant) -> AriaApp {
         self.startup = Some(started);
@@ -149,7 +152,7 @@ impl AriaApp {
     /// Draws one whole frame into the root `ui`.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         if let Some(started) = self.startup.take() {
-            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let ms = whole_ms(started.elapsed());
             tracing::info!(stage = %"first_frame", ms, "startup");
         }
         let ctx = ui.ctx().clone();
@@ -446,11 +449,6 @@ mod tests {
         }
     }
 
-    const OPEN_FAILED: Notice = Notice {
-        level: NoticeLevel::Warning,
-        key: "notice-open-folder-failed",
-    };
-
     #[test]
     fn answers_to_own_resets_are_ignored() {
         let mut app = app(vec![]);
@@ -544,7 +542,10 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
             app.collect_folder_failures(&ctx);
         }
-        assert_eq!(app.toasts.notices().collect::<Vec<_>>(), [&OPEN_FAILED]);
+        assert_eq!(
+            app.toasts.notices().collect::<Vec<_>>(),
+            [&OPEN_FOLDER_FAILED]
+        );
     }
 
     #[test]
@@ -552,7 +553,10 @@ mod tests {
         let mut app = app(vec![]);
         let ctx = egui::Context::default();
         app.handle_page_action(&ctx, PageAction::OpenConfigDir);
-        assert_eq!(app.toasts.notices().collect::<Vec<_>>(), [&OPEN_FAILED]);
+        assert_eq!(
+            app.toasts.notices().collect::<Vec<_>>(),
+            [&OPEN_FOLDER_FAILED]
+        );
     }
 
     fn app(notices: Vec<Notice>) -> AriaApp {

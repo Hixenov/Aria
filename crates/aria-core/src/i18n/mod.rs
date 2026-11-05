@@ -263,6 +263,8 @@ mod tests {
         "notice-settings-save-failed",
         "notice-open-folder-failed",
         "notice-dismiss",
+        "error-startup-title",
+        "error-startup-window",
         "lang-en",
         "lang-ru",
         "lang-hy",

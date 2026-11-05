@@ -21,9 +21,14 @@ eframe = { workspace = true }
 open = { workspace = true }
 tracing = { workspace = true }
 
+# The fatal-startup message box; elsewhere the error goes to stderr and the log only.
+[target.'cfg(windows)'.dependencies]
+rfd = { workspace = true }
+
 [lints]
 workspace = true
 
 [dev-dependencies]
 egui_kittest = { workspace = true }
+tempfile = { workspace = true }
 ttf-parser = { workspace = true }

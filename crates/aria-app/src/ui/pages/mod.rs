@@ -70,17 +70,14 @@ pub fn show(route: Route, ui: &mut Ui, ctx: &mut PageCtx<'_>) {
 }
 
 /// A page whose content comes in a later phase: its heading, then an empty state saying
-/// which phase.
+/// which phase. The heading already names the page, so the empty state does not repeat it.
 fn pending(ui: &mut Ui, ctx: &PageCtx<'_>, route: Route) {
-    let title = ctx.tr.tr(route.label_key());
-    section_header(ui, &title);
-    let body = match route.phase() {
-        Some(phase) => {
-            let mut args = FluentArgs::new();
-            args.set("phase", phase);
-            ctx.tr.tr_args("empty-phase-pending", &args).into_owned()
-        }
-        None => String::new(),
+    section_header(ui, &ctx.tr.tr(route.label_key()));
+    let Some(phase) = route.phase() else {
+        return;
     };
-    empty_state(ui, route.icon(), &title, &body, &ctx.palette);
+    let mut args = FluentArgs::new();
+    args.set("phase", phase);
+    let text = ctx.tr.tr_args("empty-phase-pending", &args);
+    empty_state(ui, route.icon(), &text, "", &ctx.palette);
 }
