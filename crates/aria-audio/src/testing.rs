@@ -138,18 +138,27 @@ mod tests {
     fn pair_continues_the_sine() {
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
-        let (rate, freq, n) = (48_000, 440.0, 4_800u64);
+        // 4801 frames is not a whole number of cycles, so a restart at phase 0 differs.
+        let (rate, freq, n) = (48_000, 440.0, 4_801u64);
         write_gapless_pair(&a, &b, rate, freq, n).unwrap();
         let sa = samples(&std::fs::read(&a).unwrap());
         let sb = samples(&std::fs::read(&b).unwrap());
         assert_eq!(sa.len() as u64, n);
         assert_eq!(sb.len() as u64, n);
-        assert_eq!(sa[sa.len() - 1], sample(n - 1, rate, freq));
-        assert_eq!(sb[0], sample(n, rate, freq));
-        // One continuous tone: the step across the cut is an ordinary sample step.
-        let step = |x: i16, y: i16| (i32::from(x) - i32::from(y)).abs();
-        let across = step(sb[0], sa[sa.len() - 1]);
-        let within = step(sa[2], sa[1]);
-        assert!(across <= within + 200, "across {across}, within {within}");
+        assert_ne!(sb[0], sa[0], "b must not restart at phase 0");
+        // Independent reference: the ideal continuous sine, not the implementation's helper.
+        let ideal = |i: u64| {
+            let t = i as f64 / f64::from(rate);
+            (0.5 * (2.0 * std::f64::consts::PI * f64::from(freq) * t).sin() * 32767.0).round()
+        };
+        let last = sa.len() - 1;
+        assert!((f64::from(sa[last]) - ideal(n - 1)).abs() <= 2.0);
+        assert!((f64::from(sb[0]) - ideal(n)).abs() <= 2.0);
+        let across = f64::from(sb[0]) - f64::from(sa[last]);
+        let true_step = ideal(n) - ideal(n - 1);
+        assert!(
+            (across - true_step).abs() <= 3.0,
+            "across {across}, expected {true_step}"
+        );
     }
 }
