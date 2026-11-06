@@ -17,6 +17,9 @@ test-support = []
 symphonia = { workspace = true }
 symphonia-adapter-libopus = { workspace = true }
 rubato = { workspace = true }
+cpal = { workspace = true }
+rtrb = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
