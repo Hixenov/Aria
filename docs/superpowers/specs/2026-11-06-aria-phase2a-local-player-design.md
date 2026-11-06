@@ -96,7 +96,8 @@ when it is decoded.
 ### 3.3 `aria-library`
 
 Owns `library.db` in `AppPaths::data_dir` and the artwork cache in `cache_dir/artwork`. See
-section 4. Its public surface is synchronous; the backend calls it from Tokio's blocking pool.
+section 4. Its public surface is synchronous. A dedicated library thread in `aria-core` owns the
+one connection, which keeps a single writer; scans run there too.
 
 ### 3.4 `aria-core`
 
@@ -109,10 +110,11 @@ section 4. Its public surface is synchronous; the backend calls it from Tokio's 
 ### 3.5 Threads
 
 1. **UI.** Never blocks.
-2. **Backend (Tokio).** Settings, library commands, player coordination. Scanning and artwork
-   decoding run on the blocking pool. A scan can be cancelled.
-3. **Decoder thread.** One, owned by the engine.
-4. **Real-time callback.** One per open output, owned by CPAL.
+2. **Backend (Tokio).** Settings and player coordination.
+3. **Library thread.** Owns the database and runs scans. A scan can be cancelled.
+4. **Decoder thread.** One, owned by the engine.
+5. **Real-time callback.** One per open output, owned by CPAL.
+6. **Artwork thread.** Decodes thumbnails for the UI.
 
 ### 3.6 Data to the UI
 
@@ -129,7 +131,7 @@ section 4. Its public surface is synchronous; the backend calls it from Tokio's 
 
 `library.db`, WAL mode, a single writer. Tables:
 
-- `folders`: id, path, added_at.
+- `folders`: id, path, added_at, available.
 - `tracks`: id, folder_id, path, size, mtime, title, artist, album, album_artist, track_no,
   disc_no, year, genre, duration_ms, sample_rate, channels, codec, artwork_hash, added_at.
 - `queue_items`: position, list (context or user), track_id.
@@ -325,7 +327,7 @@ Current versions at design time, to be confirmed in the plan, including their li
 | symphonia | 0.6.1 | MPL-2.0 | Decoding |
 | symphonia-adapter-libopus | 0.3.0 | MIT OR Apache-2.0 | Opus, bundles libopus (BSD-3-Clause) |
 | cpal | 0.18.2 | Apache-2.0 | Output and device enumeration |
-| rubato | 5.0.1 | MIT | Resampling |
+| rubato | 5.0.1 | MIT OR Apache-2.0 | Resampling |
 | rtrb | 0.4.1 | MIT OR Apache-2.0 | Ring buffers |
 | rusqlite (bundled) | 0.41.1 | MIT | SQLite |
 | lofty | 0.25.5 | MIT OR Apache-2.0 | Tags |
