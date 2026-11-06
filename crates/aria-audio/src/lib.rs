@@ -1,8 +1,10 @@
 //! Audio decoding and playback.
 
+pub mod clock;
 mod cpal_output;
 pub mod decode;
 pub mod device;
+pub mod engine;
 pub mod error;
 pub mod fake;
 pub mod mixer;
@@ -13,9 +15,11 @@ pub mod resample;
 #[cfg(feature = "test-support")]
 pub mod testing;
 
+pub use clock::{ClockReading, PlaybackClock};
 pub use cpal_output::CpalFactory;
 pub use decode::{Clip, StreamInfo, TrackDecoder, decode_clip};
 pub use device::{DeviceId, DeviceInfo, DeviceKind, list_devices};
+pub use engine::{Engine, EngineCommand, EngineEvent, EngineHandle, TrackRequest};
 pub use error::AudioError;
 pub use mixer::{FADE_MS, InputHandle, MAX_INPUTS, Mixer, MixerControl};
 pub use output::{AudioOutput, OutputFactory, OutputFormat};

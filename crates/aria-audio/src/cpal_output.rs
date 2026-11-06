@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -18,6 +18,11 @@ use crate::output::{AudioOutput, OutputFactory, OutputFormat};
 const SCRATCH_FRAMES: usize = 1024;
 /// How long a backend may take to set up a stream.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long opening may take in all, finding the device included. A driver can stick anywhere, and
+/// whoever opens an output has other work to get back to.
+const OPEN_WAIT: Duration = Duration::from_secs(7);
+/// How long dropping an output waits for the stream to close.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 /// Opens outputs through CPAL on the default host.
 pub struct CpalFactory;
@@ -29,18 +34,31 @@ impl OutputFactory for CpalFactory {
         let stream_health = Arc::clone(&health);
         let (opened_tx, opened_rx) = mpsc::channel();
         let (stop, stopped) = mpsc::channel::<()>();
+        let (closed_tx, closed) = mpsc::channel::<()>();
         let thread = thread::Builder::new()
             .name("aria-audio-output".into())
-            .spawn(move || hold_stream(device, stream_health, opened_tx, stopped))
+            .spawn(move || {
+                // Nothing is ever sent: this hangs up as the thread ends.
+                let _closed = closed_tx;
+                hold_stream(device, stream_health, opened_tx, stopped);
+            })
             .map_err(device_error)?;
-        let (format, control) = opened_rx
-            .recv()
-            .map_err(|_| AudioError::Device("the output thread stopped".into()))??;
+        // On a timeout the thread is left behind. If it ever finishes opening, nobody is
+        // listening, and it closes the stream again.
+        let (format, control) = opened_rx.recv_timeout(OPEN_WAIT).map_err(|e| match e {
+            RecvTimeoutError::Timeout => {
+                AudioError::Device("the output took too long to open".into())
+            }
+            RecvTimeoutError::Disconnected => {
+                AudioError::Device("the output thread stopped".into())
+            }
+        })??;
         Ok(Box::new(CpalOutput {
             format,
             control,
             health,
             stop: Some(stop),
+            closed,
             thread: Some(thread),
         }))
     }
@@ -161,6 +179,8 @@ struct CpalOutput {
     control: MixerControl,
     health: Arc<StreamHealth>,
     stop: Option<mpsc::Sender<()>>,
+    /// Hangs up when the output thread ends.
+    closed: Receiver<()>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -182,17 +202,51 @@ impl Drop for CpalOutput {
     fn drop(&mut self) {
         self.stop.take();
         // Wait for the stream to close, so the device is free for whatever opens it next.
-        if let Some(thread) = self.thread.take()
-            && thread.join().is_err()
-        {
-            tracing::debug!("the audio output thread panicked");
+        if let Some(thread) = self.thread.take() {
+            join_within(thread, &self.closed, CLOSE_WAIT);
         }
     }
+}
+
+/// Join `thread` once `closed` hangs up. Returns false if that takes longer than `limit`, which
+/// leaves the thread to finish on its own, or if it panicked.
+fn join_within(thread: JoinHandle<()>, closed: &Receiver<()>, limit: Duration) -> bool {
+    if let Err(RecvTimeoutError::Timeout) = closed.recv_timeout(limit) {
+        tracing::debug!("the audio stream did not close in time; leaving it");
+        return false;
+    }
+    let joined = thread.join().is_ok();
+    if !joined {
+        tracing::debug!("the audio output thread panicked");
+    }
+    joined
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closing_thread_is_joined() {
+        let (hang_up, closed) = mpsc::channel::<()>();
+        let thread = thread::spawn(move || drop(hang_up));
+
+        assert!(join_within(thread, &closed, Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn a_stuck_thread_is_left_behind() {
+        let (release, stuck) = mpsc::channel::<()>();
+        let (hang_up, closed) = mpsc::channel::<()>();
+        let thread = thread::spawn(move || {
+            let _hang_up = hang_up;
+            let _ = stuck.recv();
+        });
+
+        assert!(!join_within(thread, &closed, Duration::from_millis(20)));
+
+        drop(release);
+    }
 
     #[test]
     fn errors_that_end_the_stream_fail_the_output() {
