@@ -31,6 +31,14 @@ ff -f lavfi -i "$tone" -i cover.png -map 0:a -map 1:v -ac 2 -c:a flac -c:v copy 
     -disposition:v attached_pic cover.flac
 rm -f cover.png
 
+# Seeded white noise: unlike a pure tone it has no repeating period, so a seek test can
+# tell exactly where in the stream a decoder landed. Lossy formats only.
+noise="anoisesrc=color=white:amplitude=0.3:duration=1:sample_rate=44100:seed=7"
+ff -f lavfi -i "$noise" -ac 2 -c:a libmp3lame -b:a 128k noise.mp3
+ff -f lavfi -i "$noise" -ac 2 -c:a aac -b:a 128k noise.m4a
+ff -f lavfi -i "$noise" -ac 2 -c:a libvorbis noise.ogg
+ff -f lavfi -i "$noise" -ac 2 -c:a libopus -ar 48000 noise.opus
+
 # Two consecutive halves of one continuous 440 Hz tone, cut at a sample boundary (22050 = 0.5 s).
 ff -f lavfi -i "sine=frequency=440:duration=1:sample_rate=44100" -ac 2 -c:a flac whole.flac
 ff -i whole.flac -af "atrim=end_sample=22050,asetpts=N/SR/TB" -c:a flac silence-gap-a.flac

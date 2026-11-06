@@ -40,10 +40,21 @@ pub(crate) fn edit_trim(path: &Path, sample_rate: u32) -> Option<EditTrim> {
     let (_, edts) = children(trak).find(|(kind, _)| kind == b"edts")?;
     let (_, elst) = children(edts).find(|(kind, _)| kind == b"elst")?;
     let (segment, media_time) = single_edit(elst)?;
-    let media_time = u64::try_from(media_time).ok()?;
+    edit_to_trim(segment, media_time, media_scale, movie_scale)
+}
+
+/// Convert an edit entry (segment length in movie units, start in media units) to frames.
+fn edit_to_trim(
+    segment: u64,
+    media_time: i64,
+    media_scale: u64,
+    movie_scale: u64,
+) -> Option<EditTrim> {
+    // The scaling is done in u128 so a hostile segment length cannot overflow.
+    let length = u128::from(segment) * u128::from(media_scale) / u128::from(movie_scale);
     Some(EditTrim {
-        delay: media_time,
-        length: segment * media_scale / movie_scale,
+        delay: u64::try_from(media_time).ok()?,
+        length: u64::try_from(length).ok()?,
     })
 }
 
@@ -71,6 +82,9 @@ fn find_moov(file: &mut File) -> Option<Vec<u8>> {
             return None;
         }
         if &head[4..8] == b"moov" {
+            if pos.checked_add(size)? > file_len {
+                return None;
+            }
             let body_len = size - header_len;
             if body_len > MAX_MOOV_BYTES {
                 return None;
@@ -162,6 +176,29 @@ mod tests {
                 length: 44_100
             }
         );
+    }
+
+    #[test]
+    fn hostile_edit_values_do_not_overflow() {
+        assert_eq!(edit_to_trim(u64::MAX, 0, u64::MAX, 1), None);
+        assert_eq!(edit_to_trim(u64::MAX, 0, 48_000, 1), None);
+        assert_eq!(edit_to_trim(10, -1, 48_000, 1), None);
+        assert_eq!(
+            edit_to_trim(u64::MAX, 5, 1, 1),
+            Some(EditTrim {
+                delay: 5,
+                length: u64::MAX
+            })
+        );
+        // A version 1 edit list carrying the largest segment and media time.
+        let mut elst = vec![1, 0, 0, 0, 0, 0, 0, 1];
+        elst.extend_from_slice(&u64::MAX.to_be_bytes());
+        elst.extend_from_slice(&i64::MAX.to_be_bytes());
+        elst.extend_from_slice(&[0, 1, 0, 0]);
+        let (segment, media_time) = single_edit(&elst).unwrap();
+        assert_eq!(edit_to_trim(segment, media_time, 44_100, 1_000), None);
+        // Truncated lists are rejected rather than read past the end.
+        assert_eq!(single_edit(&elst[..20]), None);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use symphonia::core::audio::sample::Sample as _;
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS;
-use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
 use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
@@ -24,6 +24,8 @@ use crate::resample::{Resampler, convert_channels};
 /// Packets in a row that may fail to decode before the stream is given up on.
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 const NANOS_PER_SEC: i128 = 1_000_000_000;
+/// How far before a seek target to start decoding, in frames. Must exceed one packet.
+const SEEK_PREROLL_FRAMES: u64 = 4096;
 
 fn codecs() -> &'static CodecRegistry {
     static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
@@ -57,6 +59,9 @@ pub struct TrackDecoder {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
+    params: AudioCodecParameters,
+    /// Frames by which packet timestamps run ahead of the decoded audio (Ogg Opus pre-skip).
+    pts_offset: u64,
     time_base: Option<TimeBase>,
     info: StreamInfo,
     block: Vec<f32>,
@@ -66,6 +71,10 @@ pub struct TrackDecoder {
     skip_frames: u64,
     /// Frames left to play before the trimmed end, when the container says.
     remaining: Option<u64>,
+    /// After a seek: the container frame the next audio should start at.
+    align_to: Option<u64>,
+    /// After a seek: the next packet only primes the decoder and is not played.
+    priming: bool,
     failures: u32,
     ended: bool,
 }
@@ -137,17 +146,27 @@ impl TrackDecoder {
             codec: decoder.codec_info().short_name.to_string(),
         };
         let (track_id, time_base) = (track.id, track.time_base);
+        let pts_offset = if params.codec == CODEC_ID_OPUS {
+            u64::from(track.delay.unwrap_or(0))
+        } else {
+            0
+        };
+        let params = params.clone();
 
         Ok(Self {
             format,
             decoder,
             track_id,
+            params,
+            pts_offset,
             time_base,
             info,
             block: Vec::new(),
             lead_trim: edit.map_or(0, |e| e.delay),
             skip_frames: edit.map_or(0, |e| e.delay),
             remaining: edit.map(|e| e.length),
+            align_to: None,
+            priming: false,
             failures: 0,
             ended: false,
         })
@@ -192,6 +211,20 @@ impl TrackDecoder {
             if packet.track_id != self.track_id {
                 continue;
             }
+            if let Some(align) = self.align_to {
+                if self.priming {
+                    // The first packet after a reset has no previous window to overlap
+                    // with, and codecs differ in what they return for it. Its position is
+                    // the unreliable part of a seek, so decode it for state and drop it;
+                    // its timestamp then says exactly where audio resumes.
+                    let _ = self.decoder.decode(&packet);
+                    self.priming = false;
+                    continue;
+                }
+                self.skip_frames = align
+                    .saturating_sub(self.frames_at(packet.pts).saturating_sub(self.pts_offset));
+                self.align_to = None;
+            }
             match self.decoder.decode(&packet) {
                 Ok(decoded) => {
                     self.failures = 0;
@@ -213,18 +246,18 @@ impl TrackDecoder {
                 }
             }
 
+            let channels = usize::from(self.info.channels);
             if self.skip_frames > 0 {
-                let channels = usize::from(self.info.channels);
                 let frames = self.block.len() / channels;
                 let drop = usize::try_from(self.skip_frames).map_or(frames, |s| s.min(frames));
                 self.skip_frames -= drop as u64;
                 self.block.drain(..drop * channels);
             }
             if let Some(left) = self.remaining {
-                let channels = usize::from(self.info.channels);
-                let frames = (self.block.len() / channels) as u64;
-                self.block.truncate(left.min(frames) as usize * channels);
-                self.remaining = Some(left - left.min(frames));
+                let frames = self.block.len() / channels;
+                let keep = usize::try_from(left).map_or(frames, |l| l.min(frames));
+                self.block.truncate(keep * channels);
+                self.remaining = Some(left - keep as u64);
             }
             if !self.block.is_empty() {
                 return Ok(true);
@@ -252,17 +285,30 @@ impl TrackDecoder {
         }
     }
 
+    /// A container timestamp as frames at the stream's sample rate (negative is zero).
+    fn frames_at(&self, ts: Timestamp) -> u64 {
+        match self.time_base {
+            Some(base) => {
+                let rate = i128::from(self.info.sample_rate);
+                let nanos = base.calc_time_saturating(ts).as_nanos();
+                u64::try_from((nanos * rate + NANOS_PER_SEC / 2) / NANOS_PER_SEC).unwrap_or(0)
+            }
+            None => u64::try_from(ts.get()).unwrap_or(0),
+        }
+    }
+
     /// Move to `frame` (in the stream's own sample rate) and return the frame reached.
     ///
-    /// The container is asked for a position at or before `frame`; the remainder is decoded
-    /// and dropped, so the result is `frame` unless the container can only land later.
+    /// Decoding restarts a little before `frame`, and the audio up to it is dropped, so the
+    /// result is `frame` unless the container can only land later.
     pub fn seek(&mut self, frame: u64) -> Result<u64, AudioError> {
         // The container counts from before any priming frames.
         let target = frame.saturating_add(self.lead_trim);
+        let start = target.saturating_sub(SEEK_PREROLL_FRAMES);
         let rate = i128::from(self.info.sample_rate);
         let to = match self.time_base {
             Some(base) => {
-                let nanos = i128::from(target) * NANOS_PER_SEC / rate;
+                let nanos = i128::from(start) * NANOS_PER_SEC / rate;
                 let time = Time::try_from_nanos_i128(nanos)
                     .ok_or_else(|| AudioError::Decode("seek position out of range".into()))?;
                 let ts = base
@@ -274,7 +320,7 @@ impl TrackDecoder {
                 }
             }
             None => SeekTo::Timestamp {
-                ts: Timestamp::new(i64::try_from(target).unwrap_or(i64::MAX)),
+                ts: Timestamp::new(i64::try_from(start).unwrap_or(i64::MAX)),
                 track_id: self.track_id,
             },
         };
@@ -282,18 +328,26 @@ impl TrackDecoder {
             .format
             .seek(SeekMode::Accurate, to)
             .map_err(|e| AudioError::Decode(e.to_string()))?;
-        self.decoder.reset();
+        // A fresh decoder rather than `reset`: some keep one-off state, such as Opus pre-skip,
+        // that a reset does not restore.
+        self.decoder = codecs()
+            .make_audio_decoder(&self.params, &AudioDecoderOptions::default())
+            .map_err(|e| AudioError::Unsupported(e.to_string()))?;
         self.failures = 0;
         self.ended = false;
+        self.skip_frames = 0;
+        self.align_to = None;
+        self.priming = false;
 
-        let landed = match self.time_base {
-            Some(base) => {
-                let nanos = base.calc_time_saturating(seeked.actual_ts).as_nanos();
-                u64::try_from((nanos * rate + NANOS_PER_SEC / 2) / NANOS_PER_SEC).unwrap_or(0)
-            }
-            None => u64::try_from(seeked.actual_ts.get()).unwrap_or(0),
-        };
-        self.skip_frames = target.saturating_sub(landed);
+        let landed = self.frames_at(seeked.actual_ts);
+        if landed > target {
+            // The container could only land after the target.
+        } else if start > 0 {
+            self.align_to = Some(target);
+            self.priming = true;
+        } else {
+            self.skip_frames = target - landed;
+        }
         let reached = landed.max(target).saturating_sub(self.lead_trim);
         if let Some(remaining) = &mut self.remaining {
             let total = self.info.total_frames.unwrap_or(0);

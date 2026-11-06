@@ -132,6 +132,69 @@ fn seek_lands_on_the_right_samples() {
     }
 }
 
+/// Lag, in frames, at which the first block after `seek(target)` best matches a straight
+/// decode of the same file. Zero means the seek landed exactly where it said.
+fn seek_lag(name: &str, target: u64) -> Result<i64, AudioError> {
+    let (all, channels) = decode_all(&fixture(name))?;
+    // Left channel only; white noise has no repeating period, so the match is unambiguous.
+    let straight: Vec<f32> = all.chunks_exact(channels).map(|f| f[0]).collect();
+
+    let mut dec = TrackDecoder::open(&fixture(name))?;
+    // Play a little first, so the decoder is not in its fresh state.
+    for _ in 0..3 {
+        dec.next_block()?;
+    }
+    let reached = dec.seek(target)?;
+    assert_eq!(reached, target, "{name}");
+    let mut after = Vec::new();
+    while after.len() < 1_024 * channels {
+        let block = dec
+            .next_block()?
+            .ok_or_else(|| AudioError::Decode("file ended too soon".into()))?;
+        after.extend_from_slice(block);
+    }
+    let after: Vec<f32> = after
+        .chunks_exact(channels)
+        .map(|f| f[0])
+        .take(1_024)
+        .collect();
+
+    let mut best = (f64::MIN, 0i64);
+    for lag in -600i64..=600 {
+        let start = (target as i64 + lag) as usize;
+        let window = &straight[start..start + after.len()];
+        let dot: f64 = window
+            .iter()
+            .zip(&after)
+            .map(|(a, b)| f64::from(*a) * f64::from(*b))
+            .sum();
+        if dot > best.0 {
+            best = (dot, lag);
+        }
+    }
+    Ok(best.1)
+}
+
+#[test]
+fn seek_lands_on_the_right_samples_in_lossy_formats() {
+    let cases: [(&str, [u64; 6]); 4] = [
+        ("noise.mp3", [3_000, 5_000, 10_000, 15_000, 22_050, 30_000]),
+        ("noise.m4a", [3_000, 5_000, 10_000, 15_000, 22_050, 30_000]),
+        ("noise.ogg", [3_000, 5_000, 10_000, 15_000, 22_050, 30_000]),
+        // Opus is 48 kHz.
+        ("noise.opus", [3_000, 5_000, 10_000, 15_000, 24_000, 30_000]),
+    ];
+    for (name, targets) in cases {
+        for target in targets {
+            let lag = seek_lag(name, target).unwrap();
+            assert!(
+                lag.abs() <= 2,
+                "{name}: seek({target}) landed {lag} frames off"
+            );
+        }
+    }
+}
+
 #[test]
 fn garbage_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
