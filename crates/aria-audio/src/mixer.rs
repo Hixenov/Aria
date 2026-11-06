@@ -108,8 +108,11 @@ impl MixInput {
 
     /// Add this input to `out`. Returns whether it has finished and can leave the mixer.
     fn mix(&mut self, out: &mut [f32], channels: usize, fade_frames: usize) -> bool {
-        // In this order: seeing the handle gone guarantees seeing its last clear.
+        // The order matters. Seeing the handle gone guarantees seeing its last clear. And the
+        // handle sets its controls before it writes, so one snapshot of the ring, taken before
+        // the controls are read, cannot hold audio that a control seen here does not cover.
         let abandoned = self.reader.is_abandoned();
+        let mut available = self.reader.slots() as u64;
         let clear_to = self.shared.clear_to.load(Ordering::Acquire);
         let paused = self.shared.paused.load(Ordering::Relaxed);
         let target_gain = f32::from_bits(self.shared.gain.load(Ordering::Relaxed));
@@ -124,7 +127,7 @@ impl MixInput {
                 if !clearing {
                     break;
                 }
-                self.discard_to(clear_to);
+                available = available.saturating_sub(self.discard_to(clear_to));
                 continue;
             }
 
@@ -135,7 +138,7 @@ impl MixInput {
             } else {
                 u64::MAX
             };
-            let buffered = (self.reader.slots() as u64).min(limit) as usize / channels;
+            let buffered = available.min(limit) as usize / channels;
             let mut frames = buffered.min(total - done);
             if stopping {
                 frames = frames.min(self.fade);
@@ -169,6 +172,7 @@ impl MixInput {
             }
             chunk.commit_all();
             self.consumed += (frames * channels) as u64;
+            available -= (frames * channels) as u64;
             done += frames;
         }
 
@@ -177,16 +181,21 @@ impl MixInput {
         abandoned && clear_to == self.cleared
     }
 
-    /// Skip the samples before `clear_to`, counting them as consumed.
-    fn discard_to(&mut self, clear_to: u64) {
+    /// Skip the samples before `clear_to`, counting them as consumed. Returns how many.
+    ///
+    /// This looks past the snapshot in `mix`, because a clear seen after the snapshot can cover
+    /// samples newer than it. Stopping at `clear_to` keeps later audio safe.
+    fn discard_to(&mut self, clear_to: u64) -> u64 {
         let count = clear_to
             .saturating_sub(self.consumed)
-            .min(self.reader.slots() as u64) as usize;
-        if let Ok(chunk) = self.reader.read_chunk(count) {
-            chunk.commit_all();
-            self.consumed += count as u64;
-        }
+            .min(self.reader.slots() as u64);
         self.cleared = clear_to;
+        let Ok(chunk) = self.reader.read_chunk(count as usize) else {
+            return 0;
+        };
+        chunk.commit_all();
+        self.consumed += count;
+        count
     }
 }
 
@@ -250,7 +259,11 @@ impl Mixer {
             }
         }
         for sample in out.iter_mut() {
-            *sample = sample.clamp(-1.0, 1.0);
+            *sample = if sample.is_nan() {
+                0.0
+            } else {
+                sample.clamp(-1.0, 1.0)
+            };
         }
     }
 }
@@ -378,6 +391,17 @@ mod tests {
         second.write(&[0.75, -0.75, 0.25]);
 
         assert_eq!(render(&mut mixer, 3), [1.0, -1.0, 0.5]);
+    }
+
+    #[test]
+    fn nan_sample_is_silent() {
+        let (mut mixer, mut control) = mixer(1);
+        let mut broken = control.add_input(16).unwrap();
+        let mut healthy = control.add_input(16).unwrap();
+        broken.write(&[f32::NAN, 0.25]);
+        healthy.write(&[0.5, 0.5]);
+
+        assert_eq!(render(&mut mixer, 2), [0.0, 0.75]);
     }
 
     #[test]
@@ -583,6 +607,89 @@ mod tests {
 
         assert!(render(&mut mixer, 512).iter().all(|s| *s == 0.0));
         assert_eq!(input.consumed(), 1_000);
+    }
+
+    #[test]
+    fn clear_holds_up_against_a_writer_on_another_thread() {
+        const GENERATIONS: u32 = 400;
+        const LEFT: f32 = 0.5;
+
+        // Each clear starts a new generation, named by the right channel. Fades scale both
+        // channels alike, so the ratio of right to left still names it during a fade.
+        fn frames(generation: u32, count: usize) -> Vec<f32> {
+            [LEFT, LEFT * generation as f32 / GENERATIONS as f32].repeat(count)
+        }
+
+        let (mut mixer, mut control) = mixer(2);
+        let mut input = control.add_input(1_024).unwrap();
+        input.write(&frames(1, 512));
+        let published = AtomicU32::new(1);
+        let finished = AtomicBool::new(false);
+
+        std::thread::scope(|scope| {
+            let (published, finished) = (&published, &finished);
+            let writer = scope.spawn(move || {
+                for generation in 2..=GENERATIONS {
+                    // Bounded, so a failed assertion below cannot leave this thread spinning.
+                    let seen = input.consumed();
+                    for _ in 0..100_000 {
+                        if input.consumed() != seen {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                    input.clear();
+                    published.store(generation, Ordering::Release);
+                    input.write(&frames(generation, 512));
+                    assert!(input.consumed() <= input.written());
+                }
+                finished.store(true, Ordering::Release);
+                input
+            });
+
+            let mut buffer = [0.0; 128];
+            let mut last_heard = 1;
+            let mut last_level = LEFT;
+            let mut cleared_up_to = 1;
+            let mut old_frames = 0;
+            while !finished.load(Ordering::Acquire) {
+                let published = published.load(Ordering::Acquire);
+                if published > cleared_up_to {
+                    cleared_up_to = published;
+                    old_frames = 0;
+                }
+                mixer.render(&mut buffer);
+                for frame in buffer.as_chunks::<2>().0 {
+                    if frame[0] == 0.0 {
+                        continue;
+                    }
+                    let heard = (frame[1] / frame[0] * GENERATIONS as f32).round() as u32;
+                    assert!(heard >= last_heard, "{heard} played after {last_heard}");
+                    if heard != last_heard {
+                        // Fading in from silence, or still fading out: a later clear can extend
+                        // a fade over a generation the mixer never saw cleared on its own.
+                        let first_step = LEFT * 1.5 / FADE_FRAMES as f32;
+                        assert!(
+                            frame[0] <= first_step || frame[0] < last_level,
+                            "{heard} began unfaded at {} after {last_level}",
+                            frame[0]
+                        );
+                        last_heard = heard;
+                    }
+                    last_level = frame[0];
+                    if heard < cleared_up_to {
+                        old_frames += 1;
+                        assert!(old_frames <= FADE_FRAMES, "cleared audio outlived the fade");
+                    }
+                }
+            }
+
+            let input = writer.join().unwrap();
+            for _ in 0..64 {
+                mixer.render(&mut buffer);
+            }
+            assert_eq!(input.consumed(), input.written());
+        });
     }
 
     #[test]

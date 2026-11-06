@@ -1,7 +1,7 @@
 //! The real output. All mixing lives in [`Mixer`]; this only moves it into a CPAL stream.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -25,13 +25,13 @@ pub struct CpalFactory;
 impl OutputFactory for CpalFactory {
     fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError> {
         let device = device.cloned();
-        let failed = Arc::new(AtomicBool::new(false));
-        let stream_failed = Arc::clone(&failed);
+        let health = Arc::new(StreamHealth::default());
+        let stream_health = Arc::clone(&health);
         let (opened_tx, opened_rx) = mpsc::channel();
         let (stop, stopped) = mpsc::channel::<()>();
         let thread = thread::Builder::new()
             .name("aria-audio-output".into())
-            .spawn(move || hold_stream(device, stream_failed, opened_tx, stopped))
+            .spawn(move || hold_stream(device, stream_health, opened_tx, stopped))
             .map_err(device_error)?;
         let (format, control) = opened_rx
             .recv()
@@ -39,10 +39,31 @@ impl OutputFactory for CpalFactory {
         Ok(Box::new(CpalOutput {
             format,
             control,
-            failed,
+            health,
             stop: Some(stop),
             thread: Some(thread),
         }))
+    }
+}
+
+/// What the stream's error callback reports back.
+#[derive(Default)]
+struct StreamHealth {
+    failed: AtomicBool,
+    /// Errors the stream carried on from, such as xruns.
+    survived: AtomicU64,
+}
+
+impl StreamHealth {
+    /// Note a stream error. Hosts call this on audio threads, some of them real-time, so errors
+    /// that can repeat while audio plays are only counted. Logging would lock and allocate.
+    fn record(&self, error: &cpal::Error) {
+        if ends_stream(error.kind()) {
+            self.failed.store(true, Ordering::Release);
+            tracing::debug!(%error, "audio stream ended");
+        } else {
+            self.survived.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -50,17 +71,21 @@ impl OutputFactory for CpalFactory {
 /// sleeps until `stopped` hangs up.
 fn hold_stream(
     device: Option<DeviceId>,
-    failed: Arc<AtomicBool>,
+    health: Arc<StreamHealth>,
     opened: mpsc::Sender<Result<(OutputFormat, MixerControl), AudioError>>,
     stopped: mpsc::Receiver<()>,
 ) {
-    match open_stream(device.as_ref(), failed) {
+    match open_stream(device.as_ref(), Arc::clone(&health)) {
         Ok((stream, format, control)) => {
             if opened.send(Ok((format, control))).is_ok() {
                 // Nothing is ever sent, so this only returns when the output drops.
                 let _ = stopped.recv();
             }
             drop(stream);
+            let survived = health.survived.load(Ordering::Relaxed);
+            if survived > 0 {
+                tracing::debug!(survived, "audio stream errors survived");
+            }
         }
         Err(error) => {
             let _ = opened.send(Err(error));
@@ -70,7 +95,7 @@ fn hold_stream(
 
 fn open_stream(
     device: Option<&DeviceId>,
-    failed: Arc<AtomicBool>,
+    health: Arc<StreamHealth>,
 ) -> Result<(cpal::Stream, OutputFormat, MixerControl), AudioError> {
     let host = cpal::default_host();
     let device = find_output_device(&host, device)?;
@@ -82,10 +107,10 @@ fn open_stream(
     let (mixer, control) = Mixer::new(format);
     let stream_config = config.config();
     let stream = match config.sample_format() {
-        SampleFormat::F32 => build_stream::<f32>(&device, stream_config, mixer, failed),
-        SampleFormat::I16 => build_stream::<i16>(&device, stream_config, mixer, failed),
-        SampleFormat::U16 => build_stream::<u16>(&device, stream_config, mixer, failed),
-        SampleFormat::I32 => build_stream::<i32>(&device, stream_config, mixer, failed),
+        SampleFormat::F32 => build_stream::<f32>(&device, stream_config, mixer, health),
+        SampleFormat::I16 => build_stream::<i16>(&device, stream_config, mixer, health),
+        SampleFormat::U16 => build_stream::<u16>(&device, stream_config, mixer, health),
+        SampleFormat::I32 => build_stream::<i32>(&device, stream_config, mixer, health),
         other => Err(AudioError::Device(format!(
             "unsupported sample format: {other}"
         ))),
@@ -98,7 +123,7 @@ fn build_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     mut mixer: Mixer,
-    failed: Arc<AtomicBool>,
+    health: Arc<StreamHealth>,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: SizedSample + FromSample<f32>,
@@ -113,12 +138,7 @@ where
             }
         }
     };
-    let on_error = move |error: cpal::Error| {
-        tracing::debug!(%error, "audio stream error");
-        if ends_stream(error.kind()) {
-            failed.store(true, Ordering::Release);
-        }
-    };
+    let on_error = move |error: cpal::Error| health.record(&error);
     device
         .build_output_stream(config, on_data, on_error, Some(OPEN_TIMEOUT))
         .map_err(device_error)
@@ -139,7 +159,7 @@ fn ends_stream(kind: ErrorKind) -> bool {
 struct CpalOutput {
     format: OutputFormat,
     control: MixerControl,
-    failed: Arc<AtomicBool>,
+    health: Arc<StreamHealth>,
     stop: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -154,7 +174,7 @@ impl AudioOutput for CpalOutput {
     }
 
     fn failed(&self) -> bool {
-        self.failed.load(Ordering::Acquire)
+        self.health.failed.load(Ordering::Acquire)
     }
 }
 
@@ -177,14 +197,17 @@ mod tests {
     #[test]
     fn errors_that_end_the_stream_fail_the_output() {
         for kind in [
-            ErrorKind::DeviceNotAvailable,
-            ErrorKind::StreamInvalidated,
-            ErrorKind::HostUnavailable,
             ErrorKind::BackendError,
             ErrorKind::DeviceBusy,
+            ErrorKind::DeviceNotAvailable,
+            ErrorKind::HostUnavailable,
+            ErrorKind::InvalidInput,
+            ErrorKind::Other,
+            ErrorKind::PermissionDenied,
+            ErrorKind::ResourceExhausted,
+            ErrorKind::StreamInvalidated,
             ErrorKind::UnsupportedConfig,
             ErrorKind::UnsupportedOperation,
-            ErrorKind::Other,
         ] {
             assert!(ends_stream(kind), "{kind:?} leaves the stream dead");
         }
@@ -199,5 +222,26 @@ mod tests {
         ] {
             assert!(!ends_stream(kind), "the stream survives {kind:?}");
         }
+    }
+
+    #[test]
+    fn survived_errors_are_counted_without_failing_the_output() {
+        let health = StreamHealth::default();
+
+        health.record(&ErrorKind::Xrun.into());
+        health.record(&ErrorKind::DeviceChanged.into());
+
+        assert_eq!(health.survived.load(Ordering::Relaxed), 2);
+        assert!(!health.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn fatal_errors_fail_the_output_without_being_counted() {
+        let health = StreamHealth::default();
+
+        health.record(&ErrorKind::StreamInvalidated.into());
+
+        assert_eq!(health.survived.load(Ordering::Relaxed), 0);
+        assert!(health.failed.load(Ordering::Acquire));
     }
 }
