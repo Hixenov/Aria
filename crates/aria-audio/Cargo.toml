@@ -16,6 +16,9 @@ test-support = []
 [dependencies]
 symphonia = { workspace = true }
 symphonia-adapter-libopus = { workspace = true }
+rubato = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 aria-audio = { workspace = true, features = ["test-support"] }
