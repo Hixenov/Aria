@@ -18,4 +18,5 @@ symphonia = { workspace = true }
 symphonia-adapter-libopus = { workspace = true }
 
 [dev-dependencies]
+aria-audio = { path = ".", features = ["test-support"] }
 tempfile = { workspace = true }

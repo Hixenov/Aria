@@ -212,6 +212,7 @@ dependencies = [
 name = "aria-audio"
 version = "0.1.0"
 dependencies = [
+ "aria-audio",
  "symphonia",
  "symphonia-adapter-libopus",
  "tempfile",

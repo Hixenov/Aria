@@ -8,7 +8,8 @@ mkdir -p "$out"
 cd "$out"
 
 tone="sine=frequency=440:duration=1:sample_rate=44100"
-ff() { ffmpeg -hide_banner -loglevel error -y "$@"; }
+# -bitexact keeps reruns byte-stable (no encoder version or timestamps in the output).
+ff() { ffmpeg -hide_banner -loglevel error -y -fflags +bitexact -flags:a +bitexact "$@"; }
 
 ff -f lavfi -i "$tone" -ac 2 -c:a libmp3lame -b:a 128k tone.mp3
 ff -f lavfi -i "$tone" -ac 2 -c:a flac tone.flac
