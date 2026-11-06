@@ -1,0 +1,21 @@
+[package]
+name = "aria-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Helpers that write small WAV fixtures for tests. Off by default.
+test-support = []
+
+[dependencies]
+symphonia = { workspace = true }
+symphonia-adapter-libopus = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
