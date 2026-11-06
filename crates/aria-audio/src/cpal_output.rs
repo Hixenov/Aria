@@ -114,15 +114,26 @@ where
         }
     };
     let on_error = move |error: cpal::Error| {
-        if error.kind() == ErrorKind::DeviceNotAvailable {
+        tracing::debug!(%error, "audio stream error");
+        if ends_stream(error.kind()) {
             failed.store(true, Ordering::Release);
-        } else {
-            tracing::debug!(%error, "audio stream error");
         }
     };
     device
         .build_output_stream(config, on_data, on_error, Some(OPEN_TIMEOUT))
         .map_err(device_error)
+}
+
+/// Whether an error leaves the stream dead, so the output must be replaced.
+///
+/// WASAPI stops its stream on any error during a render pass, whatever the kind, so this lists
+/// what a stream survives rather than what ends it. A needless rebuild is a short gap in the
+/// sound; a dead stream nobody notices is silence with no way out.
+fn ends_stream(kind: ErrorKind) -> bool {
+    !matches!(
+        kind,
+        ErrorKind::DeviceChanged | ErrorKind::Xrun | ErrorKind::RealtimeDenied
+    )
 }
 
 struct CpalOutput {
@@ -155,6 +166,38 @@ impl Drop for CpalOutput {
             && thread.join().is_err()
         {
             tracing::debug!("the audio output thread panicked");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn errors_that_end_the_stream_fail_the_output() {
+        for kind in [
+            ErrorKind::DeviceNotAvailable,
+            ErrorKind::StreamInvalidated,
+            ErrorKind::HostUnavailable,
+            ErrorKind::BackendError,
+            ErrorKind::DeviceBusy,
+            ErrorKind::UnsupportedConfig,
+            ErrorKind::UnsupportedOperation,
+            ErrorKind::Other,
+        ] {
+            assert!(ends_stream(kind), "{kind:?} leaves the stream dead");
+        }
+    }
+
+    #[test]
+    fn errors_the_stream_survives_leave_the_output_running() {
+        for kind in [
+            ErrorKind::DeviceChanged,
+            ErrorKind::Xrun,
+            ErrorKind::RealtimeDenied,
+        ] {
+            assert!(!ends_stream(kind), "the stream survives {kind:?}");
         }
     }
 }

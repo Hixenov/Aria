@@ -21,7 +21,7 @@ pub trait AudioOutput: Send {
     /// Add an input whose ring holds `capacity_frames` frames.
     fn add_input(&mut self, capacity_frames: usize) -> Result<InputHandle, AudioError>;
 
-    /// Whether the device has gone, so the output must be replaced.
+    /// Whether the stream has ended, so the output must be replaced.
     fn failed(&self) -> bool;
 }
 

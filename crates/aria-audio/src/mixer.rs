@@ -222,7 +222,7 @@ impl Mixer {
         (mixer, control)
     }
 
-    /// Fill `out` with the sum of the inputs, as interleaved samples.
+    /// Fill `out` with the sum of the inputs, as interleaved samples clipped to full scale.
     ///
     /// This runs on the real-time thread. Inputs only ever move: from the arrivals ring into a
     /// free place, and from a place into the returns ring. [`MixerControl`] never lets more than
@@ -248,6 +248,9 @@ impl Mixer {
                 // Dropping it here would free memory on the real-time thread.
                 *place = Some(input);
             }
+        }
+        for sample in out.iter_mut() {
+            *sample = sample.clamp(-1.0, 1.0);
         }
     }
 }
@@ -364,6 +367,17 @@ mod tests {
         for sample in render(&mut mixer, 128) {
             assert_close(sample, 0.375);
         }
+    }
+
+    #[test]
+    fn loud_inputs_clip_at_full_scale() {
+        let (mut mixer, mut control) = mixer(1);
+        let mut first = control.add_input(SECOND).unwrap();
+        let mut second = control.add_input(SECOND).unwrap();
+        first.write(&[0.75, -0.75, 0.25]);
+        second.write(&[0.75, -0.75, 0.25]);
+
+        assert_eq!(render(&mut mixer, 3), [1.0, -1.0, 0.5]);
     }
 
     #[test]
