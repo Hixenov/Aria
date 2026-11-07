@@ -115,6 +115,28 @@ fn remove_stray_side_files(db: &Path) -> Result<(), LibraryError> {
     Ok(())
 }
 
+/// Decides what to do with the database file from the result of the existence check, and does
+/// it. Returns whether a corrupt database was moved aside.
+///
+/// Present means probe it. Definitely missing means clear stray side files so a stale WAL can
+/// never meet the new database. Any other error (a transient `PermissionDenied`, say) returns
+/// `Io` and touches nothing, since the file may well be a live database.
+fn prepare_file(db: &Path, exists: std::io::Result<bool>) -> Result<bool, LibraryError> {
+    if exists? {
+        match probe(db)? {
+            Probe::Healthy => Ok(false),
+            Probe::Corrupt => {
+                move_aside(db)?;
+                tracing::warn!("library database was corrupt and has been moved aside");
+                Ok(true)
+            }
+        }
+    } else {
+        remove_stray_side_files(db)?;
+        Ok(false)
+    }
+}
+
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -173,19 +195,7 @@ impl Library {
         if let Some(parent) = db.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
-        let mut recovered = false;
-        if db.exists() {
-            match probe(db)? {
-                Probe::Healthy => {}
-                Probe::Corrupt => {
-                    move_aside(db)?;
-                    recovered = true;
-                    tracing::warn!("library database was corrupt and has been moved aside");
-                }
-            }
-        } else {
-            remove_stray_side_files(db)?;
-        }
+        let recovered = prepare_file(db, db.try_exists())?;
 
         std::fs::create_dir_all(artwork_dir)?;
         let mut conn = Connection::open(db)?;
@@ -368,5 +378,44 @@ impl Library {
             .conn
             .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_existence_touches_nothing() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("tempdir");
+        };
+        let db = dir.path().join("library.db");
+        let wal = dir.path().join("library.db-wal");
+        let shm = dir.path().join("library.db-shm");
+        for f in [&db, &wal, &shm] {
+            assert!(std::fs::write(f, b"live").is_ok());
+        }
+        let denied = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(matches!(
+            prepare_file(&db, denied),
+            Err(LibraryError::Io(_))
+        ));
+        for f in [&db, &wal, &shm] {
+            assert_eq!(std::fs::read(f).ok().as_deref(), Some(&b"live"[..]));
+        }
+        assert!(!dir.path().join("library.db.bak").exists());
+    }
+
+    #[test]
+    fn definitely_missing_clears_strays() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("tempdir");
+        };
+        let db = dir.path().join("library.db");
+        let wal = dir.path().join("library.db-wal");
+        assert!(std::fs::write(&wal, b"stray").is_ok());
+        assert!(matches!(prepare_file(&db, Ok(false)), Ok(false)));
+        assert!(!wal.exists());
     }
 }
