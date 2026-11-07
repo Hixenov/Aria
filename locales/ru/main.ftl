@@ -75,6 +75,23 @@ notice-settings-save-failed = Не удалось сохранить настр�
 notice-open-folder-failed = Не удалось открыть папку.
 notice-dismiss = Закрыть
 
+## Library notices (toasts)
+
+# $count (Number) - how many files and folders the scan could not read
+library-scan-skipped = { $count ->
+    [one] Не удалось прочитать { $count } файл или папку, при сканировании они пропущены.
+    [few] Не удалось прочитать { $count } файла или папки, при сканировании они пропущены.
+   *[other] Не удалось прочитать { $count } файлов или папок, при сканировании они пропущены.
+}
+# $folder (String) - the last part of the folder's path, e.g. Music
+library-folder-unavailable = Папка { $folder } недоступна, или все её файлы перемещены либо удалены. Треки сохранены, а папку можно удалить в настройках.
+library-folder-nested = Эта папка находится внутри папки, которая уже есть в библиотеке.
+library-folder-duplicate = Эта папка уже есть в библиотеке.
+library-recovered = База данных библиотеки была повреждена, поэтому создана новая. Старый файл сохранён как резервная копия.
+library-newer = Библиотека сохранена более новой версией Aria, поэтому она отключена. Обновите Aria, чтобы пользоваться ею.
+library-unavailable = Не удалось открыть библиотеку, поэтому она пока отключена. Остальные функции Aria продолжают работать.
+library-action-failed = В библиотеке произошла ошибка, и действие не завершено. Ваши музыкальные файлы не изменены.
+
 ## Fatal startup errors (a message box shown before Aria quits)
 
 error-startup-title = Не удалось запустить Aria

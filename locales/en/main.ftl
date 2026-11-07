@@ -75,6 +75,22 @@ notice-settings-save-failed = Couldn't save settings. Aria will try again after 
 notice-open-folder-failed = Couldn't open the folder.
 notice-dismiss = Dismiss
 
+## Library notices (toasts)
+
+# $count (Number) - how many files and folders the scan could not read
+library-scan-skipped = { $count ->
+    [one] { $count } file or folder couldn't be read and was skipped.
+   *[other] { $count } files or folders couldn't be read and were skipped.
+}
+# $folder (String) - the last part of the folder's path, e.g. Music
+library-folder-unavailable = The folder { $folder } can't be reached, or all its files were moved or deleted. Its tracks are kept, and you can remove the folder in Settings.
+library-folder-nested = This folder is inside a folder that's already in your library.
+library-folder-duplicate = This folder is already in your library.
+library-recovered = The library database was damaged, so a new one was started. The old file was kept as a backup.
+library-newer = The library was saved by a newer version of Aria, so it's turned off. Update Aria to use it.
+library-unavailable = The library couldn't be opened, so it's turned off for now. The rest of Aria keeps working.
+library-action-failed = Something went wrong in the library, and that action didn't finish. Your music files weren't changed.
+
 ## Fatal startup errors (a message box shown before Aria quits)
 
 error-startup-title = Aria couldn't start

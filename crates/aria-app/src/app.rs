@@ -43,6 +43,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const OPEN_FOLDER_FAILED: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-open-folder-failed",
+    args: Vec::new(),
 };
 
 /// The handles the shell drives. Each is optional, so tests, and a start-up that lost one,
@@ -223,6 +224,8 @@ impl AriaApp {
                 }
             }
             Event::SettingsSaved => tracing::trace!("settings saved"),
+            // Nothing shows the library yet.
+            Event::LibraryUpdated(_) | Event::ScanProgress(_) => {}
         }
     }
 
@@ -432,8 +435,9 @@ mod tests {
     };
 
     use aria_core::{
+        FakeFactory, OutputFormat,
         notice::NoticeLevel,
-        runtime::{Backend, BackendConfig, Waker},
+        runtime::{Backend, BackendConfig, BackendServices, Waker},
         settings::{Language, Theme},
     };
     use egui_kittest::Harness;
@@ -486,7 +490,14 @@ mod tests {
         let flag = Arc::clone(&woke);
         let waker: Waker = Arc::new(move || flag.store(true, Ordering::SeqCst));
         // Read-only: nothing is written, and a reset is still answered.
-        let backend = Backend::start(None, waker, BackendConfig::default()).unwrap();
+        let services = BackendServices {
+            library: None,
+            output: Box::new(FakeFactory::new(OutputFormat {
+                sample_rate: 48_000,
+                channels: 2,
+            })),
+        };
+        let backend = Backend::start(None, services, waker, BackendConfig::default()).unwrap();
         let settings = Settings {
             language: Some(Language::En),
             theme: Theme::Light,
@@ -524,6 +535,7 @@ mod tests {
         let failed = Notice {
             level: NoticeLevel::Error,
             key: "notice-settings-save-failed",
+            args: Vec::new(),
         };
         app.handle_event(&ctx, Event::Notice(failed.clone()));
         assert_eq!(app.toasts.notices().collect::<Vec<_>>(), [&failed]);
@@ -591,6 +603,7 @@ mod tests {
         let notice = Notice {
             level: NoticeLevel::Warning,
             key: "notice-settings-recovered",
+            args: Vec::new(),
         };
         assert_eq!(app(vec![notice.clone()]).pending_notices(), [notice]);
     }

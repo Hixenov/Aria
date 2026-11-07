@@ -263,6 +263,14 @@ mod tests {
         "notice-settings-save-failed",
         "notice-open-folder-failed",
         "notice-dismiss",
+        "library-scan-skipped",
+        "library-folder-unavailable",
+        "library-folder-nested",
+        "library-folder-duplicate",
+        "library-recovered",
+        "library-newer",
+        "library-unavailable",
+        "library-action-failed",
         "error-startup-title",
         "error-startup-window",
         "lang-en",
@@ -366,6 +374,8 @@ mod tests {
     fn translations_keep_english_placeables() {
         let mut args = FluentArgs::new();
         args.set("phase", 777);
+        args.set("count", 777);
+        args.set("folder", "777");
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));

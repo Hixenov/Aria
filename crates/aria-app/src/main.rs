@@ -3,9 +3,10 @@
 //! Each stage is timed and logged at info as `startup stage=<name> ms=<n>`, the baseline
 //! for cold-start measurement (spec §7). The first frame then logs `stage=first_frame` with
 //! the time since `main` began. A stage that fails leaves the app running with less: no
-//! folders means read-only settings, no logging means no log file, no backend means nothing
-//! is saved. Only English translations failing to load, or the window failing to open,
-//! stop it: both are logged, written to stderr and, on Windows, shown in a message box.
+//! folders means read-only settings and no library, no logging means no log file, no backend
+//! means nothing is saved and no library. Only English translations failing to load, or the
+//! window failing to open, stop it: both are logged, written to stderr and, on Windows, shown
+//! in a message box.
 //!
 //! Release builds on Windows use the GUI subsystem, so no console window opens and stderr
 //! goes nowhere. Their diagnostics are the log files, `panic.log` and that message box.
@@ -24,12 +25,13 @@ use aria_app::{
     whole_ms,
 };
 use aria_core::{
+    CpalFactory,
     error::I18nError,
     i18n::{Localizer, os_language},
     logging::{self, LoggingHandle},
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
-    runtime::{Backend, BackendConfig, SettingsSink, Waker},
+    runtime::{Backend, BackendConfig, BackendServices, LibraryPaths, SettingsSink, Waker},
     settings::{Language, Settings, store::SettingsStore},
 };
 use eframe::egui;
@@ -38,6 +40,14 @@ use eframe::egui;
 const READ_ONLY: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-settings-readonly",
+    args: Vec::new(),
+};
+
+/// Shown when the library cannot run at all this session.
+const NO_LIBRARY: Notice = Notice {
+    level: NoticeLevel::Error,
+    key: "library-unavailable",
+    args: Vec::new(),
 };
 
 /// Title of the message box shown when the English translations fail to load. Every other
@@ -115,8 +125,17 @@ fn main() -> anyhow::Result<()> {
     let stage = Instant::now();
     let egui_ctx: Arc<OnceLock<egui::Context>> = Arc::default();
     let sink = store.map(|store| Box::new(store) as Box<dyn SettingsSink>);
+    let library = paths.as_ref().map(library_paths);
+    if library.is_none() {
+        push_once(&mut notices, NO_LIBRARY);
+    }
+    let services = BackendServices {
+        library,
+        output: Box::new(CpalFactory),
+    };
     let backend = match Backend::start(
         sink,
+        services,
         repaint_waker(Arc::clone(&egui_ctx)),
         BackendConfig::default(),
     ) {
@@ -124,6 +143,7 @@ fn main() -> anyhow::Result<()> {
         Err(err) => {
             tracing::error!(%err, "could not start the backend; settings are read-only");
             push_once(&mut notices, READ_ONLY);
+            push_once(&mut notices, NO_LIBRARY);
             None
         }
     };
@@ -195,6 +215,14 @@ fn load_settings(
         return (loaded.settings, None);
     }
     (loaded.settings, Some(store))
+}
+
+/// Where the library keeps its database and its artwork cache.
+fn library_paths(paths: &AppPaths) -> LibraryPaths {
+    LibraryPaths {
+        db: paths.data_dir.join("library.db"),
+        artwork_dir: paths.cache_dir.join("artwork"),
+    }
 }
 
 /// Shows a fatal startup error in a blocking message box. A release build has no console on
@@ -282,6 +310,7 @@ mod tests {
         let recovered = Notice {
             level: NoticeLevel::Warning,
             key: "notice-settings-recovered",
+            args: Vec::new(),
         };
         let mut notices = Vec::new();
         push_once(&mut notices, READ_ONLY);
@@ -367,6 +396,22 @@ mod tests {
         assert_eq!(settings, Settings::default());
         assert!(store.is_none());
         assert!(notices.is_empty());
+    }
+
+    #[test]
+    fn the_library_lives_in_the_data_and_cache_folders() {
+        let paths = AppPaths {
+            config_dir: "config".into(),
+            data_dir: "data".into(),
+            cache_dir: "cache".into(),
+            log_dir: "logs".into(),
+        };
+        let library = library_paths(&paths);
+        assert_eq!(library.db, std::path::Path::new("data").join("library.db"));
+        assert_eq!(
+            library.artwork_dir,
+            std::path::Path::new("cache").join("artwork")
+        );
     }
 
     #[test]

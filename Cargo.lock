@@ -250,6 +250,7 @@ dependencies = [
 name = "aria-core"
 version = "0.1.0"
 dependencies = [
+ "aria-audio",
  "aria-library",
  "crossbeam-channel",
  "directories",

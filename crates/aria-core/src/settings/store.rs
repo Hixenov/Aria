@@ -50,11 +50,13 @@ fn copy_file(from: &Path, to: &Path) -> io::Result<u64> {
 const RECOVERED: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-settings-recovered",
+    args: Vec::new(),
 };
 /// Settings cannot be saved this session.
 const READ_ONLY: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-settings-readonly",
+    args: Vec::new(),
 };
 
 /// Loads and saves settings at a fixed path.
@@ -222,6 +224,7 @@ mod tests {
         Notice {
             level: NoticeLevel::Warning,
             key: "notice-settings-recovered",
+            args: Vec::new(),
         }
     }
 
@@ -229,6 +232,7 @@ mod tests {
         Notice {
             level: NoticeLevel::Warning,
             key: "notice-settings-readonly",
+            args: Vec::new(),
         }
     }
 

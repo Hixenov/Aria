@@ -14,10 +14,11 @@ use aria_app::{
     },
 };
 use aria_core::{
+    FakeFactory, OutputFormat,
     i18n::{Localizer, os_language},
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
-    runtime::{Backend, BackendConfig, Waker},
+    runtime::{Backend, BackendConfig, BackendServices, Waker},
     settings::{Language, LogLevel, Rgb, Settings, Theme, store::SettingsStore},
 };
 use eframe::egui::{self, Key, Modifiers, PointerButton, ViewportId, accesskit::Role};
@@ -141,7 +142,7 @@ fn toast_harness(toasts: Toasts) -> Harness<'static, Toasts> {
 }
 
 fn notice(level: NoticeLevel, key: &'static str) -> Notice {
-    Notice { level, key }
+    Notice::new(level, key)
 }
 
 // Theme and language.
@@ -369,8 +370,20 @@ fn narrow_page_keeps_every_control_beside_the_right_panel() {
 fn persisting_settings_page(file: &Path) -> Harness<'static, AriaApp> {
     let waker: Waker = Arc::new(|| {});
     let store = SettingsStore::new(file.to_path_buf());
-    let backend = Backend::start(Some(Box::new(store)), waker, BackendConfig::default())
-        .unwrap_or_else(|err| panic!("the backend did not start: {err}"));
+    let services = BackendServices {
+        library: None,
+        output: Box::new(FakeFactory::new(OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        })),
+    };
+    let backend = Backend::start(
+        Some(Box::new(store)),
+        services,
+        waker,
+        BackendConfig::default(),
+    )
+    .unwrap_or_else(|err| panic!("the backend did not start: {err}"));
     let deps = AppDeps {
         backend: Some(backend),
         ..AppDeps::none()
@@ -540,6 +553,17 @@ fn startup_notice_shows_toast() {
             .is_some()
     );
     assert!(harness.state().pending_notices().is_empty());
+}
+
+#[test]
+fn notice_args_reach_the_translation() {
+    let skipped = notice(NoticeLevel::Warning, "library-scan-skipped").with_arg("count", "42");
+    let harness = app_harness(english(), AppDeps::none(), vec![skipped]);
+    assert!(
+        harness
+            .query_by_label("42 files or folders couldn't be read and were skipped.")
+            .is_some()
+    );
 }
 
 #[test]

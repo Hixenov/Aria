@@ -126,7 +126,7 @@ impl Toasts {
         let texts: Vec<_> = self
             .toasts
             .iter()
-            .map(|toast| tr.tr(toast.notice.key))
+            .map(|toast| tr.tr_args(toast.notice.key, &toast.notice.fluent_args()))
             .collect();
         // An area anchored at a corner is placed by the size it had last frame, which is stale
         // as soon as a toast comes or goes. So measure the stack and place its top-left corner.
@@ -279,14 +279,17 @@ mod tests {
     const INFO: Notice = Notice {
         level: NoticeLevel::Info,
         key: "notice-a",
+        args: Vec::new(),
     };
     const WARNING: Notice = Notice {
         level: NoticeLevel::Warning,
         key: "notice-b",
+        args: Vec::new(),
     };
     const ERROR: Notice = Notice {
         level: NoticeLevel::Error,
         key: "notice-c",
+        args: Vec::new(),
     };
 
     #[test]

@@ -77,6 +77,22 @@ notice-settings-save-failed = Չհաջողվեց պահպանել կարգավո
 notice-open-folder-failed = Չհաջողվեց բացել պանակը։
 notice-dismiss = Փակել
 
+## Library notices (toasts)
+
+# $count (Number) - how many files and folders the scan could not read
+library-scan-skipped = { $count ->
+    [one] Չհաջողվեց կարդալ { $count } ֆայլ կամ պանակ, և այն բաց է թողնվել։
+   *[other] Չհաջողվեց կարդալ { $count } ֆայլ կամ պանակ, և դրանք բաց են թողնվել։
+}
+# $folder (String) - the last part of the folder's path, e.g. Music
+library-folder-unavailable = { $folder } պանակը հասանելի չէ, կամ դրա բոլոր ֆայլերը տեղափոխվել կամ ջնջվել են։ Երգերը պահպանված են, իսկ պանակը կարող եք հեռացնել Կարգավորումներում։
+library-folder-nested = Այս պանակը գտնվում է մի պանակի մեջ, որն արդեն գրադարանում է։
+library-folder-duplicate = Այս պանակն արդեն գրադարանում է։
+library-recovered = Գրադարանի տվյալների բազան վնասված էր, ուստի ստեղծվել է նորը։ Հին ֆայլը պահպանվել է որպես պահուստային պատճեն։
+library-newer = Գրադարանը պահպանվել է Aria-ի ավելի նոր տարբերակով, ուստի այն անջատված է։ Թարմացրեք Aria-ն՝ այն օգտագործելու համար։
+library-unavailable = Չհաջողվեց բացել գրադարանը, ուստի այն առայժմ անջատված է։ Aria-ի մնացած գործառույթները շարունակում են աշխատել։
+library-action-failed = Գրադարանում սխալ տեղի ունեցավ, և գործողությունը չավարտվեց։ Ձեր երաժշտական ֆայլերը չեն փոխվել։
+
 ## Fatal startup errors (a message box shown before Aria quits)
 
 error-startup-title = Չհաջողվեց գործարկել Aria-ն
