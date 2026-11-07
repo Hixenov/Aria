@@ -6,12 +6,12 @@
 //! keep their rows.
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
 
@@ -71,9 +71,36 @@ fn mtime_key(t: SystemTime) -> Option<i64> {
     }
 }
 
+/// How a path is compared: the way `add_folder` compares folders, so case-insensitive on Windows
+/// and exact elsewhere.
+fn fold_name(name: &OsStr) -> OsString {
+    if cfg!(windows) {
+        OsString::from(name.to_string_lossy().to_lowercase())
+    } else {
+        name.to_owned()
+    }
+}
+
+fn fold_path(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        path.components()
+            .map(|c| fold_name(c.as_os_str()))
+            .collect()
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// The key two spellings of one path share.
+fn path_key(path: &Path) -> Vec<u8> {
+    encode_path(&fold_path(path))
+}
+
 /// What the scan knows about a stored row.
 struct Existing {
     id: i64,
+    /// The path as stored, which may differ from the disk spelling in case.
+    path: Vec<u8>,
     size: i64,
     mtime: i64,
 }
@@ -81,14 +108,18 @@ struct Existing {
 /// A row waiting to be written.
 struct Pending {
     folder: FolderId,
+    /// The id of the stored row to update in place, if there is one.
+    id: Option<i64>,
     path: Vec<u8>,
+    /// -1 marks a row to read again on the next scan; its artwork hash is left alone.
     size: i64,
     mtime: i64,
     tags: TrackTags,
     artwork: Option<ArtworkId>,
 }
 
-/// The directories that listed successfully, with the names found in each.
+/// The directories that listed successfully, with the names found in each. Directories and names
+/// are folded, see [`fold_path`].
 ///
 /// Regular files without a supported extension are left out, so a file renamed to `.txt`
 /// counts as gone. Everything else that was listed (directories, links, entries whose type
@@ -97,16 +128,27 @@ struct Pending {
 struct Listings(HashMap<PathBuf, HashSet<OsString>>);
 
 impl Listings {
+    /// Records a directory's listing, but only a complete one: an incomplete listing must never
+    /// allow a delete.
+    fn record(&mut self, dir: &Path, names: impl Iterator<Item = OsString>, complete: bool) {
+        if complete {
+            self.0
+                .insert(fold_path(dir), names.map(|n| fold_name(&n)).collect());
+        }
+    }
+
     /// Whether the row at `file`, in the folder rooted at `root`, may be deleted.
     ///
     /// Walking down from the root: a directory that did not list successfully keeps the row, and
     /// so does an unreachable root. A name missing from a directory that did list means the
     /// file, or a directory above it, is gone.
     fn is_gone(&self, root: &Path, file: &Path) -> bool {
-        let Ok(rel) = file.strip_prefix(root) else {
+        let root = fold_path(root);
+        let file = fold_path(file);
+        let Ok(rel) = file.strip_prefix(&root) else {
             return false;
         };
-        let mut dir = root.to_path_buf();
+        let mut dir = root;
         for part in rel.components() {
             let name = part.as_os_str();
             match self.0.get(&dir) {
@@ -134,59 +176,92 @@ struct Entry {
     kind: Kind,
 }
 
-/// Lists a directory. The flag is false when an entry could not be read, so the listing is
-/// incomplete and must not be used to delete anything.
-fn list_dir(dir: &Path) -> io::Result<(Vec<Entry>, bool)> {
+/// Collects the entries of a listing. The flag is false when any entry could not be read, so the
+/// listing is incomplete and must not be used to delete anything.
+fn collect_listing<T>(entries: impl Iterator<Item = io::Result<T>>) -> (Vec<T>, bool) {
     let mut out = Vec::new();
     let mut complete = true;
-    for entry in fs::read_dir(dir)? {
-        let Ok(entry) = entry else {
-            complete = false;
-            continue;
-        };
-        let kind = match entry.file_type() {
-            Ok(t) if t.is_dir() => Kind::Dir,
-            Ok(t) if t.is_file() => Kind::File,
-            Ok(_) => Kind::Other,
-            Err(_) => Kind::Unknown,
-        };
-        out.push(Entry {
-            name: entry.file_name(),
-            path: entry.path(),
-            kind,
-        });
+    for entry in entries {
+        match entry {
+            Ok(e) => out.push(e),
+            Err(_) => complete = false,
+        }
     }
-    Ok((out, complete))
+    (out, complete)
+}
+
+fn read_entry(entry: fs::DirEntry) -> io::Result<Entry> {
+    let kind = match entry.file_type() {
+        Ok(t) if t.is_dir() => Kind::Dir,
+        Ok(t) if t.is_file() => Kind::File,
+        Ok(_) => Kind::Other,
+        Err(_) => Kind::Unknown,
+    };
+    Ok(Entry {
+        name: entry.file_name(),
+        path: entry.path(),
+        kind,
+    })
+}
+
+/// Lists a directory; see [`collect_listing`] for the flag.
+fn list_dir(dir: &Path) -> io::Result<(Vec<Entry>, bool)> {
+    Ok(collect_listing(
+        fs::read_dir(dir)?.map(|e| e.and_then(read_entry)),
+    ))
+}
+
+/// What looking for artwork found.
+#[derive(Clone)]
+enum Art {
+    Found(ArtworkId),
+    Absent,
+    /// The cache could not be written; the track is read again on the next scan.
+    Failed,
+}
+
+/// A disk failure in the cache costs the track its artwork for now, never the scan.
+fn store_art(cache: &ArtworkCache, bytes: &[u8]) -> Art {
+    match cache.store(bytes) {
+        Ok(Some(id)) => Art::Found(id),
+        Ok(None) => Art::Absent,
+        Err(e) => {
+            tracing::debug!(error = %e, "artwork could not be stored");
+            Art::Failed
+        }
+    }
 }
 
 /// The thumbnail for the image file next to the tracks of a directory, if any.
-fn folder_art(cache: &ArtworkCache, dir: &Path) -> Option<ArtworkId> {
-    let image = find_folder_image(dir)?;
-    let len = fs::metadata(&image).ok()?.len();
-    if len > MAX_IMAGE_BYTES as u64 {
-        tracing::debug!(len, "folder image refused: size");
-        return None;
+fn folder_art(cache: &ArtworkCache, dir: &Path) -> Art {
+    let Some(image) = find_folder_image(dir) else {
+        return Art::Absent;
+    };
+    let Ok(meta) = fs::metadata(&image) else {
+        return Art::Absent;
+    };
+    if meta.len() > MAX_IMAGE_BYTES as u64 {
+        tracing::debug!(len = meta.len(), "folder image refused: size");
+        return Art::Absent;
     }
-    let bytes = fs::read(&image).ok()?;
-    store_art(cache, &bytes)
+    match fs::read(&image) {
+        Ok(bytes) => store_art(cache, &bytes),
+        Err(_) => Art::Absent,
+    }
 }
 
 /// The folder image for the directory of `file`, looked up once per directory per scan.
-fn shared_dir_art(
-    slot: &mut Option<Option<ArtworkId>>,
-    cache: &ArtworkCache,
-    file: &Path,
-) -> Option<ArtworkId> {
-    slot.get_or_insert_with(|| file.parent().and_then(|dir| folder_art(cache, dir)))
+fn shared_dir_art(slot: &mut Option<Art>, cache: &ArtworkCache, file: &Path) -> Art {
+    slot.get_or_insert_with(|| file.parent().map_or(Art::Absent, |d| folder_art(cache, d)))
         .clone()
 }
 
-/// A disk failure in the cache costs the track its artwork, never the scan.
-fn store_art(cache: &ArtworkCache, bytes: &[u8]) -> Option<ArtworkId> {
-    cache.store(bytes).unwrap_or_else(|e| {
-        tracing::debug!(error = %e, "artwork could not be stored");
-        None
-    })
+/// How often `on_batch` is called when nothing is being written.
+const TICK: Duration = Duration::from_millis(250);
+
+/// Whether `on_batch` is due: after [`BATCH_SIZE`] files, or [`TICK`] since the last call.
+fn tick_due(files_since: usize, elapsed: Duration) -> bool {
+    files_since >= BATCH_SIZE || elapsed >= TICK
 }
 
 /// State shared by the folders of one scan.
@@ -196,20 +271,39 @@ struct Run<'a> {
     summary: ScanSummary,
     progress: ScanProgress,
     pending: Vec<Pending>,
+    /// Stored rows whose path to rewrite to the disk spelling.
+    respelled: Vec<(i64, Vec<u8>)>,
+    /// Rows to delete once the whole walk has finished.
+    gone: Vec<i64>,
+    files_since_call: usize,
+    last_call: Instant,
 }
 
 impl Run<'_> {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
+
+    fn queued(&self) -> usize {
+        self.pending.len() + self.respelled.len()
+    }
 }
+
+const COLUMNS: &str = "folder_id, path, size, mtime, title, artist, album, album_artist, \
+     track_no, disc_no, year, genre, duration_ms, sample_rate, channels, codec, artwork_hash";
 
 impl Library {
     /// Walks every folder and brings the database in step with the files on disk.
     ///
-    /// Changed tracks are written in transactions of [`BATCH_SIZE`]; after each one `on_batch`
-    /// runs with the library, so the caller can do its own writes without a second connection.
-    /// A cancelled scan commits what it has and deletes nothing.
+    /// Changed tracks are written in transactions of [`BATCH_SIZE`]. `on_batch` runs with the
+    /// library after each of them, and also after every [`BATCH_SIZE`] files looked at or every
+    /// 250 ms, whichever comes first, even when nothing changed, so the caller can serve its own
+    /// requests during a long walk. It always runs with no transaction open, and may write
+    /// (save the queue, store a duration).
+    ///
+    /// `on_batch` must not add or remove folders or call [`Library::clear_artwork`]: the scan
+    /// holds a folder's rows across calls. A scan runs to the end of every folder before it
+    /// deletes anything, and a cancelled scan commits what it has and deletes nothing.
     pub fn scan(
         &mut self,
         cancel: &AtomicBool,
@@ -221,6 +315,10 @@ impl Library {
             summary: ScanSummary::default(),
             progress: ScanProgress::default(),
             pending: Vec::new(),
+            respelled: Vec::new(),
+            gone: Vec::new(),
+            files_since_call: 0,
+            last_call: Instant::now(),
         };
         for folder in self.folders()? {
             if run.cancelled() {
@@ -228,13 +326,17 @@ impl Library {
             }
             self.scan_folder(&folder, &mut run, on_batch)?;
         }
-        run.summary.cancelled = run.cancelled();
+        let cancelled = run.cancelled();
+        if !cancelled {
+            self.delete_gone(&mut run, on_batch)?;
+        }
+        run.summary.cancelled = cancelled;
         tracing::info!(
             added = run.summary.added,
             updated = run.summary.updated,
             removed = run.summary.removed,
             skipped = run.summary.skipped,
-            cancelled = run.summary.cancelled,
+            cancelled,
             "library scan finished"
         );
         Ok(run.summary)
@@ -263,10 +365,12 @@ impl Library {
             .conn
             .prepare("SELECT id, path, size, mtime FROM tracks WHERE folder_id = ?1")?;
         let rows = stmt.query_map([folder.0], |r| {
+            let path: Vec<u8> = r.get(1)?;
             Ok((
-                r.get::<_, Vec<u8>>(1)?,
+                path_key(&decode_path(&path)),
                 Existing {
                     id: r.get(0)?,
+                    path,
                     size: r.get(2)?,
                     mtime: r.get(3)?,
                 },
@@ -310,12 +414,12 @@ impl Library {
                 run.summary.skipped += 1;
             }
 
-            let mut names = HashSet::with_capacity(entries.len());
-            let mut dir_art: Option<Option<ArtworkId>> = None;
+            let mut names = Vec::with_capacity(entries.len());
+            let mut dir_art: Option<Art> = None;
             for entry in entries {
                 let supported_file = matches!(entry.kind, Kind::File) && is_supported(&entry.name);
                 if !matches!(entry.kind, Kind::File) || supported_file {
-                    names.insert(entry.name.clone());
+                    names.push(entry.name.clone());
                 }
                 match entry.kind {
                     Kind::Dir => work.push(entry.path),
@@ -324,8 +428,11 @@ impl Library {
                             break 'walk;
                         }
                         self.scan_file(folder.id, &entry.path, &existing, &mut dir_art, run)?;
-                        if run.pending.len() >= BATCH_SIZE {
-                            self.flush(run, on_batch)?;
+                        run.files_since_call += 1;
+                        if run.queued() >= BATCH_SIZE
+                            || tick_due(run.files_since_call, run.last_call.elapsed())
+                        {
+                            self.flush(run, on_batch, true)?;
                         }
                     }
                     Kind::File | Kind::Other => {}
@@ -336,32 +443,52 @@ impl Library {
                     }
                 }
             }
-            if complete {
-                listings.0.insert(dir, names);
-            }
+            listings.record(&dir, names.into_iter(), complete);
         }
-        self.flush(run, on_batch)?;
+        self.flush(run, on_batch, false)?;
         if run.cancelled() {
             return Ok(());
         }
 
         let gone: Vec<i64> = existing
-            .iter()
-            .filter(|(path, _)| listings.is_gone(&folder.path, &decode_path(path)))
-            .map(|(_, row)| row.id)
+            .values()
+            .filter(|row| listings.is_gone(&folder.path, &decode_path(&row.path)))
+            .map(|row| row.id)
             .collect();
-        if !gone.is_empty() {
-            let tx = self.conn.transaction()?;
-            {
-                let mut del = tx.prepare("DELETE FROM tracks WHERE id = ?1")?;
-                for id in &gone {
-                    del.execute([id])?;
-                }
+        if !existing.is_empty() && gone.len() == existing.len() {
+            // Every stored track of the folder looks gone: an unmounted drive, a swapped
+            // stick or a mount point that lists empty looks just like this. Keep them all.
+            tracing::debug!("a scan would remove every track of a folder; keeping them");
+            if !run.summary.unavailable.contains(&folder.id) {
+                run.summary.unavailable.push(folder.id);
             }
-            tx.commit()?;
-            run.summary.removed += gone.len() as u64;
-            on_batch(self, run.progress);
+            self.set_available(folder.id, false)?;
+        } else {
+            run.gone.extend(gone);
         }
+        Ok(())
+    }
+
+    /// Deletes the rows found gone by a scan that ran to the end.
+    fn delete_gone(
+        &mut self,
+        run: &mut Run<'_>,
+        on_batch: &mut dyn FnMut(&mut Library, ScanProgress),
+    ) -> Result<(), LibraryError> {
+        if run.gone.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        {
+            let mut del = tx.prepare("DELETE FROM tracks WHERE id = ?1")?;
+            for id in &run.gone {
+                del.execute([id])?;
+            }
+        }
+        tx.commit()?;
+        run.summary.removed += run.gone.len() as u64;
+        run.gone.clear();
+        on_batch(self, run.progress);
         Ok(())
     }
 
@@ -371,11 +498,10 @@ impl Library {
         folder: FolderId,
         path: &Path,
         existing: &HashMap<Vec<u8>, Existing>,
-        dir_art: &mut Option<Option<ArtworkId>>,
+        dir_art: &mut Option<Art>,
         run: &mut Run<'_>,
     ) -> Result<(), LibraryError> {
         run.progress.seen += 1;
-        let key = encode_path(path);
         let Ok(meta) = fs::metadata(path) else {
             tracing::debug!(path = %path.display(), "file could not be inspected");
             run.summary.skipped += 1;
@@ -383,11 +509,15 @@ impl Library {
         };
         let size = i64::try_from(meta.len()).unwrap_or(i64::MAX);
         let mtime = meta.modified().ok().and_then(mtime_key);
-        let stored = existing.get(&key);
+        let disk_path = encode_path(path);
+        let stored = existing.get(&path_key(path));
         if let (Some(row), Some(m)) = (stored, mtime)
             && row.size == size
             && row.mtime == m
         {
+            if row.path != disk_path {
+                run.respelled.push((row.id, disk_path));
+            }
             return Ok(());
         }
         let mut tags = match read_tags(path) {
@@ -399,16 +529,17 @@ impl Library {
                 return Ok(());
             }
         };
-        let artwork = match tags.picture.take() {
-            Some(bytes) => match run.cache.store(&bytes) {
-                Ok(Some(id)) => Some(id),
-                Ok(None) => shared_dir_art(dir_art, &run.cache, path),
-                Err(e) => {
-                    tracing::debug!(error = %e, "artwork could not be stored");
-                    None
-                }
+        let art = match tags.picture.take() {
+            Some(bytes) => match store_art(&run.cache, &bytes) {
+                Art::Absent => shared_dir_art(dir_art, &run.cache, path),
+                other => other,
             },
             None => shared_dir_art(dir_art, &run.cache, path),
+        };
+        let (artwork, size) = match art {
+            Art::Found(id) => (Some(id), size),
+            Art::Absent => (None, size),
+            Art::Failed => (None, -1),
         };
         if stored.is_some() {
             run.summary.updated += 1;
@@ -418,7 +549,8 @@ impl Library {
         run.progress.changed += 1;
         run.pending.push(Pending {
             folder,
-            path: key,
+            id: stored.map(|r| r.id),
+            path: disk_path,
             size,
             mtime: mtime.unwrap_or(0),
             tags,
@@ -427,22 +559,34 @@ impl Library {
         Ok(())
     }
 
-    /// Writes the queued rows in one transaction, then calls `on_batch`.
+    /// Writes the queued rows in one transaction, then calls `on_batch` if anything was written
+    /// or `always` is set.
     fn flush(
         &mut self,
         run: &mut Run<'_>,
         on_batch: &mut dyn FnMut(&mut Library, ScanProgress),
+        always: bool,
     ) -> Result<(), LibraryError> {
-        if run.pending.is_empty() {
-            return Ok(());
+        let wrote = run.queued() > 0;
+        if wrote {
+            self.write_pending(run)?;
         }
+        if wrote || always {
+            run.files_since_call = 0;
+            run.last_call = Instant::now();
+            on_batch(self, run.progress);
+        }
+        Ok(())
+    }
+
+    fn write_pending(&mut self, run: &mut Run<'_>) -> Result<(), LibraryError> {
         let now = now_secs();
         let tx = self.conn.transaction()?;
         {
-            let mut up = tx.prepare(
-                "INSERT INTO tracks (folder_id, path, size, mtime, title, artist, album,
-                    album_artist, track_no, disc_no, year, genre, duration_ms, sample_rate,
-                    channels, codec, artwork_hash, added_at)
+            // A size of -1 means the artwork could not be stored: keep the old hash, and a
+            // duration of 0 means the tags had none: keep the stored one.
+            let mut insert = tx.prepare(&format!(
+                "INSERT INTO tracks ({COLUMNS}, added_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
                     ?17, ?18)
                  ON CONFLICT(path) DO UPDATE SET
@@ -451,37 +595,78 @@ impl Library {
                     album = excluded.album, album_artist = excluded.album_artist,
                     track_no = excluded.track_no, disc_no = excluded.disc_no,
                     year = excluded.year, genre = excluded.genre,
-                    duration_ms = excluded.duration_ms, sample_rate = excluded.sample_rate,
+                    duration_ms = CASE WHEN excluded.duration_ms = 0
+                        THEN tracks.duration_ms ELSE excluded.duration_ms END,
+                    sample_rate = excluded.sample_rate,
                     channels = excluded.channels, codec = excluded.codec,
-                    artwork_hash = excluded.artwork_hash",
+                    artwork_hash = CASE WHEN excluded.size = -1
+                        THEN tracks.artwork_hash ELSE excluded.artwork_hash END"
+            ))?;
+            let mut update = tx.prepare(
+                "UPDATE OR IGNORE tracks SET
+                    folder_id = ?1, path = ?2, size = ?3, mtime = ?4, title = ?5, artist = ?6,
+                    album = ?7, album_artist = ?8, track_no = ?9, disc_no = ?10, year = ?11,
+                    genre = ?12,
+                    duration_ms = CASE WHEN ?13 = 0 THEN duration_ms ELSE ?13 END,
+                    sample_rate = ?14, channels = ?15, codec = ?16,
+                    artwork_hash = CASE WHEN ?3 = -1 THEN artwork_hash ELSE ?17 END
+                 WHERE id = ?18",
             )?;
             for p in &run.pending {
                 let t = &p.tags;
-                up.execute(params![
-                    p.folder.0,
-                    p.path,
-                    p.size,
-                    p.mtime,
-                    t.title,
-                    t.artist.as_deref(),
-                    t.album.as_deref(),
-                    t.album_artist.as_deref(),
-                    t.track_no,
-                    t.disc_no,
-                    t.year,
-                    t.genre.as_deref(),
-                    i64::try_from(t.duration_ms).unwrap_or(i64::MAX),
-                    t.sample_rate,
-                    t.channels,
-                    &*t.codec,
-                    p.artwork.as_ref().map(|a| &*a.0),
-                    now,
-                ])?;
+                let duration = i64::try_from(t.duration_ms).unwrap_or(i64::MAX);
+                let artwork = p.artwork.as_ref().map(|a| &*a.0);
+                match p.id {
+                    Some(id) => update.execute(params![
+                        p.folder.0,
+                        p.path,
+                        p.size,
+                        p.mtime,
+                        t.title,
+                        t.artist.as_deref(),
+                        t.album.as_deref(),
+                        t.album_artist.as_deref(),
+                        t.track_no,
+                        t.disc_no,
+                        t.year,
+                        t.genre.as_deref(),
+                        duration,
+                        t.sample_rate,
+                        t.channels,
+                        &*t.codec,
+                        artwork,
+                        id,
+                    ])?,
+                    None => insert.execute(params![
+                        p.folder.0,
+                        p.path,
+                        p.size,
+                        p.mtime,
+                        t.title,
+                        t.artist.as_deref(),
+                        t.album.as_deref(),
+                        t.album_artist.as_deref(),
+                        t.track_no,
+                        t.disc_no,
+                        t.year,
+                        t.genre.as_deref(),
+                        duration,
+                        t.sample_rate,
+                        t.channels,
+                        &*t.codec,
+                        artwork,
+                        now,
+                    ])?,
+                };
+            }
+            let mut respell = tx.prepare("UPDATE OR IGNORE tracks SET path = ?1 WHERE id = ?2")?;
+            for (id, path) in &run.respelled {
+                respell.execute(params![path, id])?;
             }
         }
         tx.commit()?;
         run.pending.clear();
-        on_batch(self, run.progress);
+        run.respelled.clear();
         Ok(())
     }
 }
@@ -491,16 +676,11 @@ mod tests {
     use super::*;
 
     fn listings(dirs: &[(&str, &[&str])]) -> Listings {
-        Listings(
-            dirs.iter()
-                .map(|(d, names)| {
-                    (
-                        PathBuf::from(d),
-                        names.iter().map(OsString::from).collect::<HashSet<_>>(),
-                    )
-                })
-                .collect(),
-        )
+        let mut l = Listings::default();
+        for (d, names) in dirs {
+            l.record(Path::new(d), names.iter().map(OsString::from), true);
+        }
+        l
     }
 
     #[test]
@@ -536,5 +716,89 @@ mod tests {
         assert!(is_supported(std::ffi::OsStr::new("b.Flac")));
         assert!(!is_supported(std::ffi::OsStr::new("c.txt")));
         assert!(!is_supported(std::ffi::OsStr::new("mp3")));
+    }
+
+    #[test]
+    fn an_unreadable_entry_makes_the_listing_incomplete() {
+        let fake = vec![
+            Ok("a.mp3"),
+            Ok("b.mp3"),
+            Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+            Ok("c.mp3"),
+        ];
+        let (entries, complete) = collect_listing(fake.into_iter());
+        assert!(!complete);
+        assert_eq!(entries, vec!["a.mp3", "b.mp3", "c.mp3"]);
+
+        let (entries, complete) = collect_listing(vec![Ok(1), Ok(2)].into_iter());
+        assert!(complete);
+        assert_eq!(entries, vec![1, 2]);
+    }
+
+    #[test]
+    fn an_incomplete_listing_is_not_recorded_so_nothing_under_it_is_deleted() {
+        let mut l = Listings::default();
+        l.record(Path::new("/r"), ["a"].into_iter().map(OsString::from), true);
+        // `/r/a` listed part-way: `x.mp3` is missing from what was read.
+        l.record(
+            Path::new("/r/a"),
+            ["y.mp3"].into_iter().map(OsString::from),
+            false,
+        );
+        assert!(!l.is_gone(Path::new("/r"), Path::new("/r/a/x.mp3")));
+        // A complete one would have deleted it.
+        l.record(
+            Path::new("/r/a"),
+            ["y.mp3"].into_iter().map(OsString::from),
+            true,
+        );
+        assert!(l.is_gone(Path::new("/r"), Path::new("/r/a/x.mp3")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn paths_compare_without_regard_to_case_on_windows() {
+        let l = listings(&[(r"c:\music", &["rock"]), (r"c:\music\rock", &["a.mp3"])]);
+        let root = Path::new(r"C:\Music");
+        assert!(!l.is_gone(root, Path::new(r"C:\MUSIC\ROCK\A.mp3")));
+        assert!(l.is_gone(root, Path::new(r"C:\MUSIC\ROCK\B.mp3")));
+        assert_eq!(
+            path_key(Path::new(r"C:\Music\Rock")),
+            path_key(Path::new(r"c:\music\ROCK"))
+        );
+    }
+
+    #[test]
+    fn on_batch_is_due_after_enough_files_or_enough_time() {
+        assert!(!tick_due(1, Duration::from_millis(10)));
+        assert!(tick_due(BATCH_SIZE, Duration::ZERO));
+        assert!(tick_due(1, TICK));
+    }
+
+    #[test]
+    #[ignore = "performance check"]
+    fn deletion_check_over_50k_rows_is_fast() {
+        let root = Path::new("/lib");
+        let mut l = Listings::default();
+        let artists: Vec<String> = (0..500).map(|i| format!("Artist {i}")).collect();
+        l.record(root, artists.iter().map(OsString::from), true);
+        let mut rows = Vec::new();
+        for (i, a) in artists.iter().enumerate() {
+            let albums: Vec<String> = (0..10).map(|j| format!("Album {j}")).collect();
+            l.record(&root.join(a), albums.iter().map(OsString::from), true);
+            for al in &albums {
+                let dir = root.join(a).join(al);
+                let names: Vec<String> = (0..10).map(|k| format!("{i}-{k}.flac")).collect();
+                l.record(&dir, names.iter().map(OsString::from), true);
+                rows.extend(names.iter().map(|n| dir.join(n)));
+            }
+        }
+        assert_eq!(rows.len(), 50_000);
+        let start = Instant::now();
+        let gone = rows.iter().filter(|r| l.is_gone(root, r)).count();
+        let took = start.elapsed();
+        println!("is_gone over 50000 rows took {took:?}");
+        assert_eq!(gone, 0);
+        assert!(took < Duration::from_secs(1), "{took:?}");
     }
 }

@@ -13,7 +13,7 @@ CREATE TABLE folders (
     available INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE tracks (
-    id           INTEGER PRIMARY KEY,
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
     folder_id    INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
     path         BLOB NOT NULL UNIQUE,
     size         INTEGER NOT NULL,

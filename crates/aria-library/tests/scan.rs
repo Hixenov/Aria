@@ -357,24 +357,26 @@ fn cancel_keeps_finished_work_and_deletes_nothing() {
         env.put("tone.wav", &format!("new/{i:04}.wav"));
     }
     let cancel = AtomicBool::new(false);
-    let mut batches = 0;
+    let mut first = None;
     let s = ok(env.lib.scan(&cancel, &mut |_, p| {
-        batches += 1;
-        assert!(p.changed >= 500);
+        first.get_or_insert(p.changed);
         cancel.store(true, Ordering::Relaxed);
     }));
+    let Some(first) = first else {
+        panic!("on_batch never ran");
+    };
+    assert!(first > 0);
     assert!(s.cancelled);
     assert_eq!(s.removed, 0);
-    assert_eq!(batches, 1);
-    // The first batch of 500 was committed; the vanished file was not deleted.
+    // Everything up to the first callback was committed; the vanished file was not deleted.
     let snap = env.snap();
-    assert_eq!(snap.tracks.len(), 2 + 500);
+    assert_eq!(s.added, first);
+    assert_eq!(snap.tracks.len() as u64, 2 + first);
     assert!(snap.tracks.iter().any(|t| t.path == gone));
-    assert_eq!(s.added, 500);
 
     // A later full scan finishes the job.
     let s = env.scan();
-    assert_eq!((s.added, s.removed), (120, 1));
+    assert_eq!((s.added, s.removed), (620 - first, 1));
 }
 
 #[test]
@@ -574,4 +576,277 @@ fn synthetic_50k_library() {
     if !cfg!(debug_assertions) {
         assert!(took < Duration::from_secs(2), "snapshot took {took:?}");
     }
+}
+
+// ---- Fix round 1 ----
+
+#[test]
+fn root_replaced_by_empty_directory_keeps_rows() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "a/one.mp3");
+    env.put("tone.flac", "two.flac");
+    let id = env.add_music();
+    env.scan();
+    let before = ids(&env.snap());
+
+    let away = env.dir.path().join("away");
+    ok(fs::rename(env.music(), &away));
+    ok(fs::create_dir(env.music()));
+    let s = env.scan();
+    assert_eq!(s.removed, 0);
+    assert_eq!(s.unavailable, vec![id]);
+    let snap = env.snap();
+    assert_eq!(ids(&snap), before);
+    assert!(!snap.folders[0].available);
+
+    // The real folder comes back: available again, nothing churned.
+    ok(fs::remove_dir(env.music()));
+    ok(fs::rename(&away, env.music()));
+    let s = env.scan();
+    assert!(s.unavailable.is_empty());
+    assert_eq!((s.added, s.updated, s.removed), (0, 0, 0));
+    let snap = env.snap();
+    assert!(snap.folders[0].available);
+    assert_eq!(ids(&snap), before);
+}
+
+#[test]
+fn root_replaced_by_other_files_keeps_rows_and_adds_new() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "one.mp3");
+    env.put("tone.flac", "two.flac");
+    let id = env.add_music();
+    env.scan();
+    let before = ids(&env.snap());
+
+    let away = env.dir.path().join("away");
+    ok(fs::rename(env.music(), &away));
+    env.put("tone.wav", "other.wav");
+    let s = env.scan();
+    assert_eq!(s.removed, 0);
+    assert_eq!(s.added, 1);
+    assert_eq!(s.unavailable, vec![id]);
+    let snap = env.snap();
+    assert_eq!(snap.tracks.len(), 3);
+    for (path, tid) in &before {
+        assert!(snap.tracks.iter().any(|t| t.id == *tid && t.path == *path));
+    }
+    assert!(!snap.folders[0].available);
+}
+
+#[cfg(windows)]
+fn with_last_upper(p: &Path) -> PathBuf {
+    let Some(name) = p.file_name() else {
+        panic!("no file name");
+    };
+    p.with_file_name(name.to_string_lossy().to_uppercase())
+}
+
+#[cfg(windows)]
+fn icacls(p: &Path, args: &[&str]) {
+    let o = ok(std::process::Command::new("icacls")
+        .arg(p)
+        .args(args)
+        .output());
+    assert!(o.status.success(), "{o:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn absorbing_a_parent_in_another_case_keeps_ids() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "rock/a.mp3");
+    env.put("tone.flac", "rock/b.flac");
+    let music = env.music();
+    ok(env.lib.add_folder(&music.join("rock")));
+    env.scan();
+    let before: Vec<_> = env.snap().tracks.iter().map(|t| t.id).collect();
+
+    let parent = with_last_upper(&music);
+    ok(env.lib.add_folder(&parent));
+    let s = env.scan();
+    assert_eq!((s.added, s.updated, s.removed), (0, 0, 0));
+    let snap = env.snap();
+    assert_eq!(snap.tracks.iter().map(|t| t.id).collect::<Vec<_>>(), before);
+    // The stored path takes the spelling found on disk.
+    assert!(snap.tracks.iter().all(|t| t.path.starts_with(&parent)));
+
+    ok(fs::remove_file(music.join("rock/a.mp3")));
+    let s = env.scan();
+    assert_eq!(s.removed, 1);
+    assert_eq!(env.snap().tracks.len(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn absorbing_a_child_in_another_case_keeps_ids() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "rock/a.mp3");
+    env.put("tone.flac", "rock/b.flac");
+    let music = env.music();
+    ok(env.lib.add_folder(&music.join("ROCK")));
+    env.scan();
+    let before: Vec<_> = env.snap().tracks.iter().map(|t| t.id).collect();
+    ok(env.lib.add_folder(&music));
+    let s = env.scan();
+    assert_eq!((s.added, s.updated, s.removed), (0, 0, 0));
+    assert_eq!(
+        env.snap().tracks.iter().map(|t| t.id).collect::<Vec<_>>(),
+        before
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn absorbed_child_in_another_case_that_cannot_be_listed_keeps_tracks() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "rock/a.mp3");
+    env.put("tone.flac", "rock/b.flac");
+    let music = env.music();
+    ok(env.lib.add_folder(&music.join("ROCK")));
+    env.scan();
+    ok(env.lib.add_folder(&music));
+    let rock = music.join("rock");
+    icacls(&rock, &["/deny", "*S-1-1-0:(RD)"]);
+    let denied = fs::read_dir(&rock).is_err();
+    let s = env.scan();
+    icacls(&rock, &["/remove:d", "*S-1-1-0"]);
+    assert!(denied, "could not make the directory unlistable");
+    assert_eq!(s.removed, 0);
+    assert_eq!(env.snap().tracks.len(), 2);
+}
+
+#[test]
+fn a_rescan_without_changes_still_calls_on_batch() {
+    let mut env = Env::new();
+    for i in 0..520 {
+        env.put("tone.wav", &format!("{i:04}.wav"));
+    }
+    env.add_music();
+    env.scan();
+    let mut calls = 0;
+    let mut last = ScanProgress::default();
+    let s = ok(env.lib.scan(&AtomicBool::new(false), &mut |lib, p| {
+        calls += 1;
+        last = p;
+        // No transaction is open: a write succeeds.
+        assert!(lib.save_queue(&QueueRecord::default()).is_ok());
+    }));
+    assert_eq!((s.added, s.updated, s.removed), (0, 0, 0));
+    assert!(calls >= 1, "on_batch was never called");
+    assert!(last.seen >= 500);
+    assert_eq!(last.changed, 0);
+}
+
+#[test]
+fn deleted_track_ids_are_not_reused() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "a.mp3");
+    let last = env.put("tone.flac", "z.flac");
+    env.add_music();
+    env.scan();
+    let top = ok(env.lib.snapshot()).tracks.iter().map(|t| t.id).max();
+    let Some(top) = top else {
+        panic!("no tracks");
+    };
+    ok(fs::remove_file(&last));
+    env.scan();
+    env.put("tone.wav", "new.wav");
+    env.scan();
+    let snap = env.snap();
+    let Some(new) = snap.tracks.iter().find(|t| t.path.ends_with("new.wav")) else {
+        panic!("new track missing");
+    };
+    assert!(new.id > top, "{:?} reuses an id up to {top:?}", new.id);
+}
+
+fn break_artwork_dir(env: &Env) {
+    let art = env.dir.path().join("art");
+    ok(fs::remove_dir_all(&art));
+    ok(fs::write(&art, b"in the way"));
+}
+
+fn repair_artwork_dir(env: &Env) {
+    ok(fs::remove_file(env.dir.path().join("art")));
+    ok(fs::create_dir(env.dir.path().join("art")));
+}
+
+fn put_cover(env: &Env) {
+    let mut png = std::io::Cursor::new(Vec::new());
+    ok(image::RgbImage::from_pixel(8, 8, image::Rgb([9, 99, 199]))
+        .write_to(&mut png, image::ImageFormat::Png));
+    ok(fs::write(env.music().join("cover.png"), png.into_inner()));
+}
+
+#[test]
+fn artwork_disk_error_does_not_stop_the_scan_and_is_retried() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "one.mp3");
+    put_cover(&env);
+    env.add_music();
+    break_artwork_dir(&env);
+    let s = env.scan();
+    assert_eq!(s.added, 1);
+    assert!(env.snap().tracks[0].artwork.is_none());
+
+    repair_artwork_dir(&env);
+    let s = env.scan();
+    assert_eq!(s.updated, 1, "the track was not retried");
+    assert!(env.snap().tracks[0].artwork.is_some());
+    let s = env.scan();
+    assert_eq!(s.updated, 0);
+}
+
+#[test]
+fn artwork_disk_error_keeps_the_old_hash_on_update() {
+    let mut env = Env::new();
+    let f = env.put("tone.mp3", "one.mp3");
+    put_cover(&env);
+    env.add_music();
+    env.scan();
+    let old = env.snap().tracks[0].artwork.clone();
+    assert!(old.is_some());
+
+    bump_mtime(&f, 60);
+    break_artwork_dir(&env);
+    let s = env.scan();
+    assert_eq!(s.updated, 1);
+    assert_eq!(env.snap().tracks[0].artwork, old);
+}
+
+/// A WAV with a single sample: its duration rounds to 0 ms.
+fn empty_wav(path: &Path) {
+    let mut h = Vec::new();
+    h.extend_from_slice(b"RIFF");
+    h.extend_from_slice(&38u32.to_le_bytes());
+    h.extend_from_slice(b"WAVEfmt ");
+    h.extend_from_slice(&16u32.to_le_bytes());
+    h.extend_from_slice(&1u16.to_le_bytes());
+    h.extend_from_slice(&1u16.to_le_bytes());
+    h.extend_from_slice(&44100u32.to_le_bytes());
+    h.extend_from_slice(&88200u32.to_le_bytes());
+    h.extend_from_slice(&2u16.to_le_bytes());
+    h.extend_from_slice(&16u16.to_le_bytes());
+    h.extend_from_slice(b"data");
+    h.extend_from_slice(&2u32.to_le_bytes());
+    h.extend_from_slice(&0u16.to_le_bytes());
+    ok(fs::write(path, h));
+}
+
+#[test]
+fn a_zero_duration_from_tags_keeps_the_stored_duration() {
+    let mut env = Env::new();
+    let f = env.music().join("empty.wav");
+    empty_wav(&f);
+    env.add_music();
+    let s = env.scan();
+    assert_eq!(s.added, 1, "{s:?}");
+    assert_eq!(env.snap().tracks[0].duration_ms, 0);
+    let id = env.snap().tracks[0].id;
+    ok(env.lib.set_duration(id, 4321));
+
+    bump_mtime(&f, 60);
+    let s = env.scan();
+    assert_eq!(s.updated, 1);
+    assert_eq!(env.snap().tracks[0].duration_ms, 4321);
 }
