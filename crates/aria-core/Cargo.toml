@@ -10,6 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+aria-library = { workspace = true }
 crossbeam-channel = { workspace = true }
 directories = { workspace = true }
 fluent-bundle = { workspace = true }
