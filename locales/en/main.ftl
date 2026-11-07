@@ -91,6 +91,14 @@ library-newer = The library was saved by a newer version of Aria, so it's turned
 library-unavailable = The library couldn't be opened, so it's turned off for now. The rest of Aria keeps working.
 library-action-failed = Something went wrong in the library, and that action didn't finish. Your music files weren't changed.
 
+## Playback notices (toasts)
+
+# $title (String) - the track's title, e.g. Blue in Green
+playback-track-failed = Couldn't play { $title }, so it was skipped.
+playback-stopped-after-failures = Playback stopped because several tracks in a row couldn't be played.
+playback-device-fallback = The audio device isn't available, so Aria switched to another one.
+playback-no-device = No audio device is available, so playback is paused.
+
 ## Fatal startup errors (a message box shown before Aria quits)
 
 error-startup-title = Aria couldn't start

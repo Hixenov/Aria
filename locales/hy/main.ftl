@@ -93,6 +93,14 @@ library-newer = Գրադարանը պահպանվել է Aria-ի ավելի նո
 library-unavailable = Չհաջողվեց բացել գրադարանը, ուստի այն առայժմ անջատված է։ Aria-ի մնացած գործառույթները շարունակում են աշխատել։
 library-action-failed = Գրադարանում սխալ տեղի ունեցավ, և գործողությունը չավարտվեց։ Ձեր երաժշտական ֆայլերը չեն փոխվել։
 
+## Playback notices (toasts)
+
+# $title (String) - the track's title, e.g. Blue in Green
+playback-track-failed = Չհաջողվեց նվագարկել «{ $title }» երգը, և այն բաց է թողնվել։
+playback-stopped-after-failures = Նվագարկումը դադարեցվել է, քանի որ մի քանի երգ անընդմեջ չհաջողվեց նվագարկել։
+playback-device-fallback = Աուդիոսարքը հասանելի չէ, ուստի Aria-ն անցել է մեկ այլ սարքի։
+playback-no-device = Հասանելի աուդիոսարք չկա, ուստի նվագարկումը դադարեցված է։
+
 ## Fatal startup errors (a message box shown before Aria quits)
 
 error-startup-title = Չհաջողվեց գործարկել Aria-ն

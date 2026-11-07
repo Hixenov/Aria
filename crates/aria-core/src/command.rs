@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use aria_library::FolderId;
+use aria_library::{FolderId, TrackId};
 
 use crate::settings::Settings;
 
@@ -23,6 +23,40 @@ pub enum Command {
     Rescan,
     /// Delete the artwork thumbnails. The next scan rebuilds them.
     ClearArtwork,
-    /// Write any pending settings, then stop the backend.
+    /// Make `ids` the list being played and start the entry at `start`. Ids not in the library are
+    /// dropped.
+    PlayContext {
+        /// The list, in the order shown.
+        ids: Vec<TrackId>,
+        /// The index in `ids` of the track to start.
+        start: usize,
+    },
+    /// Put a track at the front of the user queue.
+    PlayNext(TrackId),
+    /// Put a track at the end of the user queue.
+    AddToQueue(TrackId),
+    /// Remove the entry at this index from the user queue.
+    RemoveFromQueue(usize),
+    /// Move an entry of the user queue so that it ends up at `to`.
+    MoveInQueue {
+        /// Its index now.
+        from: usize,
+        /// Its index afterwards.
+        to: usize,
+    },
+    /// Empty the user queue.
+    ClearQueue,
+    /// Pause or play. With nothing loaded, this starts what would play next.
+    TogglePlay,
+    /// Skip to the next track.
+    Next,
+    /// Go to the previous track, or to the start of this one once it has played for a while.
+    Previous,
+    /// Move within the current track, to this many milliseconds.
+    Seek(u64),
+    /// List the output devices, answered with
+    /// [`Event::OutputDevices`](crate::event::Event::OutputDevices).
+    ListDevices,
+    /// Save the queue and any pending settings, then stop the backend.
     Shutdown,
 }

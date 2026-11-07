@@ -1,9 +1,10 @@
 //! The backend thread. It owns a Tokio runtime and does the work the UI
 //! thread must never block on: debounced, durable settings persistence, and
 //! coordinating the services that run on threads of their own. The library
-//! service is the first of those; its events arrive on one more channel and
-//! commands for it are forwarded without waiting. Audio and network services
-//! join it in later phases.
+//! service and the audio engine are those so far: the events of each arrive on
+//! one more channel, and commands for them go out without waiting. The
+//! [`PlaybackService`] ties the two together here. Network services join them
+//! in later phases.
 //!
 //! The UI sends [`Command`]s through a [`BackendHandle`] and drains
 //! [`Event`]s once per frame. After each batch of events the backend calls
@@ -18,13 +19,20 @@
 //! together. Events travel over `crossbeam_channel::unbounded`, so the UI can
 //! `try_recv` without an async context.
 
-use std::{io, mem, sync::Arc, thread, time::Duration};
+use std::{
+    fmt,
+    hash::{BuildHasher, RandomState},
+    io, mem,
+    sync::Arc,
+    thread,
+    time::Duration,
+};
 
-use aria_audio::OutputFactory;
+use aria_audio::{DeviceKind, Engine, EngineEvent, OutputFactory, PlaybackClock, list_devices};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    time::Instant,
+    time::{Instant, MissedTickBehavior},
 };
 
 use crate::{
@@ -33,6 +41,7 @@ use crate::{
     event::Event,
     library_service::{self, LibraryEvent, LibraryHandle, LibraryRequest, LibraryService},
     notice::{Notice, NoticeLevel},
+    playback_service::PlaybackService,
     settings::{Settings, store::SettingsStore},
 };
 
@@ -45,6 +54,10 @@ const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long the backend waits for the library thread to stop. It leaves room within the time the
 /// app gives the whole backend, so a stuck library cannot cost the settings their clean exit.
 const LIBRARY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+/// The same for the audio engine, whose wait runs beside the library's.
+const ENGINE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+/// How often the playback service gets its [`tick`](PlaybackService::tick).
+const PLAYBACK_TICK: Duration = Duration::from_secs(1);
 /// Reported to the user when writing the settings fails.
 const SAVE_FAILED: Notice = Notice {
     level: NoticeLevel::Error,
@@ -91,6 +104,8 @@ pub struct BackendServices {
     pub library: Option<LibraryPaths>,
     /// Opens audio outputs.
     pub output: Box<dyn OutputFactory>,
+    /// The settings in effect at startup, which playback starts from.
+    pub settings: Settings,
 }
 
 /// A running library service, as the backend holds it.
@@ -111,6 +126,32 @@ impl LibraryLink {
     }
 }
 
+/// The audio engine and the service driving it, as the backend holds them.
+struct PlaybackLink {
+    service: PlaybackService,
+    events: UnboundedReceiver<EngineEvent>,
+    clock: Arc<PlaybackClock>,
+}
+
+impl PlaybackLink {
+    fn start(output: Box<dyn OutputFactory>, settings: &Settings) -> io::Result<Self> {
+        let (events_tx, events) = unbounded_channel();
+        let on_event = Box::new(move |event| {
+            // Fails only once the backend has exited, when nobody is listening.
+            let _ = events_tx.send(event);
+        });
+        let engine = Engine::start(output, on_event)?;
+        let clock = engine.clock();
+        let mut service = PlaybackService::new(engine, RandomState::new().hash_one(0_u8));
+        service.on_settings(settings);
+        Ok(Self {
+            service,
+            events,
+            clock,
+        })
+    }
+}
+
 /// Starts the backend thread. See [`Backend::start`].
 #[derive(Debug)]
 pub struct Backend;
@@ -126,7 +167,8 @@ impl Backend {
     /// update replaces them and schedules a new write, and shutdown retries
     /// them once. Only the first failure in a row is reported to the UI.
     ///
-    /// With `services.library` set, the library thread starts too. If it dies, the backend keeps
+    /// The audio engine starts too, with no output open until something plays. With
+    /// `services.library` set, the library thread starts as well. If it dies, the backend keeps
     /// running with the library disabled.
     ///
     /// # Errors
@@ -138,15 +180,20 @@ impl Backend {
         waker: Waker,
         cfg: BackendConfig,
     ) -> io::Result<BackendHandle> {
-        // Nothing opens an output yet: the playback service will.
-        let BackendServices { library, output: _ } = services;
+        let BackendServices {
+            library,
+            output,
+            settings,
+        } = services;
+        let playback = PlaybackLink::start(output, &settings)?;
         let library = library.map(LibraryLink::start).transpose()?;
-        Self::spawn(sink, library, waker, cfg)
+        Self::spawn(sink, library, playback, waker, cfg)
     }
 
     fn spawn(
         sink: Option<Box<dyn SettingsSink>>,
         library: Option<LibraryLink>,
+        playback: PlaybackLink,
         waker: Waker,
         cfg: BackendConfig,
     ) -> io::Result<BackendHandle> {
@@ -161,9 +208,15 @@ impl Backend {
             Some(link) => (Some(link.handle), Some(link.events)),
             None => (None, None),
         };
+        let PlaybackLink {
+            service: playback,
+            events: engine_events,
+            clock,
+        } = playback;
         let worker = Worker {
             sink,
             library,
+            playback,
             events: event_tx,
             waker,
             debounce: cfg.debounce,
@@ -179,12 +232,13 @@ impl Backend {
                 // after the runtime has stopped, even while a panic unwinds.
                 let _done = done_guard;
                 let runtime = runtime;
-                runtime.block_on(worker.run(command_rx, library_events));
+                runtime.block_on(worker.run(command_rx, library_events, engine_events));
                 runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
             })?;
         Ok(BackendHandle {
             commands,
             events,
+            clock,
             done,
             thread,
         })
@@ -196,12 +250,18 @@ impl Backend {
 /// Dropping it without calling [`shutdown`](Self::shutdown) closes the
 /// command channel. The backend treats that like [`Command::Shutdown`]: it
 /// writes any pending settings, then exits.
-#[derive(Debug)]
 pub struct BackendHandle {
     commands: UnboundedSender<Command>,
     events: Receiver<Event>,
+    clock: Arc<PlaybackClock>,
     done: Receiver<()>,
     thread: thread::JoinHandle<()>,
+}
+
+impl fmt::Debug for BackendHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BackendHandle").finish_non_exhaustive()
+    }
 }
 
 impl BackendHandle {
@@ -215,6 +275,11 @@ impl BackendHandle {
     /// Takes every event that has arrived so far, without blocking.
     pub fn drain(&self) -> Vec<Event> {
         self.events.try_iter().collect()
+    }
+
+    /// Where playback is, for the UI to read without waiting.
+    pub fn clock(&self) -> Arc<PlaybackClock> {
+        Arc::clone(&self.clock)
     }
 
     /// Sends [`Command::Shutdown`], then waits up to `timeout` for the
@@ -290,6 +355,7 @@ struct Worker {
     sink: Option<Box<dyn SettingsSink>>,
     /// `None` when the backend runs without a library, or after its thread died.
     library: Option<LibraryHandle>,
+    playback: PlaybackService,
     events: Sender<Event>,
     waker: Waker,
     debounce: Duration,
@@ -308,12 +374,25 @@ impl Worker {
         mut self,
         mut commands: UnboundedReceiver<Command>,
         mut library_events: Option<UnboundedReceiver<LibraryEvent>>,
+        engine_events: UnboundedReceiver<EngineEvent>,
     ) {
+        let mut engine_events = Some(engine_events);
+        let mut tick = tokio::time::interval(PLAYBACK_TICK);
+        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        self.flush_playback();
         loop {
             tokio::select! {
                 cmd = commands.recv() => match cmd {
-                    Some(Command::UpdateSettings(settings)) => self.update(settings),
-                    Some(Command::ResetSettings) => self.reset().await,
+                    Some(Command::UpdateSettings(settings)) => {
+                        self.playback.on_settings(&settings);
+                        self.flush_playback();
+                        self.update(settings);
+                    }
+                    Some(Command::ResetSettings) => {
+                        self.playback.on_settings(&Settings::default());
+                        self.flush_playback();
+                        self.reset().await;
+                    }
                     Some(Command::AddFolder(path)) => {
                         self.to_library(LibraryRequest::AddFolder(path));
                     }
@@ -322,10 +401,15 @@ impl Worker {
                     }
                     Some(Command::Rescan) => self.to_library(LibraryRequest::Rescan),
                     Some(Command::ClearArtwork) => self.to_library(LibraryRequest::ClearArtwork),
+                    Some(Command::ListDevices) => self.list_devices(),
                     // `None` means the handle was dropped: treat it as Shutdown.
                     Some(Command::Shutdown) | None => break,
+                    Some(command) => {
+                        self.playback.handle(command);
+                        self.flush_playback();
+                    }
                 },
-                event = next_library_event(&mut library_events) => match event {
+                event = next_event(&mut library_events) => match event {
                     Some(event) => self.library_event(event),
                     // Only the thread's end closes this channel, and until shutdown nothing
                     // asks it to end.
@@ -334,11 +418,32 @@ impl Worker {
                         self.library_lost();
                     }
                 },
+                event = next_event(&mut engine_events) => match event {
+                    Some(event) => {
+                        self.playback.on_engine(event);
+                        self.flush_playback();
+                    }
+                    // Only the thread's end closes this channel. No sound can come any more,
+                    // which to the user is the same as having no device.
+                    None => {
+                        tracing::error!("the audio engine stopped unexpectedly");
+                        engine_events = None;
+                        self.playback.on_engine(EngineEvent::NoDevice);
+                        self.flush_playback();
+                    }
+                },
+                _ = tick.tick() => {
+                    self.playback.tick();
+                    self.flush_playback();
+                }
                 () = deadline_reached(self.deadline) => self.flush().await,
             }
         }
-        // Shutdown, or the handle was dropped. A running scan starts winding
-        // down first, while the settings are written.
+        // Shutdown, or the handle was dropped. The queue goes to the library first, ahead of the
+        // request that stops it. The sound stops and a running scan starts winding down while the
+        // settings are written.
+        self.playback.finish();
+        self.flush_playback();
         let library = self.library.take();
         if let Some(library) = &library {
             library.send(LibraryRequest::Shutdown);
@@ -349,12 +454,42 @@ impl Worker {
         if let Some(settings) = self.pending.take() {
             self.save(settings).await;
         }
+        // The handles log a thread that timed out or panicked. The results of the
+        // tasks only say the same again.
+        let engine = self.playback.into_engine();
+        let engine = tokio::task::spawn_blocking(move || engine.shutdown(ENGINE_SHUTDOWN_TIMEOUT));
         if let Some(library) = library {
-            // The handle logs a thread that timed out or panicked. The result of
-            // the task only says the same again.
             let stop = move || library.shutdown(LIBRARY_SHUTDOWN_TIMEOUT);
             let _ = tokio::task::spawn_blocking(stop).await;
         }
+        let _ = engine.await;
+    }
+
+    /// Passes on what the playback service has collected. An empty batch wakes nobody.
+    fn flush_playback(&mut self) {
+        for request in self.playback.take_requests() {
+            self.to_library(request);
+        }
+        let events = self.playback.take_events();
+        if !events.is_empty() {
+            self.emit(events);
+        }
+    }
+
+    /// Lists the output devices on the blocking pool, since that can be slow, and sends the answer
+    /// from there. If they cannot be listed the answer is empty, and the UI still offers the
+    /// system default.
+    fn list_devices(&self) {
+        let (events, waker) = (self.events.clone(), Arc::clone(&self.waker));
+        tokio::task::spawn_blocking(move || {
+            let devices = list_devices(DeviceKind::Output).unwrap_or_else(|error| {
+                tracing::warn!(%error, "the output devices could not be listed");
+                Vec::new()
+            });
+            // Fails only once the handle is gone, when nobody is listening.
+            let _ = events.send(Event::OutputDevices(devices));
+            waker();
+        });
     }
 
     /// Forwards `request` without waiting. Without a library it goes nowhere.
@@ -364,15 +499,18 @@ impl Worker {
         }
     }
 
-    fn library_event(&self, event: LibraryEvent) {
-        let event = match event {
-            LibraryEvent::Snapshot(snapshot) => Event::LibraryUpdated(snapshot),
-            LibraryEvent::Progress(progress) => Event::ScanProgress(progress),
-            LibraryEvent::Notice(notice) => Event::Notice(notice),
-            // Nothing asks for the saved queue yet.
-            LibraryEvent::QueueLoaded(_) => return,
-        };
-        self.emit([event]);
+    fn library_event(&mut self, event: LibraryEvent) {
+        match event {
+            LibraryEvent::Snapshot(snapshot) => {
+                // The UI hears of the snapshot before any view that refers to it.
+                self.emit([Event::LibraryUpdated(Arc::clone(&snapshot))]);
+                self.playback.on_snapshot(snapshot);
+            }
+            LibraryEvent::Progress(progress) => self.emit([Event::ScanProgress(progress)]),
+            LibraryEvent::Notice(notice) => self.emit([Event::Notice(notice)]),
+            LibraryEvent::QueueLoaded(record) => self.playback.on_queue_loaded(record),
+        }
+        self.flush_playback();
     }
 
     /// The library thread died. It can tell nobody, so this ends any scan it left showing and
@@ -385,6 +523,8 @@ impl Worker {
             Event::LibraryUpdated(Arc::default()),
             Event::Notice(library_service::UNAVAILABLE),
         ]);
+        self.playback.library_lost();
+        self.flush_playback();
     }
 
     fn update(&mut self, settings: Settings) {
@@ -481,11 +621,9 @@ impl Worker {
     }
 }
 
-/// The next event of the library thread, or `None` once its channel has closed. Without a
-/// channel it never completes.
-async fn next_library_event(
-    events: &mut Option<UnboundedReceiver<LibraryEvent>>,
-) -> Option<LibraryEvent> {
+/// The next event of a service's thread, or `None` once its channel has closed. Without a channel
+/// it never completes.
+async fn next_event<T>(events: &mut Option<UnboundedReceiver<T>>) -> Option<T> {
     match events {
         Some(events) => events.recv().await,
         None => std::future::pending().await,
@@ -515,8 +653,8 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use aria_audio::{OutputFormat, fake::FakeFactory};
-    use aria_library::FolderId;
+    use aria_audio::{DeviceId, OutputFormat, fake::FakeFactory};
+    use aria_library::{FolderId, TrackId};
 
     use super::*;
     use crate::{
@@ -524,6 +662,7 @@ mod tests {
         error::SettingsError,
         event::Event,
         notice::{Notice, NoticeLevel},
+        playback_service::PlayerView,
         settings::{Settings, Theme, store::SettingsStore},
     };
 
@@ -644,7 +783,17 @@ mod tests {
         BackendServices {
             library,
             output: Box::new(FakeFactory::new(format)),
+            settings: Settings::default(),
         }
+    }
+
+    /// Playback on an output that nothing listens to.
+    fn silent_playback() -> PlaybackLink {
+        let factory = FakeFactory::new(OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        });
+        PlaybackLink::start(Box::new(factory), &Settings::default()).unwrap()
     }
 
     fn no_library() -> BackendServices {
@@ -709,6 +858,124 @@ mod tests {
         assert!(handle.shutdown(LIBRARY_MAX));
     }
 
+    /// Plays by hand on `factory`'s latest output until `done` holds of the events so far.
+    fn play_until(
+        handle: &BackendHandle,
+        factory: &FakeFactory,
+        done: impl Fn(&[Event]) -> bool,
+    ) -> Vec<Event> {
+        let seen = RefCell::new(Vec::new());
+        let met = wait_until(
+            || {
+                if let Some(output) = factory.outputs().last() {
+                    output.pull(2_048);
+                }
+                let mut seen = seen.borrow_mut();
+                seen.extend(handle.drain());
+                done(&seen)
+            },
+            LIBRARY_MAX,
+        );
+        let seen = seen.into_inner();
+        assert!(met, "condition not met; events drained: {seen:?}");
+        seen
+    }
+
+    fn last_view(events: &[Event]) -> Option<&PlayerView> {
+        events.iter().rev().find_map(|event| match event {
+            Event::Player(view) => Some(view),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_queue_plays_through_the_backend_and_comes_back_paused() {
+        let dir = tempfile::tempdir().unwrap();
+        let music = dir.path().join("music");
+        fs::create_dir(&music).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../aria-audio/tests/fixtures/tone.ogg");
+        fs::copy(&fixture, music.join("1.ogg")).unwrap();
+        fs::copy(&fixture, music.join("2.ogg")).unwrap();
+        let format = OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        let speakers = DeviceId("speakers".into());
+        let headphones = DeviceId("headphones".into());
+        let factory = FakeFactory::new(format);
+        let services = BackendServices {
+            library: Some(library_paths(dir.path())),
+            output: Box::new(factory.clone()),
+            settings: Settings {
+                output_device: Some(speakers.clone()),
+                ..Settings::default()
+            },
+        };
+        let (waker, _) = counting_waker();
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
+
+        handle.send(Command::AddFolder(music));
+        let has_tracks = |e: &Event| matches!(e, Event::LibraryUpdated(s) if s.tracks.len() == 2);
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| e.iter().any(has_tracks));
+        let snapshot = events.iter().find_map(|e| match e {
+            Event::LibraryUpdated(s) if s.tracks.len() == 2 => Some(Arc::clone(s)),
+            _ => None,
+        });
+        let ids: Vec<TrackId> = snapshot.unwrap().tracks.iter().map(|t| t.id).collect();
+
+        handle.send(Command::PlayContext {
+            ids: ids.clone(),
+            start: 0,
+        });
+        // The startup settings apply, and the clock moves.
+        let clock = handle.clock();
+        play_until(&handle, &factory, |_| clock.read().position_ms > 0);
+        assert_eq!(factory.outputs()[0].device(), Some(speakers));
+
+        // Settings reach playback even with nothing to save them to.
+        handle.send(Command::UpdateSettings(Settings {
+            output_device: Some(headphones.clone()),
+            ..Settings::default()
+        }));
+        assert!(wait_until(|| factory.outputs().len() == 2, LIBRARY_MAX));
+        assert_eq!(factory.outputs()[1].device(), Some(headphones));
+
+        // Only the engine's events can take the view to the end of the list.
+        let last = ids[1];
+        let at_end = |e: &[Event]| {
+            last_view(e).is_some_and(|view| view.current == Some(last) && !view.playing)
+        };
+        play_until(&handle, &factory, at_end);
+        assert!(handle.shutdown(LIBRARY_MAX));
+
+        let factory = FakeFactory::new(format);
+        let services = BackendServices {
+            library: Some(library_paths(dir.path())),
+            output: Box::new(factory.clone()),
+            settings: Settings::default(),
+        };
+        let (waker, _) = counting_waker();
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
+        drain_until_within(&handle, LIBRARY_MAX, at_end);
+        assert!(factory.outputs().is_empty(), "an output opened");
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    #[test]
+    fn output_devices_are_listed_off_the_worker() {
+        let (waker, wakes) = counting_waker();
+        let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
+
+        handle.send(Command::ListDevices);
+
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            e.iter().any(|e| matches!(e, Event::OutputDevices(_)))
+        });
+        assert!(wakes.load(Ordering::SeqCst) >= 1);
+        assert!(handle.shutdown(MAX));
+    }
+
     #[test]
     fn library_commands_without_a_library_go_nowhere() {
         let (waker, wakes) = counting_waker();
@@ -731,7 +998,8 @@ mod tests {
         });
         let (sink, saved) = recording_sink(0);
         let (waker, _) = counting_waker();
-        let handle = Backend::spawn(Some(sink), Some(link), waker, FAST).unwrap();
+        let handle =
+            Backend::spawn(Some(sink), Some(link), silent_playback(), waker, FAST).unwrap();
 
         let events =
             drain_until_within(&handle, LIBRARY_MAX, |e| e.contains(&library_unavailable()));
@@ -767,7 +1035,8 @@ mod tests {
         });
         let (sink, saved) = recording_sink(0);
         let (waker, _) = counting_waker();
-        let handle = Backend::spawn(Some(sink), Some(link), waker, FAST).unwrap();
+        let handle =
+            Backend::spawn(Some(sink), Some(link), silent_playback(), waker, FAST).unwrap();
         drain_until_within(&handle, LIBRARY_MAX, |e| {
             e.iter().any(|e| matches!(e, Event::LibraryUpdated(_)))
         });

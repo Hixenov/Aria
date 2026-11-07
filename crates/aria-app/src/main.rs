@@ -132,6 +132,7 @@ fn main() -> anyhow::Result<()> {
     let services = BackendServices {
         library,
         output: Box::new(CpalFactory),
+        settings: settings.clone().sanitized(),
     };
     let backend = match Backend::start(
         sink,

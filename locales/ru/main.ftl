@@ -92,6 +92,14 @@ library-newer = Библиотека сохранена более новой в
 library-unavailable = Не удалось открыть библиотеку, поэтому она пока отключена. Остальные функции Aria продолжают работать.
 library-action-failed = В библиотеке произошла ошибка, и действие не завершено. Ваши музыкальные файлы не изменены.
 
+## Playback notices (toasts)
+
+# $title (String) - the track's title, e.g. Blue in Green
+playback-track-failed = Не удалось воспроизвести «{ $title }», трек пропущен.
+playback-stopped-after-failures = Воспроизведение остановлено: несколько треков подряд воспроизвести не удалось.
+playback-device-fallback = Аудиоустройство недоступно, поэтому Aria переключилась на другое.
+playback-no-device = Нет доступного аудиоустройства, поэтому воспроизведение приостановлено.
+
 ## Fatal startup errors (a message box shown before Aria quits)
 
 error-startup-title = Не удалось запустить Aria

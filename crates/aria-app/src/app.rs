@@ -224,8 +224,11 @@ impl AriaApp {
                 }
             }
             Event::SettingsSaved => tracing::trace!("settings saved"),
-            // Nothing shows the library yet.
-            Event::LibraryUpdated(_) | Event::ScanProgress(_) => {}
+            // Nothing shows the library or the player yet.
+            Event::LibraryUpdated(_)
+            | Event::ScanProgress(_)
+            | Event::Player(_)
+            | Event::OutputDevices(_) => {}
         }
     }
 
@@ -496,6 +499,7 @@ mod tests {
                 sample_rate: 48_000,
                 channels: 2,
             })),
+            settings: Settings::default(),
         };
         let backend = Backend::start(None, services, waker, BackendConfig::default()).unwrap();
         let settings = Settings {

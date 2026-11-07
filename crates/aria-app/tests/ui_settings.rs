@@ -376,6 +376,7 @@ fn persisting_settings_page(file: &Path) -> Harness<'static, AriaApp> {
             sample_rate: 48_000,
             channels: 2,
         })),
+        settings: Settings::default(),
     };
     let backend = Backend::start(
         Some(Box::new(store)),

@@ -271,6 +271,10 @@ mod tests {
         "library-newer",
         "library-unavailable",
         "library-action-failed",
+        "playback-track-failed",
+        "playback-stopped-after-failures",
+        "playback-device-fallback",
+        "playback-no-device",
         "error-startup-title",
         "error-startup-window",
         "lang-en",
@@ -376,6 +380,7 @@ mod tests {
         args.set("phase", 777);
         args.set("count", 777);
         args.set("folder", "777");
+        args.set("title", "777");
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));
