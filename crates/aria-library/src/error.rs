@@ -17,6 +17,9 @@ pub enum LibraryError {
     /// A file system operation failed.
     #[error("library file system error")]
     Io(#[source] std::io::Error),
+    /// A file's tags or properties could not be read.
+    #[error("the file's tags could not be read")]
+    Tags(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The folder lies inside a folder that is already in the library.
     #[error("the folder is inside a folder that is already in the library")]
     FolderInsideExisting,
