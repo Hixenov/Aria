@@ -26,8 +26,8 @@ pub struct Opened {
 
 /// The library database. Not shared between threads; the backend's library thread owns it.
 pub struct Library {
-    conn: Connection,
-    artwork_dir: PathBuf,
+    pub(crate) conn: Connection,
+    pub(crate) artwork_dir: PathBuf,
 }
 
 /// What the read-only probe found.
@@ -137,7 +137,7 @@ fn prepare_file(db: &Path, exists: std::io::Result<bool>) -> Result<bool, Librar
     }
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
