@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,7 +15,7 @@ use aria_audio::fake::{FakeControl, FakeFactory};
 use aria_audio::testing::{write_gapless_pair, write_tone_wav};
 use aria_audio::{
     AudioError, AudioOutput, ClockReading, DeviceId, Engine, EngineCommand, EngineEvent,
-    EngineHandle, OutputFactory, OutputFormat, TrackRequest,
+    EngineHandle, OutputFactory, OutputFormat, PlaybackClock, TrackRequest,
 };
 use tempfile::TempDir;
 
@@ -256,6 +257,25 @@ fn tone_file(frames: u64) -> io::Result<(TempDir, PathBuf)> {
     let path = dir.path().join("tone.wav");
     write_tone_wav(&path, 44_100, 2, frames, 440.0)?;
     Ok((dir, path))
+}
+
+/// A copy of `tone.m4a` with its audio overwritten by `fill` after the first `keep_percent` of it.
+/// The index that may follow the audio stays, so the file still opens.
+fn damaged_m4a(dir: &Path, keep_percent: usize, fill: u8) -> io::Result<PathBuf> {
+    let mut bytes = fs::read(fixture("tone.m4a"))?;
+    let name_at = bytes
+        .windows(4)
+        .position(|name| name == b"mdat")
+        .unwrap_or(4);
+    let size = bytes[name_at - 4..name_at]
+        .iter()
+        .fold(0, |size, byte| size << 8 | usize::from(*byte));
+    let audio = name_at + 4;
+    let audio_end = name_at - 4 + size;
+    bytes[audio + (audio_end - audio) * keep_percent / 100..audio_end].fill(fill);
+    let path = dir.join("damaged.m4a");
+    fs::write(&path, bytes)?;
+    Ok(path)
 }
 
 #[test]
@@ -516,15 +536,8 @@ fn a_file_that_is_not_audio_fails_load() {
 
 #[test]
 fn a_track_that_breaks_plays_what_it_can_then_fails() {
-    let mut bytes = fs::read(fixture("tone.m4a")).unwrap();
-    // The second half of the audio box, leaving the index that may follow it alone.
-    let name_at = bytes.windows(4).position(|name| name == b"mdat").unwrap();
-    let size: [u8; 4] = bytes[name_at - 4..name_at].try_into().unwrap();
-    let size = u32::from_be_bytes(size) as usize;
-    bytes[name_at + size / 2..name_at - 4 + size].fill(0xFF);
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("broken.m4a");
-    fs::write(&path, bytes).unwrap();
+    let path = damaged_m4a(dir.path(), 50, 0xFF).unwrap();
     let rig = Rig::new(STEREO_44K);
     rig.send(load(TrackRequest { token: 1, path }));
     rig.send(SetNext(Some(track(2, "tone.flac"))));
@@ -537,6 +550,53 @@ fn a_track_that_breaks_plays_what_it_can_then_fails() {
     assert!(audible_frames(&audio) > SECOND / 4);
     assert!(audible_frames(&audio) < SECOND * 3 / 4);
     wait_until("the pause", || !rig.read().playing);
+}
+
+#[test]
+fn a_next_track_that_breaks_after_a_resampled_join_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = damaged_m4a(dir.path(), 0, 0).unwrap();
+    let rig = Rig::new(STEREO_48K);
+
+    rig.send(load(track(1, "tone.flac")));
+    rig.send(SetNext(Some(TrackRequest { token: 2, path })));
+    let output = rig.output(0);
+    let (audio, events) = rig.pull_until(&output, |event| *event == TrackFailed { token: 2 });
+
+    let whole = TrackStarted {
+        token: 1,
+        duration_ms: Some(1_000),
+    };
+    assert_eq!(
+        events,
+        [whole, TrackEnded { token: 1 }, TrackFailed { token: 2 }]
+    );
+    // All of the first track, with the part the resampler was still holding.
+    let heard = audible_frames(&audio);
+    assert!(heard > 47_900, "only {heard} frames were heard");
+    wait_until("the pause", || !rig.read().playing);
+}
+
+#[test]
+fn a_next_track_set_after_a_track_breaks_waits_for_a_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = damaged_m4a(dir.path(), 50, 0xFF).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.start(TrackRequest { token: 1, path });
+    let output = rig.output(0);
+
+    // The failure is known by now, but the audio before it has not been heard.
+    rig.hold(1);
+    rig.send(SetNext(Some(track(2, "tone.flac"))));
+    rig.resume();
+    let (_, events) = rig.pull_until(&output, |event| *event == TrackFailed { token: 1 });
+
+    assert_eq!(events.len(), 2, "got {events:?}");
+    wait_until("the pause", || !rig.read().playing);
+    assert_eq!(rig.read().token, 1);
+    assert!(output.pull(4_096).iter().all(|sample| *sample == 0.0));
+    rig.send(load(track(3, "no-such-file.flac")));
+    assert_eq!(rig.next_event(), TrackFailed { token: 3 });
 }
 
 #[test]
@@ -825,6 +885,33 @@ fn play_with_no_device_reports_it_and_keeps_the_track() {
     rig.send(Play);
     let (_, events) = rig.pull_to_stop(&rig.output(0));
     assert_eq!(events.last(), Some(&Stopped));
+}
+
+#[test]
+fn a_chosen_device_missing_on_the_first_open_is_quiet() {
+    let rig = Rig::new(STEREO_44K);
+    rig.send(SetDevice(Some(DeviceId("chosen".into()))));
+    rig.factory.fail_open(1);
+
+    rig.start(track(1, "tone.flac"));
+
+    assert_eq!(rig.output(0).device(), None);
+    rig.assert_no_event();
+}
+
+#[test]
+fn a_retry_that_lands_on_the_default_is_quiet() {
+    let rig = Rig::new(STEREO_44K);
+    rig.send(SetDevice(Some(DeviceId("chosen".into()))));
+    rig.factory.fail_open(2);
+    rig.send(load(track(1, "tone.flac")));
+    assert_eq!(rig.next_event(), NoDevice);
+
+    rig.factory.fail_open(1);
+    rig.resume();
+
+    assert_eq!(rig.output(0).device(), None);
+    rig.assert_no_event();
 }
 
 #[test]
@@ -1133,6 +1220,62 @@ fn shutdown_returns_promptly_after_a_panic() {
     let start = Instant::now();
     assert!(!engine.shutdown(Duration::from_secs(10)));
     assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn a_panicked_engine_leaves_the_clock_stopped() {
+    let factory = FakeFactory::new(STEREO_44K);
+    let engine = Engine::start(
+        Box::new(factory.clone()),
+        Box::new(|_| panic!("test event handler panics")),
+    )
+    .unwrap();
+    let clock = engine.clock();
+    engine.send(load(track(1, "tone.flac")));
+    wait_until("playback", || clock.read().playing);
+
+    // The first track to be heard sets off the panic.
+    let output = factory.outputs()[0].clone();
+    wait_until("the clock to stop", || {
+        output.pull(1_024);
+        !clock.read().playing
+    });
+
+    assert!(!engine.shutdown(DEADLINE));
+}
+
+#[test]
+fn the_clock_is_current_when_an_event_arrives() {
+    let factory = FakeFactory::new(STEREO_44K);
+    let clock_slot = Arc::new(OnceLock::<Arc<PlaybackClock>>::new());
+    let (sender, seen) = mpsc::channel();
+    let handler_slot = Arc::clone(&clock_slot);
+    let on_event = move |event| {
+        let reading = handler_slot.get().map(|clock| clock.read());
+        let _ = sender.send((event, reading));
+    };
+    let engine = Engine::start(Box::new(factory.clone()), Box::new(on_event)).unwrap();
+    clock_slot.set(engine.clock()).ok().unwrap();
+
+    engine.send(load(track(1, "silence-gap-a.flac")));
+    wait_until("an output", || !factory.outputs().is_empty());
+    let output = factory.outputs()[0].clone();
+    wait_until("the end", || {
+        output.pull(CHUNK_FRAMES);
+        match seen.try_recv() {
+            Ok((Stopped, reading)) => {
+                let reading = reading.unwrap();
+                assert!(!reading.playing, "the clock said {reading:?}");
+                assert!(reading.position_ms >= 490, "the clock said {reading:?}");
+                true
+            }
+            Ok((TrackStarted { .. }, reading)) => {
+                assert_eq!(reading.unwrap().token, 1);
+                false
+            }
+            _ => false,
+        }
+    });
 }
 
 #[test]

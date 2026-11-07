@@ -72,7 +72,9 @@ pub enum EngineEvent {
     TrackFailed {
         token: u64,
     },
-    /// The output failed and was replaced, or the chosen device could not be opened.
+    /// The output failed and was replaced, or the device just chosen with
+    /// [`SetDevice`](EngineCommand::SetDevice) could not be opened. A chosen device that is missing
+    /// when an output is opened for playback falls back to the default without this.
     DeviceFellBack,
     /// No output could be opened, or outputs keep failing. Playback is paused, and the next
     /// [`Play`](EngineCommand::Play) tries again.
@@ -97,7 +99,10 @@ impl Engine {
         let thread = thread::Builder::new()
             .name("aria-audio-engine".into())
             .spawn(move || {
-                let _done = DoneGuard(done_tx);
+                let _done = DoneGuard {
+                    done: done_tx,
+                    clock: Arc::clone(&worker_clock),
+                };
                 Worker::new(factory, on_event, worker_clock).run(&received);
             })?;
         Ok(EngineHandle {
@@ -163,15 +168,23 @@ impl EngineHandle {
     }
 }
 
-/// Owned by the engine thread. Its drop signals [`EngineHandle::shutdown`], so a panicking thread
-/// unblocks it too.
-struct DoneGuard(SyncSender<()>);
+/// Owned by the engine thread, and dropped after the worker. Its drop signals
+/// [`EngineHandle::shutdown`] and stops the clock, so a panicking thread does both too.
+struct DoneGuard {
+    done: SyncSender<()>,
+    clock: Arc<PlaybackClock>,
+}
 
 impl Drop for DoneGuard {
     fn drop(&mut self) {
+        let last = self.clock.read();
+        self.clock.publish(ClockReading {
+            playing: false,
+            ..last
+        });
         // This is the only send on a capacity-1 channel, so it never blocks. It fails only if the
         // handle is gone and nobody is waiting.
-        let _ = self.0.try_send(());
+        let _ = self.done.try_send(());
     }
 }
 
@@ -184,8 +197,12 @@ fn scale(value: u64, to: u32, from: u32) -> u64 {
 /// Let go of commands that a later one in the same batch overrides.
 ///
 /// Only the last `Seek` counts, as only the last `Load` and `SetNext` do, and a `Load` or `Stop`
-/// overrides what came before it. Besides saving work, this keeps two clears out of one fade, which
-/// the mixer could only splice together at reduced level.
+/// overrides what came before it. Besides saving work, this keeps the clears of several seeks out
+/// of one fade, which the mixer could only splice together at reduced level. Other pairs, such as
+/// `[Load, Seek]`, still clear twice, which is a soft splice at worst.
+///
+/// All commands run before any decoding, so a dropped one loses only its immediate effects. The one
+/// that shows: `[Load, Stop]` from idle sends no `Stopped`, as no track was ever there to stop.
 fn coalesce(batch: Vec<EngineCommand>) -> Vec<EngineCommand> {
     let (mut seek_done, mut next_done, mut load_done) = (false, false, false);
     let mut kept: Vec<_> = batch
@@ -346,6 +363,8 @@ struct Heard {
 struct Worker {
     factory: Box<dyn OutputFactory>,
     on_event: Box<dyn Fn(EngineEvent) + Send>,
+    /// Events of this pass, in order.
+    events: Vec<EngineEvent>,
     clock: Arc<PlaybackClock>,
     device: Option<DeviceId>,
     volume: f32,
@@ -374,6 +393,7 @@ impl Worker {
         Self {
             factory,
             on_event,
+            events: Vec::new(),
             clock,
             device: None,
             volume: 1.0,
@@ -414,7 +434,11 @@ impl Worker {
             self.check_output();
             self.fill();
             self.settle();
+            // In this order, so that whoever hears of an event finds the clock agreeing with it.
             self.publish();
+            for event in self.events.drain(..) {
+                (self.on_event)(event);
+            }
         }
     }
 
@@ -446,8 +470,9 @@ impl Worker {
         }
     }
 
-    fn emit(&self, event: EngineEvent) {
-        (self.on_event)(event);
+    /// Queue an event, to go out at the end of the pass.
+    fn emit(&mut self, event: EngineEvent) {
+        self.events.push(event);
     }
 
     fn has_track(&self) -> bool {
@@ -637,16 +662,15 @@ impl Worker {
         }
     }
 
-    /// Open an output if there is none, as a first use or a retry after giving up.
+    /// Open an output if there is none, as a first use or a retry after giving up. Landing on the
+    /// default here is no news: the setting is kept, and the next open tries the device again.
     fn ensure_output(&mut self) {
         if self.sink.is_some() {
             return;
         }
         self.rebuilds.clear();
-        match self.open_output() {
-            Some(true) => self.emit(EngineEvent::DeviceFellBack),
-            Some(false) => {}
-            None => self.lose_output(),
+        if self.open_output().is_none() {
+            self.lose_output();
         }
     }
 
@@ -730,8 +754,12 @@ impl Worker {
         while self.write_pending() {
             if self.feed.is_some() {
                 self.decode();
-            } else if self.gapless && self.next.is_some() && self.has_track() {
-                // The next track was announced after the last one ran out.
+            } else if self.gapless
+                && self.next.is_some()
+                && self.segments.back().is_some_and(|s| !s.failed)
+            {
+                // The next track was announced after the last one ran out. After a failure,
+                // what plays next is for the next command to say.
                 self.end_of_file();
             } else {
                 return;
@@ -792,7 +820,18 @@ impl Worker {
         {
             tracing::debug!(%error, "lost the end of a track");
         }
+        self.end_at_queue();
+    }
+
+    /// Mark the last track as ending where the queued audio does. Nothing else may stay beyond
+    /// that either: a join comes from the frames read, and if their audio was lost in the
+    /// resampler, an end past it would never be reached.
+    fn end_at_queue(&mut self) {
         let end = self.queued_index();
+        for segment in &mut self.segments {
+            segment.start_index = segment.start_index.min(end);
+            segment.end_index = segment.end_index.map(|index| index.min(end));
+        }
         if let Some(segment) = self.segments.back_mut() {
             segment.end_index = Some(end);
         }
@@ -826,12 +865,15 @@ impl Worker {
     /// The feed broke. What it delivered still plays; the failure is reported after that.
     fn feed_failed(&mut self, error: &AudioError) {
         tracing::debug!(%error, "decoding stopped");
-        self.feed = None;
         self.next = None;
-        let end = self.queued_index();
+        let read_nothing = self.feed.as_ref().is_some_and(|f| f.frames_read == 0);
+        self.close_feed();
         if let Some(segment) = self.segments.back_mut() {
-            segment.end_index = Some(end);
             segment.failed = true;
+            // Rounding at a join can leave it a frame of the last track's tail.
+            if read_nothing {
+                segment.end_index = Some(segment.start_index);
+            }
         }
     }
 
@@ -846,7 +888,7 @@ impl Worker {
             let heard = has_audio && consumed > segment.start_index;
             if !segment.started && (heard || (reached_end && !segment.failed)) {
                 segment.started = true;
-                (self.on_event)(EngineEvent::TrackStarted {
+                self.events.push(EngineEvent::TrackStarted {
                     token: segment.track.token,
                     duration_ms: segment.duration_ms,
                 });
@@ -861,7 +903,7 @@ impl Worker {
                 self.reading.token = token;
                 self.reading.position_ms = segment.position_ms(consumed, format);
             }
-            (self.on_event)(if failed {
+            self.events.push(if failed {
                 EngineEvent::TrackFailed { token }
             } else {
                 EngineEvent::TrackEnded { token }
@@ -910,6 +952,7 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::FakeFactory;
     use EngineCommand::{Load, Pause, Play, Seek, SetNext, Stop};
 
     fn load(token: u64) -> EngineCommand {
@@ -960,6 +1003,28 @@ mod tests {
         let batch = vec![Play, Pause, Play];
 
         assert_eq!(coalesce(batch.clone()), batch);
+    }
+
+    #[test]
+    fn no_segment_is_left_past_the_queued_audio() {
+        let factory = FakeFactory::new(OutputFormat {
+            sample_rate: 44_100,
+            channels: 2,
+        });
+        let clock = Arc::new(PlaybackClock::default());
+        let mut worker = Worker::new(Box::new(factory), Box::new(|_| {}), clock);
+        // A join worked out from frames read, whose audio then never came out of the resampler.
+        let mut first = Segment::unplayable(request(1), 0);
+        first.end_index = Some(1_000);
+        let second = Segment::unplayable(request(2), 1_000);
+        worker.segments.extend([first, second]);
+
+        worker.end_at_queue();
+
+        let ends: Vec<_> = worker.segments.iter().map(|s| s.end_index).collect();
+        let starts: Vec<_> = worker.segments.iter().map(|s| s.start_index).collect();
+        assert_eq!(ends, [Some(0), Some(0)]);
+        assert_eq!(starts, [0, 0]);
     }
 
     #[test]
