@@ -3,7 +3,7 @@
 use std::{fmt, str::FromStr};
 
 use aria_audio::DeviceId;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 
 use crate::player::RepeatMode;
 
@@ -17,6 +17,7 @@ pub const SIDEBAR_MIN: f32 = 180.0;
 pub const SIDEBAR_MAX: f32 = 320.0;
 const SIDEBAR_DEFAULT: f32 = 220.0;
 const VOLUME_DEFAULT: f32 = 1.0;
+const GAPLESS_DEFAULT: bool = true;
 
 /// UI language.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -171,6 +172,50 @@ fn lenient_rgb<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Rgb>, D::Error>
     }
 }
 
+/// Reads a setting that must not cost the user the rest of the file: a value of the wrong type
+/// becomes `fallback`, with a warning. The value itself is not logged.
+fn lenient<'de, D, T>(d: D, fallback: T) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw<T> {
+        Valid(T),
+        Other(serde::de::IgnoredAny),
+    }
+    match Raw::<T>::deserialize(d)? {
+        Raw::Valid(value) => Ok(value),
+        Raw::Other(_) => {
+            tracing::warn!(
+                expected = std::any::type_name::<T>(),
+                "ignoring a setting of the wrong type"
+            );
+            Ok(fallback)
+        }
+    }
+}
+
+/// [`lenient`], for a setting whose default is its type's.
+fn lenient_or_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    lenient(d, T::default())
+}
+
+/// [`lenient`] for [`Settings::volume`].
+fn lenient_volume<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    lenient(d, VOLUME_DEFAULT)
+}
+
+/// [`lenient`] for [`Settings::gapless`].
+fn lenient_gapless<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, GAPLESS_DEFAULT)
+}
+
 /// Persisted user settings.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -196,16 +241,22 @@ pub struct Settings {
     /// Sidebar width, clamped to `SIDEBAR_MIN..=SIDEBAR_MAX`.
     pub sidebar_width: f32,
     /// Playback volume, clamped to `0.0..=1.0`.
+    #[serde(deserialize_with = "lenient_volume")]
     pub volume: f32,
     /// Whether playback is muted. The volume is kept for unmuting.
+    #[serde(deserialize_with = "lenient_or_default")]
     pub muted: bool,
     /// Whether the queue plays shuffled.
+    #[serde(deserialize_with = "lenient_or_default")]
     pub shuffle: bool,
     /// What happens when the current track ends.
+    #[serde(deserialize_with = "lenient_or_default")]
     pub repeat: RepeatMode,
     /// The output device; `None` means the system default.
+    #[serde(deserialize_with = "lenient_or_default")]
     pub output_device: Option<DeviceId>,
     /// Whether tracks join without a gap.
+    #[serde(deserialize_with = "lenient_gapless")]
     pub gapless: bool,
 }
 
@@ -226,7 +277,7 @@ impl Default for Settings {
             shuffle: false,
             repeat: RepeatMode::Off,
             output_device: None,
-            gapless: true,
+            gapless: GAPLESS_DEFAULT,
         }
     }
 }
@@ -343,7 +394,13 @@ mod tests {
                       log_level = \"info\"\n\
                       right_panel_open = true\n\
                       sidebar_width = 240.0\n";
-        let s: Settings = toml::from_str(phase1).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        std::fs::write(&path, phase1).unwrap();
+        let loaded = store::SettingsStore::new(path).load();
+        assert_eq!(loaded.notice, None);
+        assert!(loaded.writable);
+        let s = loaded.settings;
         assert_eq!(s.language, Some(Language::Ru));
         assert_eq!(s.sidebar_width, 240.0);
         assert_eq!(s.volume, 1.0);

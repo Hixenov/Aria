@@ -225,19 +225,37 @@ impl BackendHandle {
     /// finish on its own, or if the thread panicked.
     pub fn shutdown(self, timeout: Duration) -> bool {
         self.send(Command::Shutdown);
-        match self.done.recv_timeout(timeout) {
-            // A disconnect also means the done guard was dropped.
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => match self.thread.join() {
-                Ok(()) => true,
-                Err(_) => {
-                    tracing::error!("the backend thread panicked");
-                    false
-                }
-            },
-            Err(RecvTimeoutError::Timeout) => {
-                tracing::warn!(?timeout, "the backend did not stop in time; detaching it");
+        join_bounded(&self.done, self.thread, timeout, THREAD_NAME)
+    }
+}
+
+/// Waits up to `timeout` for a thread with a [`DoneGuard`] to finish, then joins it. `name` is
+/// the thread's, for the log.
+///
+/// Returns `true` if it exited cleanly in time. Returns `false` if it timed out, in which case it
+/// is detached and left to finish on its own, or if it panicked.
+pub(crate) fn join_bounded(
+    done: &Receiver<()>,
+    thread: thread::JoinHandle<()>,
+    timeout: Duration,
+    name: &str,
+) -> bool {
+    match done.recv_timeout(timeout) {
+        // A disconnect also means the done guard was dropped.
+        Ok(()) | Err(RecvTimeoutError::Disconnected) => match thread.join() {
+            Ok(()) => true,
+            Err(_) => {
+                tracing::error!(thread = name, "a thread panicked");
                 false
             }
+        },
+        Err(RecvTimeoutError::Timeout) => {
+            tracing::warn!(
+                thread = name,
+                ?timeout,
+                "a thread did not stop in time; detaching it"
+            );
+            false
         }
     }
 }
@@ -980,6 +998,52 @@ mod tests {
         let start = Instant::now();
         assert!(!handle.shutdown(Duration::from_secs(10)));
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A thread running `body` with a done guard, as the services run theirs.
+    fn guarded_thread(
+        body: impl FnOnce() + Send + 'static,
+    ) -> (Receiver<()>, thread::JoinHandle<()>) {
+        let (done_tx, done) = crossbeam_channel::bounded(1);
+        let guard = DoneGuard::new(done_tx);
+        let thread = thread::spawn(move || {
+            let _done = guard;
+            body();
+        });
+        (done, thread)
+    }
+
+    #[test]
+    fn bounded_join_reports_a_clean_exit() {
+        let (done, thread) = guarded_thread(|| {});
+        assert!(join_bounded(&done, thread, LIBRARY_MAX, "test"));
+    }
+
+    #[test]
+    fn bounded_join_reports_a_panic() {
+        let (done, thread) = guarded_thread(|| panic!("test thread panics"));
+        assert!(!join_bounded(&done, thread, LIBRARY_MAX, "test"));
+    }
+
+    #[test]
+    fn bounded_join_gives_up_on_a_stuck_thread() {
+        let (release, gate) = mpsc::channel::<()>();
+        let alive = Arc::new(());
+        let held = Arc::clone(&alive);
+        let (done, thread) = guarded_thread(move || {
+            let _ = gate.recv();
+            drop(held);
+        });
+        assert!(!join_bounded(
+            &done,
+            thread,
+            Duration::from_millis(50),
+            "test"
+        ));
+        assert_eq!(Arc::strong_count(&alive), 2, "the thread was left running");
+        // Unblock the detached thread so it finishes on its own.
+        drop(release);
+        assert!(wait_until(|| Arc::strong_count(&alive) == 1, LIBRARY_MAX));
     }
 
     #[test]

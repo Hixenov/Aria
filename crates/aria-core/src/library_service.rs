@@ -31,11 +31,11 @@ use aria_library::{
     Folder, FolderId, Library, LibraryError, LibrarySnapshot, Opened, QueueRecord, ScanProgress,
     ScanSummary, TrackId,
 };
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use crate::{
     notice::{Notice, NoticeLevel},
-    runtime::DoneGuard,
+    runtime::{DoneGuard, join_bounded},
 };
 
 /// Name of the library thread.
@@ -196,20 +196,7 @@ impl LibraryHandle {
     /// the thread is detached and left to finish on its own, or if it panicked.
     pub fn shutdown(self, timeout: Duration) -> bool {
         self.send(LibraryRequest::Shutdown);
-        match self.done.recv_timeout(timeout) {
-            // A disconnect also means the done guard was dropped.
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => match self.thread.join() {
-                Ok(()) => true,
-                Err(_) => {
-                    tracing::error!("the library thread panicked");
-                    false
-                }
-            },
-            Err(RecvTimeoutError::Timeout) => {
-                tracing::warn!(?timeout, "the library did not stop in time; detaching it");
-                false
-            }
-        }
+        join_bounded(&self.done, self.thread, timeout, THREAD_NAME)
     }
 }
 
@@ -427,7 +414,12 @@ impl Service {
     /// What a running scan does between files.
     fn on_batch(&mut self, library: &mut Library, progress: ScanProgress) {
         self.drain(library);
-        if self.progress.ready(Instant::now()) {
+        self.report_progress(progress, Instant::now());
+    }
+
+    /// Sends `progress`, unless the last report was too recent at `now`.
+    fn report_progress(&mut self, progress: ScanProgress, now: Instant) {
+        if self.progress.ready(now) {
             self.emit(LibraryEvent::Progress(Some(progress)));
         }
     }
@@ -818,23 +810,23 @@ mod tests {
 
     #[test]
     fn progress_goes_out_at_most_four_times_a_second() {
-        let env = Env::new();
         let (tx, rx) = mpsc::channel();
         let (_requests, receiver) = crossbeam_channel::unbounded();
         let on_event: OnEvent = Box::new(move |event| {
             let _ = tx.send(event);
         });
         let mut service = Service::new(receiver, Arc::default(), on_event);
-        let mut library = env.open();
         let progress = ScanProgress {
             seen: 1,
             changed: 0,
         };
-        for _ in 0..3 {
-            service.on_batch(&mut library, progress);
+        // The instants are given, so a stalled machine changes nothing here.
+        let start = Instant::now();
+        for ms in [0, 100, 249, 250, 499, 500] {
+            service.report_progress(progress, start + Duration::from_millis(ms));
         }
         let sent: Vec<_> = rx.try_iter().collect();
-        assert_eq!(sent, [LibraryEvent::Progress(Some(progress))]);
+        assert_eq!(sent, vec![LibraryEvent::Progress(Some(progress)); 3]);
     }
 
     #[test]
