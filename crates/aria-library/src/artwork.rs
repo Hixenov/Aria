@@ -22,7 +22,7 @@ pub const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 pub const THUMB_QUALITY: u8 = 85;
 
 /// Ceiling for decoder allocations, so a lying header cannot exhaust memory.
-const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 
 /// A directory of `<id>.jpg` thumbnails.
 #[derive(Debug, Clone)]
@@ -59,7 +59,6 @@ impl ArtworkCache {
             .suffix(".tmp")
             .tempfile_in(&self.dir)?;
         tmp.write_all(&jpeg)?;
-        tmp.as_file().sync_all()?;
         tmp.persist(&target)
             .map_err(|e| LibraryError::Io(e.error))?;
         Ok(Some(id))
@@ -70,7 +69,7 @@ impl ArtworkCache {
         self.dir.join(format!("{}.jpg", id.0))
     }
 
-    /// Removes every `.jpg` file in the cache directory. A missing directory is fine.
+    /// Removes every `.jpg` file and stray `.thumb-*.tmp` file in the cache directory. A missing directory is fine.
     pub fn clear(&self) -> Result<(), LibraryError> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
@@ -80,8 +79,11 @@ impl ArtworkCache {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
             let is_jpg = path.extension().is_some_and(|e| e == "jpg");
-            if is_jpg && entry.file_type()?.is_file() {
+            let is_stray_temp = name.starts_with(".thumb-") && name.ends_with(".tmp");
+            if (is_jpg || is_stray_temp) && entry.file_type()?.is_file() {
                 match fs::remove_file(&path) {
                     Ok(()) => {}
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {}

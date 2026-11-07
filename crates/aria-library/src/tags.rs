@@ -4,6 +4,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Arc;
 
+use lofty::config::{GlobalOptions, apply_global_options};
 use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
 use lofty::picture::PictureType;
 use lofty::probe::Probe;
@@ -35,6 +36,9 @@ pub struct TrackTags {
 ///
 /// A file lofty cannot parse gives `Err(LibraryError::Tags)`; it never panics.
 pub fn read_tags(path: &Path) -> Result<TrackTags, LibraryError> {
+    // lofty's limit is per thread and defaults to 16 MiB per tag item, which would fail the
+    // whole read for a large cover. Allow anything `pick_picture` may keep, plus slack.
+    apply_global_options(GlobalOptions::new().allocation_limit(MAX_IMAGE_BYTES + 1024 * 1024));
     let parsed = catch_unwind(AssertUnwindSafe(|| {
         Probe::open(path)
             .map_err(|e| LibraryError::Tags(Box::new(e)))?

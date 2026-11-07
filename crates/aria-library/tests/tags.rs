@@ -9,6 +9,7 @@ use aria_library::{
 };
 use lofty::config::WriteOptions;
 use lofty::file::TaggedFileExt;
+use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::tag::{Accessor, Tag, TagExt, TagType};
 
 /// Unwraps in helpers, which clippy's allow-unwrap-in-tests does not cover.
@@ -223,4 +224,158 @@ fn clear_removes_thumbnails() {
     let again = cache.store(&png_bytes(50, 50, false)).unwrap().unwrap();
     assert_eq!(again, id);
     assert!(cache.path_of(&again).is_file());
+}
+
+/// A copy of `tone.mp3` with a (not necessarily decodable) picture of `len` bytes embedded.
+fn mp3_with_picture(dir: &Path, name: &str, len: usize, kind: PictureType) -> PathBuf {
+    let path = dir.join(name);
+    ok(fs::copy(fixture("tone.mp3"), &path));
+    let mut tag = Tag::new(TagType::Id3v2);
+    tag.set_title("Big Cover".to_owned());
+    tag.set_artist("Big Artist".to_owned());
+    tag.push_picture(
+        Picture::unchecked(vec![7u8; len])
+            .pic_type(kind)
+            .mime_type(MimeType::Png)
+            .build(),
+    );
+    ok(tag.save_to_path(&path, WriteOptions::default()));
+    path
+}
+
+#[test]
+fn large_cover_under_the_limit_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let len = 20 * 1024 * 1024;
+    let path = mp3_with_picture(dir.path(), "big.mp3", len, PictureType::CoverFront);
+    let t = read_tags(&path).unwrap();
+    assert_eq!(t.title, "Big Cover");
+    assert_eq!(t.artist.as_deref(), Some("Big Artist"));
+    assert_eq!(t.picture.map(|p| p.len()), Some(len));
+}
+
+#[test]
+fn cover_over_the_limit_loses_only_the_picture() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = mp3_with_picture(
+        dir.path(),
+        "huge.mp3",
+        MAX_IMAGE_BYTES + 1024,
+        PictureType::CoverFront,
+    );
+    let t = read_tags(&path).unwrap();
+    assert_eq!(t.title, "Big Cover");
+    assert_eq!(t.artist.as_deref(), Some("Big Artist"));
+    assert!(t.picture.is_none());
+}
+
+#[test]
+fn front_cover_is_preferred() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("two.mp3");
+    ok(fs::copy(fixture("tone.mp3"), &path));
+    let mut tag = Tag::new(TagType::Id3v2);
+    for (kind, fill) in [
+        (PictureType::CoverBack, 1u8),
+        (PictureType::CoverFront, 2u8),
+    ] {
+        tag.push_picture(
+            Picture::unchecked(vec![fill; 100])
+                .pic_type(kind)
+                .mime_type(MimeType::Png)
+                .build(),
+        );
+    }
+    ok(tag.save_to_path(&path, WriteOptions::default()));
+    let t = read_tags(&path).unwrap();
+    assert_eq!(t.picture, Some(vec![2u8; 100]));
+}
+
+#[test]
+fn first_picture_is_used_without_a_front_cover() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = mp3_with_picture(dir.path(), "back.mp3", 100, PictureType::CoverBack);
+    let t = read_tags(&path).unwrap();
+    assert_eq!(t.picture, Some(vec![7u8; 100]));
+}
+
+#[test]
+fn jpeg_input_is_stored() {
+    let img = image::RgbImage::from_pixel(500, 400, image::Rgb([10, 200, 60]));
+    let mut out = Cursor::new(Vec::new());
+    ok(img.write_to(&mut out, image::ImageFormat::Jpeg));
+    let dir = tempfile::tempdir().unwrap();
+    let cache = ArtworkCache::new(dir.path().to_path_buf());
+    let id = cache.store(&out.into_inner()).unwrap().unwrap();
+    let thumb = image::open(cache.path_of(&id)).unwrap();
+    assert_eq!((thumb.width(), thumb.height()), (256, 205));
+}
+
+/// A PNG whose header claims `w`x`h` RGBA16 but whose pixel data is cut short.
+fn lying_png(w: u32, h: u32) -> Vec<u8> {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(0).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc = crc32(kind, 0);
+        crc = crc32(data, crc);
+        out.extend_from_slice(&crc.to_be_bytes());
+    }
+    fn crc32(data: &[u8], prev: u32) -> u32 {
+        let mut c = !prev;
+        for &b in data {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 == 1 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[16, 6, 0, 0, 0]); // 16-bit RGBA
+    chunk(&mut out, b"IHDR", &ihdr);
+    // zlib stream header plus a few stored garbage bytes: not enough pixels.
+    chunk(
+        &mut out,
+        b"IDAT",
+        &[0x78, 0x01, 0x01, 0x00, 0x00, 0xFF, 0xFF],
+    );
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+#[test]
+fn lying_headers_are_refused_quickly() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = ArtworkCache::new(dir.path().to_path_buf());
+    let started = std::time::Instant::now();
+    assert!(cache.store(&lying_png(8192, 8192)).unwrap().is_none());
+    assert!(cache.store(&lying_png(20_000, 20_000)).unwrap().is_none());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(jpg_files(dir.path()).is_empty());
+}
+
+#[test]
+fn clear_removes_stray_temp_files() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".thumb-abc123.tmp"), b"x").unwrap();
+    fs::write(dir.path().join("other.tmp"), b"x").unwrap();
+    ArtworkCache::new(dir.path().to_path_buf()).clear().unwrap();
+    assert!(!dir.path().join(".thumb-abc123.tmp").exists());
+    assert!(dir.path().join("other.tmp").exists());
+}
+
+#[test]
+fn largest_allowed_image_still_fits_the_decode_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = ArtworkCache::new(dir.path().to_path_buf());
+    let id = cache.store(&png_bytes(8192, 8192, true)).unwrap();
+    assert!(id.is_some());
 }
