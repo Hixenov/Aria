@@ -79,10 +79,32 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Moves a corrupt database aside. The user's data is moved, never deleted; stale `-wal` and
-/// `-shm` files go too, since they belong to the damaged file.
+/// Renames `from` to `to`, replacing `to`. A missing `from` is not an error.
+fn rename_if_present(from: &Path, to: &Path) -> Result<(), LibraryError> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Moves a corrupt database aside, with its `-wal` and `-shm` files, to `.bak`, `.bak-wal` and
+/// `.bak-shm`. The user's data is moved, never deleted. The database goes first, so if a side
+/// file cannot be moved the next open finds no database and clears the strays itself.
 fn move_aside(db: &Path) -> Result<(), LibraryError> {
     std::fs::rename(db, with_suffix(db, ".bak"))?;
+    for suffix in ["-wal", "-shm"] {
+        rename_if_present(
+            &with_suffix(db, suffix),
+            &with_suffix(db, &format!(".bak{suffix}")),
+        )?;
+    }
+    Ok(())
+}
+
+/// Removes `-wal` and `-shm` files left beside a database that does not exist, so a stale WAL
+/// can never meet a new database.
+fn remove_stray_side_files(db: &Path) -> Result<(), LibraryError> {
     for suffix in ["-wal", "-shm"] {
         match std::fs::remove_file(with_suffix(db, suffix)) {
             Ok(()) => {}
@@ -161,6 +183,8 @@ impl Library {
                     tracing::warn!("library database was corrupt and has been moved aside");
                 }
             }
+        } else {
+            remove_stray_side_files(db)?;
         }
 
         std::fs::create_dir_all(artwork_dir)?;

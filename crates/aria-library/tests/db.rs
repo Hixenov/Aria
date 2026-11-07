@@ -134,6 +134,19 @@ fn corrupt_database_is_replaced() {
         std::fs::read(env.dir.path().join("library.db.bak")).expect("bak"),
         garbage
     );
+    // The side files moved with it instead of being deleted or left for the new database.
+    assert_eq!(
+        std::fs::read(env.dir.path().join("library.db.bak-wal")).expect("bak-wal"),
+        b"stale"
+    );
+    // SQLite rewrites a wal-index while probing, so only its presence is checked.
+    assert!(env.dir.path().join("library.db.bak-shm").exists());
+    assert!(
+        !env.dir.path().join("library.db-wal").exists() || {
+            // The new database may own a fresh WAL, but never the stale one.
+            std::fs::read(env.dir.path().join("library.db-wal")).expect("wal") != b"stale"
+        }
+    );
     let mut lib = opened.library;
     lib.add_folder(&env.folder("a")).expect("new db works");
     assert_eq!(lib.folders().expect("folders").len(), 1);
@@ -334,4 +347,91 @@ fn error_text_has_no_paths() {
     };
     let text = err.to_string();
     assert!(!text.contains(env.dir.path().to_string_lossy().as_ref()));
+}
+
+#[test]
+fn locked_database_is_not_treated_as_corrupt() {
+    let env = Env::new();
+    // Rollback-journal mode, where an exclusive lock blocks readers too.
+    {
+        let c = ok(Connection::open(env.db()));
+        ok(c.execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);"));
+    }
+    let before = std::fs::read(env.db()).expect("read");
+    let holder = ok(Connection::open(env.db()));
+    ok(holder.execute_batch("BEGIN EXCLUSIVE"));
+
+    let res = Library::open(&env.db(), &env.art());
+    assert!(
+        matches!(res, Err(LibraryError::Database(_))),
+        "{:?}",
+        res.err()
+    );
+    ok(holder.execute_batch("ROLLBACK"));
+    drop(holder);
+
+    assert!(!env.dir.path().join("library.db.bak").exists());
+    assert_eq!(std::fs::read(env.db()).expect("read"), before);
+}
+
+#[test]
+fn crash_left_wal_database_opens_with_its_data() {
+    let env = Env::new();
+    let mut lib = env.open().library;
+    let id = lib.add_folder(&env.folder("kept")).expect("add");
+    // Copy the files while the connection is still open: the data lives only in the WAL.
+    let crash = ok(tempfile::tempdir());
+    for name in ["library.db", "library.db-wal"] {
+        let src = env.dir.path().join(name);
+        assert!(src.exists(), "{name} should exist while open");
+        ok(std::fs::copy(src, crash.path().join(name)));
+    }
+    let opened = ok(Library::open(
+        &crash.path().join("library.db"),
+        &crash.path().join("art"),
+    ));
+    assert!(!opened.recovered);
+    let folders = opened.library.folders().expect("folders");
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0].id, id);
+    assert!(!crash.path().join("library.db.bak").exists());
+}
+
+#[test]
+fn stray_wal_beside_missing_database_does_not_reach_new_one() {
+    let source = Env::new();
+    let mut old = source.open().library;
+    old.add_folder(&source.folder("ghost")).expect("add");
+
+    // A valid WAL (with committed frames) whose database file is gone.
+    let env = Env::new();
+    let wal = source.dir.path().join("library.db-wal");
+    assert!(wal.exists());
+    ok(std::fs::copy(&wal, env.dir.path().join("library.db-wal")));
+    drop(old);
+
+    let opened = env.open();
+    assert!(!opened.recovered);
+    assert!(opened.library.folders().expect("folders").is_empty());
+}
+
+#[test]
+fn newer_wal_database_is_refused_and_main_file_untouched() {
+    let env = Env::new();
+    // Keep a connection open so the WAL and shm stay on disk.
+    let c = ok(Connection::open(env.db()));
+    ok(c.pragma_update(None, "journal_mode", "WAL"));
+    ok(c.execute_batch("CREATE TABLE t (x INTEGER);"));
+    ok(c.pragma_update(None, "user_version", SCHEMA_VERSION + 2));
+    ok(c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);"));
+    let before = std::fs::read(env.db()).expect("read");
+
+    let res = Library::open(&env.db(), &env.art());
+    assert!(matches!(
+        res,
+        Err(LibraryError::NewerSchema { found, .. }) if found == SCHEMA_VERSION + 2
+    ));
+    assert_eq!(std::fs::read(env.db()).expect("read"), before);
+    drop(c);
+    assert!(!env.dir.path().join("library.db.bak").exists());
 }
