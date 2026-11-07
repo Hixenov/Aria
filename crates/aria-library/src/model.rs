@@ -50,6 +50,8 @@ pub struct Folder {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QueueRecord {
     pub context: Vec<TrackId>,
+    /// The context in its pre-shuffle order; empty when it was not shuffled.
+    pub original: Vec<TrackId>,
     pub user: Vec<TrackId>,
     pub current: Option<TrackId>,
     pub position_ms: u64,

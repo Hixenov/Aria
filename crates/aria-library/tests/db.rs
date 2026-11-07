@@ -295,6 +295,7 @@ fn queue_round_trips() {
 
     let q = QueueRecord {
         context: vec![TrackId(5), TrackId(2), TrackId(9)],
+        original: vec![TrackId(9), TrackId(5), TrackId(2)],
         user: vec![TrackId(7)],
         current: Some(TrackId(2)),
         position_ms: 61_500,
@@ -306,6 +307,7 @@ fn queue_round_trips() {
 
     let latest = QueueRecord {
         context: vec![TrackId(1)],
+        original: vec![],
         user: vec![],
         current: None,
         position_ms: 0,

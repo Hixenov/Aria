@@ -12,7 +12,7 @@
 //! `peek_after_current` and `advance_finished` share one planning function, so the gapless
 //! pre-load always names the track natural advancing will play.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use aria_library::{QueueRecord, TrackId};
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,155 @@ fn full_pass(len: usize, shuffled: bool, seed: u64) -> Vec<usize> {
     order
 }
 
+/// The context of a restored queue.
+struct Layout {
+    /// The context in its base (original) order.
+    base: Vec<TrackId>,
+    order: Vec<usize>,
+    cursor: usize,
+    current_ctx: Option<usize>,
+}
+
+impl Layout {
+    /// The saved playback-order list is the context, walked in order.
+    fn saved(
+        context: &[TrackId],
+        consumed: usize,
+        current_old: Option<usize>,
+        exists: &impl Fn(TrackId) -> bool,
+    ) -> Self {
+        let mut base = Vec::with_capacity(context.len());
+        let mut cursor = 0;
+        let mut current_ctx = None;
+        for (i, &track) in context.iter().enumerate() {
+            if !exists(track) {
+                continue;
+            }
+            if current_old == Some(i) {
+                current_ctx = Some(base.len());
+            }
+            base.push(track);
+            if i < consumed {
+                cursor = base.len();
+            }
+        }
+        Self {
+            order: (0..base.len()).collect(),
+            base,
+            cursor,
+            current_ctx,
+        }
+    }
+
+    /// Old original index -> index among the surviving tracks, and those tracks.
+    fn survivors(
+        original: &[TrackId],
+        exists: &impl Fn(TrackId) -> bool,
+    ) -> (Vec<Option<usize>>, Vec<TrackId>) {
+        let mut new_of = Vec::with_capacity(original.len());
+        let mut base = Vec::new();
+        for &track in original {
+            if exists(track) {
+                new_of.push(Some(base.len()));
+                base.push(track);
+            } else {
+                new_of.push(None);
+            }
+        }
+        (new_of, base)
+    }
+
+    /// Shuffle on: the base is `original`; each saved playback entry is matched to the first
+    /// unused equal entry of `original`. `None` when the two lists differ.
+    fn shuffled(
+        context: &[TrackId],
+        original: &[TrackId],
+        consumed: usize,
+        current_old: Option<usize>,
+        exists: &impl Fn(TrackId) -> bool,
+    ) -> Option<Self> {
+        if context.len() != original.len() {
+            return None;
+        }
+        let mut unused: HashMap<TrackId, VecDeque<usize>> = HashMap::new();
+        for (j, &track) in original.iter().enumerate() {
+            unused.entry(track).or_default().push_back(j);
+        }
+        let mut matched = Vec::with_capacity(context.len());
+        for track in context {
+            matched.push(unused.get_mut(track)?.pop_front()?);
+        }
+        let (new_of, base) = Self::survivors(original, exists);
+        let mut order = Vec::with_capacity(base.len());
+        let mut cursor = 0;
+        let mut current_ctx = None;
+        for (k, &j) in matched.iter().enumerate() {
+            let Some(n) = new_of.get(j).copied().flatten() else {
+                continue;
+            };
+            if current_old == Some(k) {
+                current_ctx = Some(n);
+            }
+            order.push(n);
+            if k < consumed {
+                cursor = order.len();
+            }
+        }
+        Some(Self {
+            base,
+            order,
+            cursor,
+            current_ctx,
+        })
+    }
+
+    /// Shuffle off: play `original`, continuing after the saved position. The saved position
+    /// is a place in the playback-order list; with duplicate ids its place in `original` is
+    /// ambiguous, so the first match at or after the saved position wins, else the first match.
+    /// `None` when `original` does not hold the same tracks as `context`.
+    fn original(
+        context: &[TrackId],
+        original: &[TrackId],
+        context_index: Option<usize>,
+        current_old: Option<usize>,
+        exists: &impl Fn(TrackId) -> bool,
+    ) -> Option<Self> {
+        let mut a = context.to_vec();
+        let mut b = original.to_vec();
+        a.sort_unstable();
+        b.sort_unstable();
+        if a != b {
+            return None;
+        }
+        let (new_of, base) = Self::survivors(original, exists);
+        let anchor = match context_index {
+            None => None,
+            Some(i) => match context.get(i) {
+                None => Some(original.len()),
+                Some(track) => {
+                    let found = original
+                        .iter()
+                        .enumerate()
+                        .position(|(j, t)| t == track && j >= i)
+                        .or_else(|| original.iter().position(|t| t == track))?;
+                    Some(found + 1)
+                }
+            },
+        };
+        let consumed = anchor.unwrap_or(0);
+        let cursor = new_of.iter().take(consumed).flatten().count();
+        let current_ctx = current_old
+            .and(consumed.checked_sub(1))
+            .and_then(|j| new_of.get(j).copied().flatten());
+        Some(Self {
+            order: (0..base.len()).collect(),
+            base,
+            cursor,
+            current_ctx,
+        })
+    }
+}
+
 /// A played track that Previous can return to.
 #[derive(Debug, Clone)]
 struct Entry {
@@ -129,6 +278,8 @@ pub struct Queue {
     /// The context index of `current`, when it is a context track. It is always
     /// `order[cursor - 1]` then.
     current_ctx: Option<usize>,
+    /// `retain` found the current track gone; Previous must not put it back.
+    current_gone: bool,
     history: VecDeque<Entry>,
     seed: u64,
     shuffle: bool,
@@ -146,6 +297,7 @@ impl Queue {
             user: Vec::new(),
             current: None,
             current_ctx: None,
+            current_gone: false,
             history: VecDeque::new(),
             seed,
             shuffle: false,
@@ -174,6 +326,7 @@ impl Queue {
         self.context = ids;
         self.current = Some(track);
         self.current_ctx = Some(start);
+        self.current_gone = false;
         Some(track)
     }
 
@@ -240,16 +393,20 @@ impl Queue {
         };
         // Leave the current track so that going forward again plays it: a context track is
         // unconsumed, a user track goes back to the front of the user queue.
-        match self.current_ctx {
-            Some(c) => {
-                if let Some(p) = self.pos_of(c) {
-                    self.cursor = p;
+        // A track `retain` found gone is not brought back.
+        if !self.current_gone {
+            match self.current_ctx {
+                Some(c) => {
+                    if let Some(p) = self.pos_of(c) {
+                        self.cursor = p;
+                    }
                 }
+                None => self.user.insert(0, current),
             }
-            None => self.user.insert(0, current),
         }
         self.current = Some(entry.track);
         self.current_ctx = None;
+        self.current_gone = false;
         if entry.pass == self.pass
             && let Some(c) = entry.ctx
             && let Some(p) = self.pos_of(c)
@@ -262,6 +419,8 @@ impl Queue {
 
     /// Turning shuffle on keeps the current track and shuffles only what is left of the pass.
     /// Turning it off restores the original order and continues after the current track.
+    /// History is kept, but Previous then Next after turning shuffle off is not a replay of the
+    /// shuffled walk: the original order continues after the track Previous returned to.
     pub fn set_shuffle(&mut self, on: bool) {
         if on == self.shuffle {
             return;
@@ -343,6 +502,11 @@ impl Queue {
             }
         }
         self.current_ctx = self.current_ctx.and_then(remap);
+        if let Some(current) = self.current
+            && !exists(current)
+        {
+            self.current_gone = true;
+        }
         self.context = kept;
         self.order = order;
         self.cursor = cursor;
@@ -358,14 +522,13 @@ impl Queue {
 
     /// The queue as saved to the database.
     ///
-    /// `context` is stored in *playback order*, not the original order: with shuffle off they are
-    /// the same, and with shuffle on it keeps the rest of the current pass exact without storing a
-    /// permutation. `context_index` is the position of the last context track played (the current
-    /// track when it came from the context), so everything after it is still to come.
-    /// `shuffle_seed` seeds the next pass. The costs: a queue restored with shuffle on can no
-    /// longer return to the pre-shuffle order, and its next pass (repeat all) is a fresh shuffle
-    /// of the saved order rather than the one the unsaved queue would have drawn. History is not
-    /// saved.
+    /// `context` is stored in *playback order*, so the rest of the current pass restores exactly.
+    /// With shuffle on, `original` holds the context in its pre-shuffle order (empty when shuffle
+    /// is off), so turning shuffle off after a restart still restores the original order and the
+    /// next pass is the shuffle the unsaved queue would have drawn. `context_index` is the
+    /// position, in `context`, of the last context track played (the current track when it came
+    /// from the context), so everything after it is still to come. `shuffle_seed` seeds the next
+    /// pass. History is not saved.
     pub fn to_record(&self, position_ms: u64) -> QueueRecord {
         QueueRecord {
             context: self
@@ -373,6 +536,11 @@ impl Queue {
                 .iter()
                 .filter_map(|&i| self.context.get(i).copied())
                 .collect(),
+            original: if self.shuffle {
+                self.context.clone()
+            } else {
+                Vec::new()
+            },
             user: self.user.clone(),
             current: self.current,
             position_ms,
@@ -384,6 +552,11 @@ impl Queue {
     /// Rebuilds a queue from a saved record, dropping tracks `exists` rejects. Without its
     /// current track, `current` is `None` and playback continues with the following context
     /// track. A `context_index` beyond the context counts as the whole context played.
+    ///
+    /// A non-empty `original` is the pre-shuffle order. With `shuffle` on the context is
+    /// rebuilt in that order and walked in the saved playback order, so turning shuffle off
+    /// restores it. With `shuffle` off it is played in the original order, continuing after the
+    /// current track. If `original` does not hold the same tracks as `context` it is ignored.
     pub fn from_record(
         record: QueueRecord,
         shuffle: bool,
@@ -392,6 +565,7 @@ impl Queue {
     ) -> Self {
         let QueueRecord {
             context,
+            original,
             user,
             current,
             shuffle_seed,
@@ -401,32 +575,23 @@ impl Queue {
         let consumed = context_index.map_or(0, |i| i.saturating_add(1).min(context.len()));
         let current_old =
             context_index.filter(|&i| current.is_some() && context.get(i).copied() == current);
-        let mut kept = Vec::with_capacity(context.len());
-        let mut cursor = 0;
-        let mut current_ctx = None;
-        for (i, &track) in context.iter().enumerate() {
-            if !exists(track) {
-                continue;
-            }
-            if current_old == Some(i) {
-                current_ctx = Some(kept.len());
-            }
-            kept.push(track);
-            if i < consumed {
-                cursor = kept.len();
-            }
-        }
         let current = current.filter(|&t| exists(t));
-        if current.is_none() {
-            current_ctx = None;
+        let layout = if original.is_empty() {
+            None
+        } else if shuffle {
+            Layout::shuffled(&context, &original, consumed, current_old, &exists)
+        } else {
+            Layout::original(&context, &original, context_index, current_old, &exists)
         }
+        .unwrap_or_else(|| Layout::saved(&context, consumed, current_old, &exists));
         Self {
-            order: (0..kept.len()).collect(),
-            context: kept,
-            cursor,
+            context: layout.base,
+            order: layout.order,
+            cursor: layout.cursor,
             user: user.into_iter().filter(|&t| exists(t)).collect(),
             current,
-            current_ctx,
+            current_ctx: layout.current_ctx.filter(|_| current.is_some()),
+            current_gone: false,
             history: VecDeque::new(),
             seed: shuffle_seed,
             shuffle,
@@ -495,12 +660,14 @@ impl Queue {
                 self.user.remove(0);
                 self.current = Some(track);
                 self.current_ctx = None;
+                self.current_gone = false;
             }
             Plan::Context(i) => {
                 self.push_history();
                 self.cursor += 1;
                 self.current = Some(track);
                 self.current_ctx = Some(i);
+                self.current_gone = false;
             }
             Plan::Wrap { seed, order } => {
                 self.push_history();
@@ -510,6 +677,7 @@ impl Queue {
                 self.cursor = 1;
                 self.pass = self.pass.wrapping_add(1);
                 self.current = Some(track);
+                self.current_gone = false;
             }
         }
         Some(track)
@@ -715,7 +883,15 @@ mod tests {
                         q.advance_manual();
                     }
                     9 | 10 => {
-                        q.advance_finished();
+                        let got = q.advance_finished();
+                        assert_eq!(got, peeked, "{what}: real advance");
+                        assert_eq!(q.current(), probe.current(), "{what}: current");
+                        assert_eq!(q.upcoming(100), probe.upcoming(100), "{what}: after");
+                        assert_eq!(
+                            q.peek_after_current(),
+                            probe.peek_after_current(),
+                            "{what}: peek after"
+                        );
                     }
                     11 => {
                         let pos = if rng.below(2) == 0 { 0 } else { 5_000 };
@@ -760,6 +936,14 @@ mod tests {
         sorted.sort();
         assert_eq!(sorted, ids(100), "the next pass also visits each once");
         assert_ne!(second, first, "each pass reshuffles");
+        let third: Vec<TrackId> = (0..100).filter_map(|_| q.advance_finished()).collect();
+        let mut sorted = third.clone();
+        sorted.sort();
+        assert_eq!(sorted, ids(100), "the third pass visits each once");
+        assert_ne!(
+            third, second,
+            "the new seed is kept, so passes keep changing"
+        );
     }
 
     #[test]
@@ -913,6 +1097,139 @@ mod tests {
     }
 
     #[test]
+    fn previous_after_retain_dropped_a_context_current_does_not_bring_it_back() {
+        let mut q = Queue::new(1);
+        q.play_context(ids(6), 0);
+        q.advance_manual();
+        q.advance_manual(); // current 2
+        q.retain(|id| id.0 != 2);
+        assert_eq!(q.current(), Some(t(2)));
+        assert_eq!(q.previous(0), PreviousAction::Play(t(1)));
+        check_invariants(&q, "after previous");
+        assert!(
+            user_items(&q).is_empty(),
+            "the deleted track is not re-queued"
+        );
+        assert_eq!(q.advance_manual(), Some(t(3)));
+        assert_eq!(q.advance_manual(), Some(t(4)));
+    }
+
+    #[test]
+    fn previous_after_retain_dropped_a_user_current_does_not_bring_it_back() {
+        let mut q = Queue::new(1);
+        q.play_context(ids(4), 0);
+        q.add_to_queue(t(50));
+        q.advance_manual(); // 50
+        q.retain(|id| id.0 != 50);
+        assert_eq!(q.previous(0), PreviousAction::Play(t(0)));
+        assert!(user_items(&q).is_empty());
+        assert_eq!(q.advance_manual(), Some(t(1)));
+    }
+
+    #[test]
+    fn previous_still_requeues_a_user_current_that_survives_retain() {
+        let mut q = Queue::new(1);
+        q.play_context(ids(4), 0);
+        q.add_to_queue(t(50));
+        q.advance_manual();
+        q.retain(|_| true);
+        assert_eq!(q.previous(0), PreviousAction::Play(t(0)));
+        assert_eq!(user_items(&q), vec![t(50)]);
+    }
+
+    #[test]
+    fn previous_after_shuffle_off_continues_after_the_track_it_returned_to() {
+        let mut q = Queue::new(2);
+        q.set_shuffle(true);
+        q.play_context(ids(12), 0);
+        for _ in 0..4 {
+            q.advance_manual();
+        }
+        q.set_shuffle(false);
+        let PreviousAction::Play(back) = q.previous(0) else {
+            panic!("history has entries");
+        };
+        // Not a replay of the shuffled walk: forward continues in the original order.
+        assert_eq!(q.advance_manual(), Some(t(back.0 + 1)));
+    }
+
+    #[test]
+    fn restore_with_original_brings_shuffle_off_back_to_the_original_order() {
+        let mut original = build_busy_queue(true, RepeatMode::Off);
+        let record = original.to_record(0);
+        assert_eq!(record.original, ids(12));
+        let mut restored = Queue::from_record(record, true, RepeatMode::Off, |_| true);
+        assert_eq!(restored.upcoming(100), original.upcoming(100));
+        original.set_shuffle(false);
+        restored.set_shuffle(false);
+        check_invariants(&restored, "restored then shuffle off");
+        assert_eq!(restored.current(), original.current());
+        assert_eq!(restored.upcoming(100), original.upcoming(100));
+        let k = restored.current().map_or(0, |c| c.0);
+        let rest: Vec<TrackId> = (k + 1..12).map(t).collect();
+        assert_eq!(context_items(&restored), rest);
+    }
+
+    #[test]
+    fn restore_shuffled_record_with_shuffle_off_plays_original_after_current() {
+        let original = build_busy_queue(true, RepeatMode::All);
+        let record = original.to_record(0);
+        let mut q = Queue::from_record(record, false, RepeatMode::All, |_| true);
+        check_invariants(&q, "shuffle off with original");
+        assert_eq!(q.current(), original.current());
+        let k = q.current().map_or(0, |c| c.0);
+        assert_eq!(context_items(&q), (k + 1..12).map(t).collect::<Vec<_>>());
+        assert_eq!(q.advance_manual(), Some(t(90)));
+    }
+
+    #[test]
+    fn restore_with_original_drops_missing_tracks_in_both_lists() {
+        let original = build_busy_queue(true, RepeatMode::Off);
+        let record = original.to_record(0);
+        let keep = |id: TrackId| id.0 != 7 && id.0 != 0;
+        let mut on = Queue::from_record(record.clone(), true, RepeatMode::Off, keep);
+        check_invariants(&on, "on");
+        let seen = drain(&mut on);
+        assert!(!seen.contains(&t(7)) && !seen.contains(&t(0)));
+        let mut off = Queue::from_record(record, false, RepeatMode::Off, keep);
+        check_invariants(&off, "off");
+        assert!(!context_items(&off).contains(&t(7)));
+        assert!(!context_items(&off).contains(&t(0)));
+        off.set_shuffle(true);
+        check_invariants(&off, "off then on");
+    }
+
+    #[test]
+    fn restore_with_original_and_duplicate_ids_picks_the_first_match_after_the_position() {
+        let mut q = Queue::new(4);
+        q.set_shuffle(true);
+        q.play_context(vec![t(1), t(2), t(1), t(3), t(1)], 3);
+        let record = q.to_record(0);
+        assert_eq!(record.original, vec![t(1), t(2), t(1), t(3), t(1)]);
+        let off = Queue::from_record(record, false, RepeatMode::Off, |_| true);
+        check_invariants(&off, "duplicates");
+        assert_eq!(off.current(), Some(t(3)));
+        assert_eq!(context_items(&off), vec![t(1)], "continues after the 3");
+    }
+
+    #[test]
+    fn restore_with_an_inconsistent_original_falls_back_to_the_saved_context() {
+        let record = QueueRecord {
+            context: ids(4),
+            original: vec![t(7), t(8)],
+            current: Some(t(1)),
+            context_index: Some(1),
+            ..QueueRecord::default()
+        };
+        for shuffle in [true, false] {
+            let mut q = Queue::from_record(record.clone(), shuffle, RepeatMode::Off, |_| true);
+            check_invariants(&q, "inconsistent original");
+            assert_eq!(q.current(), Some(t(1)));
+            assert_eq!(q.advance_manual(), Some(t(2)));
+        }
+    }
+
+    #[test]
     fn history_is_bounded() {
         let mut q = Queue::new(1);
         q.play_context(ids(300), 0);
@@ -975,25 +1292,8 @@ mod tests {
                 let mut restored = Queue::from_record(record, shuffle, repeat, |_| true);
                 assert_eq!(restored.current(), original.current());
                 check_invariants(&restored, "restored");
-                // The user queue and the rest of the pass come back identically.
-                let remaining = original.upcoming(100).len();
-                assert_same_future(&mut original, &mut restored, remaining);
-                // The next pass is a fresh shuffle either way, and still covers every track.
-                if repeat == RepeatMode::All {
-                    let mut a: Vec<TrackId> = (0..12)
-                        .filter_map(|_| original.advance_finished())
-                        .collect();
-                    let mut b: Vec<TrackId> = (0..12)
-                        .filter_map(|_| restored.advance_finished())
-                        .collect();
-                    a.sort();
-                    b.sort();
-                    assert_eq!(a, ids(12));
-                    assert_eq!(b, ids(12));
-                } else {
-                    assert_eq!(original.advance_finished(), None);
-                    assert_eq!(restored.advance_finished(), None);
-                }
+                // Through the next passes too: the seed and the original order are saved.
+                assert_same_future(&mut original, &mut restored, 40);
             }
         }
     }
@@ -1005,8 +1305,7 @@ mod tests {
         let record = original.to_record(0);
         let mut restored = Queue::from_record(record, true, RepeatMode::All, |_| true);
         assert_eq!(restored.current(), Some(t(90)));
-        let remaining = original.upcoming(100).len();
-        assert_same_future(&mut original, &mut restored, remaining);
+        assert_same_future(&mut original, &mut restored, 40);
     }
 
     #[test]
@@ -1040,6 +1339,7 @@ mod tests {
                 context: ids(5),
                 user: vec![t(8)],
                 current: Some(t(2)),
+                original: Vec::new(),
                 position_ms: 10,
                 shuffle_seed: 4,
                 context_index: Some(index),

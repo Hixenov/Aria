@@ -34,6 +34,7 @@ CREATE TABLE tracks (
     added_at     INTEGER NOT NULL
 );
 CREATE INDEX tracks_folder ON tracks(folder_id);
+-- list: 0 = context (playback order), 1 = user queue, 2 = context before shuffle.
 CREATE TABLE queue_items (
     list     INTEGER NOT NULL,
     position INTEGER NOT NULL,

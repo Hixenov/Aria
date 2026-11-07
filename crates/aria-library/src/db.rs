@@ -16,6 +16,7 @@ use crate::paths::{decode_path, encode_path};
 
 const LIST_CONTEXT: i64 = 0;
 const LIST_USER: i64 = 1;
+const LIST_ORIGINAL: i64 = 2;
 
 /// The result of opening the library.
 pub struct Opened {
@@ -294,7 +295,11 @@ impl Library {
             let mut ins = tx.prepare(
                 "INSERT INTO queue_items (list, position, track_id) VALUES (?1, ?2, ?3)",
             )?;
-            for (list, items) in [(LIST_CONTEXT, &q.context), (LIST_USER, &q.user)] {
+            for (list, items) in [
+                (LIST_CONTEXT, &q.context),
+                (LIST_USER, &q.user),
+                (LIST_ORIGINAL, &q.original),
+            ] {
                 for (pos, t) in items.iter().enumerate() {
                     ins.execute((list, i64::try_from(pos).unwrap_or(i64::MAX), t.0))?;
                 }
@@ -352,9 +357,11 @@ impl Library {
         };
         let context = read(LIST_CONTEXT)?;
         let user = read(LIST_USER)?;
+        let original = read(LIST_ORIGINAL)?;
 
         Ok(Some(QueueRecord {
             context,
+            original,
             user,
             current: current.map(TrackId),
             position_ms: u64::try_from(position_ms).unwrap_or(0),
