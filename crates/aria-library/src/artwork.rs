@@ -59,9 +59,12 @@ impl ArtworkCache {
             .suffix(".tmp")
             .tempfile_in(&self.dir)?;
         tmp.write_all(&jpeg)?;
-        tmp.persist(&target)
-            .map_err(|e| LibraryError::Io(e.error))?;
-        Ok(Some(id))
+        match tmp.persist(&target) {
+            Ok(_) => Ok(Some(id)),
+            // Two stores of one image can race on Windows; the other one won.
+            Err(_) if target.is_file() => Ok(Some(id)),
+            Err(e) => Err(LibraryError::Io(e.error)),
+        }
     }
 
     /// Where the thumbnail with this id lives (it may not exist).
