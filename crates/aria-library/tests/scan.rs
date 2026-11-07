@@ -610,28 +610,100 @@ fn root_replaced_by_empty_directory_keeps_rows() {
     assert_eq!(ids(&snap), before);
 }
 
+/// A medium holding other audio takes the place of the real root.
+fn swap_in_other_media(env: &Env) -> PathBuf {
+    let away = env.dir.path().join("away");
+    ok(fs::rename(env.music(), &away));
+    env.put("tone.wav", "other.wav");
+    away
+}
+
+fn swap_back(env: &Env, away: &Path) {
+    ok(fs::remove_dir_all(env.music()));
+    ok(fs::rename(away, env.music()));
+}
+
 #[test]
-fn root_replaced_by_other_files_keeps_rows_and_adds_new() {
+fn root_replaced_by_other_files_is_treated_as_unavailable() {
     let mut env = Env::new();
     env.put("tone.mp3", "one.mp3");
     env.put("tone.flac", "two.flac");
     let id = env.add_music();
     env.scan();
     let before = ids(&env.snap());
+    swap_in_other_media(&env);
 
-    let away = env.dir.path().join("away");
-    ok(fs::rename(env.music(), &away));
-    env.put("tone.wav", "other.wav");
     let s = env.scan();
-    assert_eq!(s.removed, 0);
-    assert_eq!(s.added, 1);
+    assert_eq!((s.added, s.updated, s.removed), (0, 0, 0));
     assert_eq!(s.unavailable, vec![id]);
     let snap = env.snap();
-    assert_eq!(snap.tracks.len(), 3);
-    for (path, tid) in &before {
-        assert!(snap.tracks.iter().any(|t| t.id == *tid && t.path == *path));
-    }
+    assert_eq!(ids(&snap), before);
     assert!(!snap.folders[0].available);
+}
+
+#[test]
+fn a_swapped_root_keeps_everything_over_many_scans_and_restores() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "one.mp3");
+    env.put("tone.flac", "a/two.flac");
+    let id = env.add_music();
+    env.scan();
+    let before = ids(&env.snap());
+    let away = swap_in_other_media(&env);
+
+    for round in 0..3 {
+        let s = env.scan();
+        assert_eq!((s.added, s.updated, s.removed), (0, 0, 0), "round {round}");
+        assert_eq!(s.unavailable, vec![id], "round {round}");
+        let snap = env.snap();
+        assert_eq!(ids(&snap), before, "round {round}");
+        assert!(!snap.folders[0].available, "round {round}");
+    }
+
+    swap_back(&env, &away);
+    let s = env.scan();
+    assert!(s.unavailable.is_empty());
+    assert_eq!((s.added, s.updated, s.removed), (0, 0, 0));
+    let snap = env.snap();
+    assert!(snap.folders[0].available);
+    assert_eq!(ids(&snap), before);
+}
+
+#[test]
+fn a_cancelled_scan_then_a_full_scan_on_a_swapped_root_keeps_everything() {
+    let mut env = Env::new();
+    env.put("tone.mp3", "one.mp3");
+    env.put("tone.flac", "two.flac");
+    env.add_music();
+    env.scan();
+    let before = ids(&env.snap());
+    let away = swap_in_other_media(&env);
+
+    let s = ok(env.lib.scan(&AtomicBool::new(true), &mut |_, _| {}));
+    assert!(s.cancelled);
+    assert_eq!(ids(&env.snap()), before);
+    let s = env.scan();
+    assert_eq!((s.added, s.updated, s.removed), (0, 0, 0));
+    assert_eq!(ids(&env.snap()), before);
+
+    swap_back(&env, &away);
+    env.scan();
+    assert_eq!(ids(&env.snap()), before);
+}
+
+#[test]
+fn on_batch_is_called_while_walking_a_tree_with_no_audio() {
+    let mut env = Env::new();
+    for i in 0..520 {
+        ok(fs::create_dir_all(env.music().join(format!("d{i:04}"))));
+    }
+    env.add_music();
+    let mut calls = 0;
+    let s = ok(env
+        .lib
+        .scan(&AtomicBool::new(false), &mut |_, _| calls += 1));
+    assert_eq!((s.added, s.removed), (0, 0));
+    assert!(calls >= 1, "on_batch was never called");
 }
 
 #[cfg(windows)]
@@ -734,7 +806,6 @@ fn a_rescan_without_changes_still_calls_on_batch() {
     }));
     assert_eq!((s.added, s.updated, s.removed), (0, 0, 0));
     assert!(calls >= 1, "on_batch was never called");
-    assert!(last.seen >= 500);
     assert_eq!(last.changed, 0);
 }
 

@@ -130,10 +130,15 @@ struct Listings(HashMap<PathBuf, HashSet<OsString>>);
 impl Listings {
     /// Records a directory's listing, but only a complete one: an incomplete listing must never
     /// allow a delete.
-    fn record(&mut self, dir: &Path, names: impl Iterator<Item = OsString>, complete: bool) {
-        if complete {
-            self.0
-                .insert(fold_path(dir), names.map(|n| fold_name(&n)).collect());
+    fn record(&mut self, dir: &Path, listed: &Listed<Entry>) {
+        if listed.complete {
+            let names = listed
+                .entries
+                .iter()
+                .filter(|e| !matches!(e.kind, Kind::File) || is_supported(&e.name))
+                .map(|e| fold_name(&e.name))
+                .collect();
+            self.0.insert(fold_path(dir), names);
         }
     }
 
@@ -176,9 +181,14 @@ struct Entry {
     kind: Kind,
 }
 
-/// Collects the entries of a listing. The flag is false when any entry could not be read, so the
-/// listing is incomplete and must not be used to delete anything.
-fn collect_listing<T>(entries: impl Iterator<Item = io::Result<T>>) -> (Vec<T>, bool) {
+/// The entries read from a directory. `complete` is false when any entry could not be read, so
+/// the listing must not be used to delete anything.
+struct Listed<T> {
+    entries: Vec<T>,
+    complete: bool,
+}
+
+fn collect_listing<T>(entries: impl Iterator<Item = io::Result<T>>) -> Listed<T> {
     let mut out = Vec::new();
     let mut complete = true;
     for entry in entries {
@@ -187,7 +197,10 @@ fn collect_listing<T>(entries: impl Iterator<Item = io::Result<T>>) -> (Vec<T>, 
             Err(_) => complete = false,
         }
     }
-    (out, complete)
+    Listed {
+        entries: out,
+        complete,
+    }
 }
 
 fn read_entry(entry: fs::DirEntry) -> io::Result<Entry> {
@@ -205,7 +218,7 @@ fn read_entry(entry: fs::DirEntry) -> io::Result<Entry> {
 }
 
 /// Lists a directory; see [`collect_listing`] for the flag.
-fn list_dir(dir: &Path) -> io::Result<(Vec<Entry>, bool)> {
+fn list_dir(dir: &Path) -> io::Result<Listed<Entry>> {
     Ok(collect_listing(
         fs::read_dir(dir)?.map(|e| e.and_then(read_entry)),
     ))
@@ -386,6 +399,18 @@ impl Library {
         on_batch: &mut dyn FnMut(&mut Library, ScanProgress),
     ) -> Result<(), LibraryError> {
         let existing = self.existing_rows(folder.id)?;
+        // A folder with stored tracks of which none exists is a medium that is gone or swapped
+        // for another: treat it as unreachable, without walking it.
+        if !existing.is_empty()
+            && !existing
+                .values()
+                .any(|row| fs::metadata(decode_path(&row.path)).is_ok())
+        {
+            tracing::debug!("none of a folder's stored tracks exists; treating it as unavailable");
+            run.summary.unavailable.push(folder.id);
+            self.set_available(folder.id, false)?;
+            return Ok(());
+        }
         let mut listings = Listings::default();
         // A work list, so a very deep tree cannot overflow the stack.
         let mut work = vec![folder.path.clone()];
@@ -394,7 +419,7 @@ impl Library {
                 break;
             }
             let is_root = dir == folder.path;
-            let (entries, complete) = match list_dir(&dir) {
+            let listed = match list_dir(&dir) {
                 Ok(listed) => listed,
                 Err(e) => {
                     tracing::debug!(dir = %dir.display(), error = %e, "directory could not be listed");
@@ -410,19 +435,15 @@ impl Library {
             if is_root {
                 self.set_available(folder.id, true)?;
             }
-            if !complete {
+            if !listed.complete {
                 run.summary.skipped += 1;
             }
 
-            let mut names = Vec::with_capacity(entries.len());
             let mut dir_art: Option<Art> = None;
-            for entry in entries {
+            for entry in &listed.entries {
                 let supported_file = matches!(entry.kind, Kind::File) && is_supported(&entry.name);
-                if !matches!(entry.kind, Kind::File) || supported_file {
-                    names.push(entry.name.clone());
-                }
                 match entry.kind {
-                    Kind::Dir => work.push(entry.path),
+                    Kind::Dir => work.push(entry.path.clone()),
                     Kind::File if supported_file => {
                         if run.cancelled() {
                             break 'walk;
@@ -443,7 +464,11 @@ impl Library {
                     }
                 }
             }
-            listings.record(&dir, names.into_iter(), complete);
+            listings.record(&dir, &listed);
+            run.files_since_call += 1;
+            if tick_due(run.files_since_call, run.last_call.elapsed()) {
+                self.flush(run, on_batch, true)?;
+            }
         }
         self.flush(run, on_batch, false)?;
         if run.cancelled() {
@@ -675,10 +700,24 @@ impl Library {
 mod tests {
     use super::*;
 
+    fn dir_listing(names: &[&str], complete: bool) -> Listed<Entry> {
+        Listed {
+            entries: names
+                .iter()
+                .map(|n| Entry {
+                    name: OsString::from(n),
+                    path: PathBuf::new(),
+                    kind: Kind::Dir,
+                })
+                .collect(),
+            complete,
+        }
+    }
+
     fn listings(dirs: &[(&str, &[&str])]) -> Listings {
         let mut l = Listings::default();
         for (d, names) in dirs {
-            l.record(Path::new(d), names.iter().map(OsString::from), true);
+            l.record(Path::new(d), &dir_listing(names, true));
         }
         l
     }
@@ -726,32 +765,24 @@ mod tests {
             Err(io::Error::from(io::ErrorKind::PermissionDenied)),
             Ok("c.mp3"),
         ];
-        let (entries, complete) = collect_listing(fake.into_iter());
-        assert!(!complete);
-        assert_eq!(entries, vec!["a.mp3", "b.mp3", "c.mp3"]);
+        let listed = collect_listing(fake.into_iter());
+        assert!(!listed.complete);
+        assert_eq!(listed.entries, vec!["a.mp3", "b.mp3", "c.mp3"]);
 
-        let (entries, complete) = collect_listing(vec![Ok(1), Ok(2)].into_iter());
-        assert!(complete);
-        assert_eq!(entries, vec![1, 2]);
+        let listed = collect_listing(vec![Ok(1), Ok(2)].into_iter());
+        assert!(listed.complete);
+        assert_eq!(listed.entries, vec![1, 2]);
     }
 
     #[test]
     fn an_incomplete_listing_is_not_recorded_so_nothing_under_it_is_deleted() {
         let mut l = Listings::default();
-        l.record(Path::new("/r"), ["a"].into_iter().map(OsString::from), true);
+        l.record(Path::new("/r"), &dir_listing(&["a"], true));
         // `/r/a` listed part-way: `x.mp3` is missing from what was read.
-        l.record(
-            Path::new("/r/a"),
-            ["y.mp3"].into_iter().map(OsString::from),
-            false,
-        );
+        l.record(Path::new("/r/a"), &dir_listing(&["y.mp3"], false));
         assert!(!l.is_gone(Path::new("/r"), Path::new("/r/a/x.mp3")));
         // A complete one would have deleted it.
-        l.record(
-            Path::new("/r/a"),
-            ["y.mp3"].into_iter().map(OsString::from),
-            true,
-        );
+        l.record(Path::new("/r/a"), &dir_listing(&["y.mp3"], true));
         assert!(l.is_gone(Path::new("/r"), Path::new("/r/a/x.mp3")));
     }
 
@@ -781,15 +812,27 @@ mod tests {
         let root = Path::new("/lib");
         let mut l = Listings::default();
         let artists: Vec<String> = (0..500).map(|i| format!("Artist {i}")).collect();
-        l.record(root, artists.iter().map(OsString::from), true);
+        l.record(
+            root,
+            &dir_listing(
+                &artists.iter().map(String::as_str).collect::<Vec<_>>(),
+                true,
+            ),
+        );
         let mut rows = Vec::new();
         for (i, a) in artists.iter().enumerate() {
             let albums: Vec<String> = (0..10).map(|j| format!("Album {j}")).collect();
-            l.record(&root.join(a), albums.iter().map(OsString::from), true);
+            l.record(
+                &root.join(a),
+                &dir_listing(&albums.iter().map(String::as_str).collect::<Vec<_>>(), true),
+            );
             for al in &albums {
                 let dir = root.join(a).join(al);
                 let names: Vec<String> = (0..10).map(|k| format!("{i}-{k}.flac")).collect();
-                l.record(&dir, names.iter().map(OsString::from), true);
+                l.record(
+                    &dir,
+                    &dir_listing(&names.iter().map(String::as_str).collect::<Vec<_>>(), true),
+                );
                 rows.extend(names.iter().map(|n| dir.join(n)));
             }
         }
