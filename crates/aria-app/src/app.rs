@@ -8,7 +8,7 @@ use std::{
 };
 
 use aria_core::{
-    PlaybackClock,
+    DeviceInfo, PlaybackClock,
     command::Command,
     event::Event,
     i18n::{Localizer, os_language},
@@ -113,6 +113,11 @@ pub struct AriaApp {
     library: LibraryView,
     /// What the backend last reported of the player.
     player: PlayerView,
+    /// The output devices the backend last listed. Empty until it answers.
+    devices: Vec<DeviceInfo>,
+    /// Whether the Settings page was on screen last frame, so that entering it asks for the
+    /// devices once, not on every frame.
+    on_settings: bool,
     /// Where playback is, read each frame by the player bar.
     clock: Option<Arc<PlaybackClock>>,
     /// Cover textures. Made on the first frame, once there is a context and a cache folder.
@@ -166,6 +171,8 @@ impl AriaApp {
             picker: FolderPicker::default(),
             library: LibraryView::default(),
             player: PlayerView::default(),
+            devices: Vec::new(),
+            on_settings: false,
             clock,
             artwork: None,
             artwork_started: false,
@@ -387,8 +394,7 @@ impl AriaApp {
                 self.library.current = player.current;
                 self.player = player;
             }
-            // Nothing shows the devices yet.
-            Event::OutputDevices(_) => {}
+            Event::OutputDevices(devices) => self.devices = devices,
         }
     }
 
@@ -490,6 +496,7 @@ impl AriaApp {
             modal_open: &mut self.modal_open,
             out: &mut actions,
             library: &self.library,
+            devices: &self.devices,
             artwork: self.artwork.as_mut(),
         };
         let route = self.history.current();
@@ -503,6 +510,17 @@ impl AriaApp {
         for action in actions {
             self.handle_page_action(ctx, action);
         }
+        self.list_devices_on_entering_settings(route);
+    }
+
+    /// Asks the backend for the output devices once per entry into the Settings route, so
+    /// the list is as fresh as the user's last visit and no frame waits for it.
+    fn list_devices_on_entering_settings(&mut self, route: Route) {
+        let on_settings = route == Route::Settings;
+        if on_settings && !self.on_settings {
+            self.send(Command::ListDevices);
+        }
+        self.on_settings = on_settings;
     }
 
     fn handle_page_action(&mut self, ctx: &egui::Context, action: PageAction) {
@@ -885,6 +903,48 @@ mod tests {
             .iter()
             .filter(|command| matches!(command, Command::TogglePlay))
             .count()
+    }
+
+    fn list_devices_sent(harness: &Harness<'_, AriaApp>) -> usize {
+        harness
+            .state()
+            .sent
+            .borrow()
+            .iter()
+            .filter(|command| matches!(command, Command::ListDevices))
+            .count()
+    }
+
+    #[test]
+    fn entering_settings_lists_the_devices_once_per_entry() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 780.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app(vec![]));
+        harness.run();
+        assert_eq!(list_devices_sent(&harness), 0, "listed away from Settings");
+        harness.state_mut().history.navigate(Route::Settings);
+        // Several frames on the page: still one request.
+        harness.run();
+        harness.run();
+        assert_eq!(list_devices_sent(&harness), 1);
+        harness.state_mut().history.navigate(Route::Home);
+        harness.run();
+        harness.state_mut().history.navigate(Route::Settings);
+        harness.run();
+        assert_eq!(list_devices_sent(&harness), 2, "a second visit asks again");
+    }
+
+    #[test]
+    fn the_device_list_is_kept() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let device = DeviceInfo {
+            id: aria_core::DeviceId("a".into()),
+            name: "Speakers".into(),
+            is_default: true,
+        };
+        app.handle_event(&ctx, Event::OutputDevices(vec![device.clone()]));
+        assert_eq!(app.devices, [device]);
     }
 
     fn space_harness() -> Harness<'static, AriaApp> {

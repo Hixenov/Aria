@@ -106,6 +106,7 @@ fn harness(snapshot: LibrarySnapshot) -> Harness<'static, Page> {
                     modal_open: &mut page.modal_open,
                     out: &mut page.actions,
                     library: &page.library,
+                    devices: &[],
                     artwork: None,
                 };
                 pages::show(Route::LocalMusic, ui, &mut ctx);

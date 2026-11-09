@@ -11,6 +11,7 @@ mod search;
 mod settings;
 
 use aria_core::{
+    DeviceInfo,
     i18n::{FluentArgs, Localizer},
     settings::Settings,
 };
@@ -45,6 +46,8 @@ pub struct PageCtx<'a> {
     pub out: &'a mut Vec<PageAction>,
     /// The library as the backend last reported it.
     pub library: &'a LibraryView,
+    /// The output devices as the backend last listed them. Empty until it answers.
+    pub devices: &'a [DeviceInfo],
     /// Cover textures, when the thumbnails' folder is known. Without it, covers show as
     /// placeholders.
     pub artwork: Option<&'a mut ArtworkTextures>,
