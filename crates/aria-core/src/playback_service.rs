@@ -69,6 +69,9 @@ const NO_DEVICE: Notice = Notice::new(NoticeLevel::Error, "playback-no-device");
 pub struct PlayerView {
     /// The current track. Its row may be gone from the library.
     pub current: Option<TrackId>,
+    /// The engine's token for the current track, or 0 when none is loaded. The clock's position
+    /// belongs to the current track only when its token is this one.
+    pub token: u64,
     pub playing: bool,
     /// The length of the current track, or 0 while it is not known.
     pub duration_ms: u64,
@@ -401,6 +404,7 @@ impl PlaybackService {
     fn publish(&mut self) {
         let view = PlayerView {
             current: self.queue.current(),
+            token: self.current.as_ref().map_or(0, |given| given.token),
             playing: self.playing,
             duration_ms: self.duration_ms(),
             upcoming: self.queue.upcoming(UPCOMING_LIMIT),
@@ -1128,6 +1132,31 @@ mod tests {
         assert_eq!(rig.view().duration_ms, 3_000);
         assert_eq!(rig.upcoming(), [t(3)]);
         rig.run_until("the track to be heard", heard(rig.current_token()));
+    }
+
+    #[test]
+    fn the_view_carries_the_engine_token_of_the_current_track() {
+        let music = Music::new().tone(200).tone(3_000);
+        let mut rig = Rig::with(&music);
+        assert_eq!(rig.service.clock.read().token, 0);
+
+        rig.play(&[1, 2], 0);
+        let first = rig.current_token();
+        assert_ne!(first, 0);
+        assert_eq!(rig.view().token, first);
+
+        rig.send(Command::Next);
+        let second = rig.current_token();
+        assert_ne!(second, first);
+        assert_eq!(rig.view().token, second, "a new track brings its token");
+
+        // Through the gapless path too.
+        rig.send(Command::PlayContext {
+            ids: vec![t(1), t(2)],
+            start: 0,
+        });
+        rig.run_until("the second track", is_playing(2));
+        assert_eq!(rig.view().token, rig.current_token());
     }
 
     #[test]

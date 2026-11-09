@@ -31,6 +31,15 @@ player-volume = Volume
 player-devices = Devices
 player-queue = Queue
 player-lyrics = Lyrics
+player-pause = Pause
+player-shuffle = Shuffle
+player-repeat-off = Repeat: off
+player-repeat-all = Repeat: all
+player-repeat-one = Repeat: one track
+player-mute = Mute
+player-unmute = Unmute
+player-seek = Seek
+player-unknown-title = Unknown title
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Coming in Phase { $phase }
 

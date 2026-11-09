@@ -20,6 +20,7 @@ aria-core = { workspace = true }
 aria-library = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true }
+image = { workspace = true }
 open = { workspace = true }
 pollster = { workspace = true }
 # The folder picker and the fatal-startup message box. No Linux backend is compiled in unless

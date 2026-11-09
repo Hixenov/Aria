@@ -1,0 +1,408 @@
+//! Headless tests of the player bar. The bar's own behavior (what it returns, what it
+//! disables) is driven through a harness around `player_bar::show`; what the app does with
+//! the answers (settings, titles from the library) through the whole app.
+
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use aria_app::{
+    app::{AppDeps, AriaApp},
+    ui::{
+        layout::player_bar::{self, NowPlaying, PlayerAction, PlayerBar},
+        theme::{Palette, fonts},
+    },
+};
+use aria_core::{
+    ClockReading, PlaybackClock,
+    event::Event,
+    i18n::Localizer,
+    playback_service::PlayerView,
+    player::queue::RepeatMode,
+    settings::{Language, Settings},
+};
+use aria_library::{FolderId, LibrarySnapshot, Track, TrackId};
+use eframe::egui::{self, accesskit::Role};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable as _},
+};
+
+const SIZE: egui::Vec2 = egui::vec2(1200.0, 780.0);
+const SEEK_KNOB: f32 = 5.0;
+
+fn localizer() -> Localizer {
+    Localizer::new(Language::En).unwrap_or_else(|err| panic!("English locale: {err}"))
+}
+
+fn en(key: &str) -> String {
+    localizer().tr(key).into_owned()
+}
+
+fn english() -> Settings {
+    Settings {
+        language: Some(Language::En),
+        ..Settings::default()
+    }
+}
+
+fn track(id: i64, title: &str, artist: Option<&str>) -> Track {
+    Track {
+        id: TrackId(id),
+        folder: FolderId(1),
+        path: PathBuf::from("/secret/folder/file.flac"),
+        title: title.to_owned(),
+        artist: artist.map(Arc::from),
+        album: None,
+        album_artist: None,
+        track_no: None,
+        disc_no: None,
+        year: None,
+        genre: None,
+        duration_ms: 200_000,
+        sample_rate: 44_100,
+        channels: 2,
+        codec: Arc::from("flac"),
+        artwork: None,
+        added_at: 0,
+    }
+}
+
+fn view(current: Option<i64>, playing: bool, duration_ms: u64) -> PlayerView {
+    PlayerView {
+        current: current.map(TrackId),
+        token: current.map_or(0, |_| 7),
+        playing,
+        duration_ms,
+        upcoming: Vec::new(),
+    }
+}
+
+/// A bar on its own: what it is given, and what it returned over the frames so far.
+struct Bar {
+    tr: Localizer,
+    view: PlayerView,
+    now: Option<NowPlaying>,
+    position_ms: u64,
+    settings: Settings,
+    actions: Vec<PlayerAction>,
+}
+
+fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
+    let state = Bar {
+        tr: localizer(),
+        now: view.current.map(|_| NowPlaying {
+            title: "Song".into(),
+            artist: "Singer".into(),
+            artwork: None,
+        }),
+        view,
+        position_ms,
+        settings: english(),
+        actions: Vec::new(),
+    };
+    Harness::builder()
+        .with_size(SIZE)
+        .with_context_setup(fonts::install)
+        .build_ui_state(
+            |ui, bar: &mut Bar| {
+                let palette = Palette::dark();
+                let mut shown = PlayerBar {
+                    tr: &bar.tr,
+                    palette: &palette,
+                    view: &bar.view,
+                    now: bar.now.as_ref(),
+                    position_ms: bar.position_ms,
+                    settings: &bar.settings,
+                    queue_open: false,
+                    artwork: None,
+                };
+                let actions = player_bar::show(ui, &mut shown);
+                bar.actions.extend(actions);
+            },
+            state,
+        )
+}
+
+fn app_harness() -> Harness<'static, AriaApp> {
+    let app = AriaApp::new(english(), localizer(), AppDeps::none(), vec![]);
+    Harness::builder()
+        .with_size(SIZE)
+        .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app)
+}
+
+fn is_disabled<S>(harness: &Harness<'_, S>, role: Role, label: &str) -> bool {
+    harness
+        .get_by_role_and_label(role, label)
+        .accesskit_node()
+        .is_disabled()
+}
+
+/// Where along a bar `fraction` of its length lies.
+fn point_on<S>(harness: &Harness<'_, S>, label: &str, fraction: f32) -> egui::Pos2 {
+    let rect = harness.get_by_role_and_label(Role::Slider, label).rect();
+    let width = rect.width() - 2.0 * SEEK_KNOB;
+    egui::pos2(rect.left() + SEEK_KNOB + width * fraction, rect.center().y)
+}
+
+fn pointer<S>(harness: &mut Harness<'_, S>, events: Vec<egui::Event>) {
+    harness.input_mut().events.extend(events);
+    harness.step();
+}
+
+fn moved(pos: egui::Pos2) -> egui::Event {
+    egui::Event::PointerMoved(pos)
+}
+
+fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+/// Presses and releases at `pos`, in one frame.
+fn click_at<S>(harness: &mut Harness<'_, S>, pos: egui::Pos2) {
+    let events = vec![moved(pos), button(pos, true), button(pos, false)];
+    pointer(harness, events);
+    harness.run();
+}
+
+#[test]
+fn shows_title_and_artist() {
+    let mut harness = app_harness();
+    let ctx = harness.ctx.clone();
+    let snapshot = LibrarySnapshot {
+        tracks: vec![track(1, "So What", Some("Miles Davis"))],
+        ..LibrarySnapshot::default()
+    };
+    harness
+        .state_mut()
+        .handle_event(&ctx, Event::LibraryUpdated(Arc::new(snapshot)));
+    harness
+        .state_mut()
+        .handle_event(&ctx, Event::Player(view(Some(1), false, 200_000)));
+    harness.run();
+    assert!(harness.query_by_label("So What").is_some());
+    assert!(harness.query_by_label("Miles Davis").is_some());
+    assert!(
+        harness
+            .query_by_label(&en("empty-nothing-playing"))
+            .is_none()
+    );
+}
+
+#[test]
+fn a_track_without_a_row_shows_unknown_never_a_path() {
+    let mut harness = app_harness();
+    let ctx = harness.ctx.clone();
+    // No snapshot at all, and then one without the track.
+    for snapshot in [None, Some(LibrarySnapshot::default())] {
+        if let Some(snapshot) = snapshot {
+            harness
+                .state_mut()
+                .handle_event(&ctx, Event::LibraryUpdated(Arc::new(snapshot)));
+        }
+        harness
+            .state_mut()
+            .handle_event(&ctx, Event::Player(view(Some(9), false, 0)));
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(&en("player-unknown-title"))
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label(&en("library-unknown-artist"))
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn a_known_track_with_a_row_but_no_artist_says_unknown_artist() {
+    let snapshot = LibrarySnapshot {
+        tracks: vec![track(1, "Untitled live", None)],
+        ..LibrarySnapshot::default()
+    };
+    let now = NowPlaying::of(&view(Some(1), false, 0), &snapshot, &localizer());
+    let Some(now) = now else {
+        panic!("a current track gives a line");
+    };
+    assert_eq!(now.title, "Untitled live");
+    assert_eq!(now.artist, en("library-unknown-artist"));
+    assert!(NowPlaying::of(&view(None, false, 0), &snapshot, &localizer()).is_none());
+}
+
+#[test]
+fn position_belongs_to_the_clock_only_for_the_current_track() {
+    let clock = Arc::new(PlaybackClock::default());
+    clock.publish(ClockReading {
+        token: 7,
+        position_ms: 42_000,
+        playing: true,
+    });
+    let shown = view(Some(1), true, 200_000);
+    assert_eq!(player_bar::position_ms(clock.read(), &shown), 42_000);
+
+    // The clock still holds the last track while the new one loads.
+    let next = PlayerView {
+        token: 8,
+        ..shown.clone()
+    };
+    assert_eq!(player_bar::position_ms(clock.read(), &next), 0);
+    // No track, no position; and token 0 never matches an idle clock.
+    let none = view(None, false, 0);
+    assert_eq!(player_bar::position_ms(ClockReading::default(), &none), 0);
+}
+
+#[test]
+fn play_button_sends_toggle() {
+    let mut harness = bar_harness(view(Some(1), false, 200_000), 0);
+    harness
+        .get_by_role_and_label(Role::Button, &en("player-play"))
+        .click();
+    harness.run();
+    assert_eq!(harness.state().actions, [PlayerAction::TogglePlay]);
+
+    // While playing the same button pauses, and next and previous send theirs.
+    let mut harness = bar_harness(view(Some(1), true, 200_000), 0);
+    for (key, action) in [
+        ("player-pause", PlayerAction::TogglePlay),
+        ("player-next", PlayerAction::Next),
+        ("player-previous", PlayerAction::Previous),
+    ] {
+        harness.state_mut().actions.clear();
+        harness
+            .get_by_role_and_label(Role::Button, &en(key))
+            .click();
+        harness.run();
+        assert_eq!(harness.state().actions, [action], "{key}");
+    }
+}
+
+#[test]
+fn transport_is_disabled_with_nothing_loaded() {
+    let mut harness = bar_harness(view(None, false, 0), 0);
+    for key in ["player-play", "player-previous", "player-next"] {
+        let label = en(key);
+        assert!(is_disabled(&harness, Role::Button, &label), "{key}");
+        // Nothing says a phase brings it: playback is here.
+        let node = harness.get_by_role_and_label(Role::Button, &label);
+        assert_eq!(node.accesskit_node().description(), None, "{key}");
+        node.click();
+    }
+    assert!(is_disabled(&harness, Role::Slider, &en("player-seek")));
+    harness.run();
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn seek_sends_once_on_release() {
+    let mut harness = bar_harness(view(Some(1), true, 100_000), 10_000);
+    let label = en("player-seek");
+    let (from, to) = (
+        point_on(&harness, &label, 0.1),
+        point_on(&harness, &label, 0.75),
+    );
+
+    pointer(&mut harness, vec![moved(from)]);
+    pointer(&mut harness, vec![button(from, true)]);
+    let mid = point_on(&harness, &label, 0.4);
+    pointer(&mut harness, vec![moved(mid)]);
+    pointer(&mut harness, vec![moved(to)]);
+    harness.run();
+    assert!(
+        harness.state().actions.is_empty(),
+        "dragging sought: {:?}",
+        harness.state().actions
+    );
+    // The time shows where the drag is, not where the track is.
+    assert!(harness.query_by_label("1:15").is_some());
+
+    pointer(&mut harness, vec![button(to, false)]);
+    harness.run();
+    let [PlayerAction::Seek(ms)] = harness.state().actions[..] else {
+        panic!("expected one seek, got {:?}", harness.state().actions);
+    };
+    assert!((74_000..=76_000).contains(&ms), "sought to {ms}");
+}
+
+#[test]
+fn unknown_duration_disables_seek() {
+    let mut harness = bar_harness(view(Some(1), true, 0), 5_000);
+    let label = en("player-seek");
+    assert!(is_disabled(&harness, Role::Slider, &label));
+    assert!(harness.query_by_label("--:--").is_some());
+    let pos = point_on(&harness, &label, 0.5);
+    click_at(&mut harness, pos);
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn volume_change_is_saved_in_settings() {
+    let mut harness = app_harness();
+    assert_eq!(harness.state().settings().volume, 1.0);
+    let label = en("player-volume");
+    let pos = point_on(&harness, &label, 0.5);
+    click_at(&mut harness, pos);
+    let volume = harness.state().settings().volume;
+    assert!((0.45..=0.55).contains(&volume), "volume is {volume}");
+
+    // Muting keeps the volume; raising it while muted unmutes.
+    harness
+        .get_by_role_and_label(Role::Button, &en("player-mute"))
+        .click();
+    harness.run();
+    assert!(harness.state().settings().muted);
+    assert_eq!(harness.state().settings().volume, volume);
+    let pos = point_on(&harness, &label, 0.9);
+    click_at(&mut harness, pos);
+    assert!(!harness.state().settings().muted);
+    assert!(harness.state().settings().volume > volume);
+}
+
+#[test]
+fn repeat_cycles_through_three_modes() {
+    let mut harness = app_harness();
+    for (shown, then) in [
+        ("player-repeat-off", RepeatMode::All),
+        ("player-repeat-all", RepeatMode::One),
+        ("player-repeat-one", RepeatMode::Off),
+    ] {
+        harness
+            .get_by_role_and_label(Role::Button, &en(shown))
+            .click();
+        harness.run();
+        assert_eq!(harness.state().settings().repeat, then, "after {shown}");
+    }
+    harness
+        .get_by_role_and_label(Role::Button, &en("player-shuffle"))
+        .click();
+    harness.run();
+    assert!(harness.state().settings().shuffle);
+}
+
+#[test]
+fn repaints_only_while_playing() {
+    let delays = |playing: bool| {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut harness = bar_harness(view(Some(1), playing, 100_000), 0);
+        let sink = Arc::clone(&seen);
+        harness.ctx.set_request_repaint_callback(move |info| {
+            if let Ok(mut seen) = sink.lock() {
+                seen.push(info.delay);
+            }
+        });
+        harness.step();
+        let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+        seen
+    };
+    assert!(delays(true).contains(&Duration::from_millis(250)));
+    assert!(!delays(false).contains(&Duration::from_millis(250)));
+}

@@ -10,9 +10,15 @@ pub const MICROPHONE_STAGE: &str = "\u{e75c}";
 pub const FOLDER_SIMPLE: &str = "\u{e25a}";
 pub const GEAR: &str = "\u{e270}";
 pub const PLAY: &str = "\u{e3d0}";
+pub const PAUSE: &str = "\u{e39e}";
 pub const SKIP_BACK: &str = "\u{e5a4}";
 pub const SKIP_FORWARD: &str = "\u{e5a6}";
 pub const SPEAKER_HIGH: &str = "\u{e44a}";
+pub const SHUFFLE: &str = "\u{e422}";
+pub const REPEAT: &str = "\u{e3f6}";
+pub const REPEAT_ONCE: &str = "\u{e3f8}";
+pub const SPEAKER_LOW: &str = "\u{e44c}";
+pub const SPEAKER_X: &str = "\u{e45c}";
 pub const DEVICES: &str = "\u{eba4}";
 pub const QUEUE: &str = "\u{e6ac}";
 pub const QUOTES: &str = "\u{e660}";
@@ -37,9 +43,15 @@ pub const ALL: &[&str] = &[
     FOLDER_SIMPLE,
     GEAR,
     PLAY,
+    PAUSE,
     SKIP_BACK,
     SKIP_FORWARD,
     SPEAKER_HIGH,
+    SHUFFLE,
+    REPEAT,
+    REPEAT_ONCE,
+    SPEAKER_LOW,
+    SPEAKER_X,
     DEVICES,
     QUEUE,
     QUOTES,

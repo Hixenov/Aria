@@ -20,6 +20,7 @@ use eframe::egui::Ui;
 pub use self::local_music::{LibraryView, Scope, SortKey, Tab, TrackView};
 
 use crate::{
+    artwork::ArtworkTextures,
     nav::Route,
     ui::{
         theme::Palette,
@@ -44,6 +45,9 @@ pub struct PageCtx<'a> {
     pub out: &'a mut Vec<PageAction>,
     /// The library as the backend last reported it.
     pub library: &'a LibraryView,
+    /// Cover textures, when the thumbnails' folder is known. Without it, covers show as
+    /// placeholders.
+    pub artwork: Option<&'a mut ArtworkTextures>,
 }
 
 /// A request from a page to the app.

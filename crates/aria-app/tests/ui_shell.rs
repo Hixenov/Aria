@@ -224,23 +224,26 @@ fn player_controls_are_disabled() {
         "player-play",
         "player-previous",
         "player-next",
-        "player-volume",
         "player-devices",
         "player-lyrics",
     ] {
         assert!(is_disabled(&harness, &en(key)), "{key} should be disabled");
     }
-    assert!(!is_disabled(&harness, &en("player-queue")));
+    // Queue, shuffle, repeat and mute are settings, and work with nothing loaded.
+    for key in [
+        "player-queue",
+        "player-shuffle",
+        "player-repeat-off",
+        "player-mute",
+    ] {
+        assert!(!is_disabled(&harness, &en(key)), "{key} should be enabled");
+    }
 }
 
 #[test]
 fn disabled_controls_say_when_they_arrive() {
     let mut harness = harness(SIZE);
-    for (key, phase) in [
-        ("player-play", 2),
-        ("player-devices", 3),
-        ("player-lyrics", 5),
-    ] {
+    for (key, phase) in [("player-devices", 3), ("player-lyrics", 5)] {
         let name = en(key);
         let hint = en_phase("player-coming-in", phase);
         let control = harness.get_by_role_and_label(Role::Button, &name);

@@ -157,6 +157,7 @@ fn main() -> anyhow::Result<()> {
         backend,
         logging: logging.as_ref().map(LoggingHandle::level),
         paths,
+        clock: None,
     };
     let mut parts = Some((settings, localizer, deps, notices));
     let stage = Instant::now();

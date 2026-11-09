@@ -31,6 +31,15 @@ player-volume = Громкость
 player-devices = Устройства
 player-queue = Очередь
 player-lyrics = Текст песни
+player-pause = Пауза
+player-shuffle = Перемешать
+player-repeat-off = Повтор: выкл.
+player-repeat-all = Повтор: все треки
+player-repeat-one = Повтор: один трек
+player-mute = Выключить звук
+player-unmute = Включить звук
+player-seek = Перемотка
+player-unknown-title = Неизвестное название
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Появится на этапе { $phase }
 

@@ -1,21 +1,24 @@
 //! The Albums and Artists tabs: a list of each, of which only the visible rows are drawn.
 
 use aria_core::i18n::{FluentArgs, Localizer};
-use aria_library::LibrarySnapshot;
+use aria_library::{ArtworkId, LibrarySnapshot};
 use eframe::egui::{
     Align2, CursorIcon, ScrollArea, Sense, TextStyle, Ui, WidgetInfo, accesskit::Role, vec2,
 };
 
-use crate::ui::theme::{
-    Palette,
-    fonts::{icon_font, semibold},
-    icons,
-    visuals::SPACE,
+use crate::{
+    artwork::{ArtworkTextures, paint_cover},
+    ui::theme::{
+        Palette,
+        fonts::{icon_font, semibold},
+        icons,
+        visuals::SPACE,
+    },
 };
 
 /// Height of a row.
 const ROW_HEIGHT: f32 = 56.0;
-/// Edge of the square the icon sits on. Task 12 puts the thumbnail there.
+/// Edge of the square the cover, or else the icon, sits on.
 const BADGE_SIZE: f32 = 40.0;
 /// Size of the icon on it.
 const ICON_SIZE: f32 = 20.0;
@@ -28,6 +31,8 @@ struct Entry {
     title: String,
     subtitle: String,
     count: String,
+    /// The cover, when the group has one. Asked for only once its row is drawn.
+    artwork: Option<ArtworkId>,
 }
 
 /// Draws the albums. Returns the index in `snapshot.albums` of the one clicked.
@@ -36,18 +41,27 @@ pub fn albums(
     tr: &Localizer,
     p: &Palette,
     snapshot: &LibrarySnapshot,
+    artwork: Option<&mut ArtworkTextures>,
 ) -> Option<usize> {
-    list(ui, p, "aria_local_albums", snapshot.albums.len(), |i| {
-        let album = &snapshot.albums[i];
-        Entry {
-            icon: icons::VINYL_RECORD,
-            title: super::or_unknown(tr, album.title.as_deref(), "library-unknown-album")
-                .into_owned(),
-            subtitle: super::or_unknown(tr, album.artist.as_deref(), "library-unknown-artist")
-                .into_owned(),
-            count: track_count(tr, album.tracks.len()),
-        }
-    })
+    list(
+        ui,
+        p,
+        "aria_local_albums",
+        snapshot.albums.len(),
+        artwork,
+        |i| {
+            let album = &snapshot.albums[i];
+            Entry {
+                icon: icons::VINYL_RECORD,
+                title: super::or_unknown(tr, album.title.as_deref(), "library-unknown-album")
+                    .into_owned(),
+                subtitle: super::or_unknown(tr, album.artist.as_deref(), "library-unknown-artist")
+                    .into_owned(),
+                count: track_count(tr, album.tracks.len()),
+                artwork: album.artwork.clone(),
+            }
+        },
+    )
 }
 
 /// Draws the artists. Returns the index in `snapshot.artists` of the one clicked.
@@ -56,17 +70,26 @@ pub fn artists(
     tr: &Localizer,
     p: &Palette,
     snapshot: &LibrarySnapshot,
+    artwork: Option<&mut ArtworkTextures>,
 ) -> Option<usize> {
-    list(ui, p, "aria_local_artists", snapshot.artists.len(), |i| {
-        let artist = &snapshot.artists[i];
-        Entry {
-            icon: icons::MICROPHONE_STAGE,
-            title: super::or_unknown(tr, artist.name.as_deref(), "library-unknown-artist")
-                .into_owned(),
-            subtitle: String::new(),
-            count: track_count(tr, artist.tracks.len()),
-        }
-    })
+    list(
+        ui,
+        p,
+        "aria_local_artists",
+        snapshot.artists.len(),
+        artwork,
+        |i| {
+            let artist = &snapshot.artists[i];
+            Entry {
+                icon: icons::MICROPHONE_STAGE,
+                title: super::or_unknown(tr, artist.name.as_deref(), "library-unknown-artist")
+                    .into_owned(),
+                subtitle: String::new(),
+                count: track_count(tr, artist.tracks.len()),
+                artwork: None,
+            }
+        },
+    )
 }
 
 fn track_count(tr: &Localizer, count: usize) -> String {
@@ -81,6 +104,7 @@ fn list(
     p: &Palette,
     id_salt: &str,
     len: usize,
+    mut artwork: Option<&mut ArtworkTextures>,
     entry: impl Fn(usize) -> Entry,
 ) -> Option<usize> {
     let mut clicked = None;
@@ -89,7 +113,7 @@ fn list(
         .auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, len, |ui, range| {
             for i in range {
-                if row(ui, p, &entry(i)) {
+                if row(ui, p, &entry(i), artwork.as_deref_mut()) {
                     clicked = Some(i);
                 }
             }
@@ -98,7 +122,7 @@ fn list(
 }
 
 /// One row. Whether it was clicked.
-fn row(ui: &mut Ui, p: &Palette, entry: &Entry) -> bool {
+fn row(ui: &mut Ui, p: &Palette, entry: &Entry, artwork: Option<&mut ArtworkTextures>) -> bool {
     let size = vec2(ui.available_width(), ROW_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), &entry.title));
@@ -116,13 +140,20 @@ fn row(ui: &mut Ui, p: &Palette, entry: &Entry) -> bool {
         vec2(BADGE_SIZE, BADGE_SIZE),
     );
     painter.rect_filled(badge, RADIUS, p.surface_raised);
-    painter.text(
-        badge.center(),
-        Align2::CENTER_CENTER,
-        entry.icon,
-        icon_font(ICON_SIZE),
-        p.text_muted,
-    );
+    // Only a row that is drawn gets here, so only those covers are asked for.
+    let cover = entry.artwork.as_ref().and_then(|id| artwork?.get(id));
+    match cover {
+        Some(texture) => paint_cover(&painter, badge, RADIUS, texture),
+        None => {
+            painter.text(
+                badge.center(),
+                Align2::CENTER_CENTER,
+                entry.icon,
+                icon_font(ICON_SIZE),
+                p.text_muted,
+            );
+        }
+    }
 
     let left = badge.right() + SPACE[2];
     let body = TextStyle::Body.resolve(ui.style());

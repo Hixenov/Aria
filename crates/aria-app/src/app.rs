@@ -3,28 +3,34 @@
 use std::{
     io, mem,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use aria_core::{
+    PlaybackClock,
     command::Command,
     event::Event,
     i18n::{Localizer, os_language},
     logging::LogLevelHandle,
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
+    playback_service::PlayerView,
+    player::queue::RepeatMode,
     runtime::BackendHandle,
     settings::{SIDEBAR_MAX, SIDEBAR_MIN, Settings},
 };
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
 use crate::{
+    artwork::ArtworkTextures,
     folders::{FolderOpener, FolderPicker},
     nav::{History, Route},
     shortcuts::read_shortcuts,
     ui::{
         layout::{
-            player_bar, right_panel,
+            player_bar::{self, NowPlaying, PlayerAction, PlayerBar},
+            right_panel,
             sidebar::{self, SidebarAction},
         },
         pages::{self, LibraryView, PageAction, PageCtx},
@@ -64,6 +70,8 @@ pub struct AppDeps {
     pub logging: Option<LogLevelHandle>,
     /// Aria's directories, when they could be resolved.
     pub paths: Option<AppPaths>,
+    /// Where playback is. Taken from `backend` when left out.
+    pub clock: Option<Arc<PlaybackClock>>,
 }
 
 impl AppDeps {
@@ -99,6 +107,14 @@ pub struct AriaApp {
     /// What the backend last reported of the library and the player. Starts empty, since a
     /// disabled library sends nothing at all.
     library: LibraryView,
+    /// What the backend last reported of the player.
+    player: PlayerView,
+    /// Where playback is, read each frame by the player bar.
+    clock: Option<Arc<PlaybackClock>>,
+    /// Cover textures. Made on the first frame, once there is a context and a cache folder.
+    artwork: Option<ArtworkTextures>,
+    /// Whether making `artwork` has been tried.
+    artwork_started: bool,
     /// Whether the Settings page's reset dialog is open. Navigation and panel shortcuts
     /// wait while it is.
     modal_open: bool,
@@ -121,6 +137,10 @@ impl AriaApp {
         deps: AppDeps,
         startup_notices: Vec<Notice>,
     ) -> AriaApp {
+        let clock = deps
+            .clock
+            .clone()
+            .or_else(|| deps.backend.as_ref().map(BackendHandle::clock));
         AriaApp {
             settings: settings.sanitized(),
             localizer,
@@ -135,6 +155,10 @@ impl AriaApp {
             folders: FolderOpener::default(),
             picker: FolderPicker::default(),
             library: LibraryView::default(),
+            player: PlayerView::default(),
+            clock,
+            artwork: None,
+            artwork_started: false,
             modal_open: false,
             outstanding_resets: 0,
             startup: None,
@@ -181,16 +205,11 @@ impl AriaApp {
         self.collect_picked_folder();
         self.handle_shortcuts(&ctx);
 
+        self.poll_artwork(&ctx);
+
         let palette = Palette::for_theme(ctx.theme(), &self.settings);
         // The player bar goes first so it spans the full width of the window.
-        if player_bar::show(
-            ui,
-            &self.localizer,
-            &palette,
-            self.settings.right_panel_open,
-        ) {
-            self.toggle_right_panel(&ctx);
-        }
+        self.show_player_bar(ui, &ctx, &palette);
         self.show_sidebar(ui, &ctx, &palette);
         right_panel::show(
             ui,
@@ -200,6 +219,70 @@ impl AriaApp {
         );
         self.show_page(ui, &ctx, &palette);
         self.toasts.show(&ctx, &self.localizer, &palette);
+    }
+
+    /// Starts the cover textures once, if there is a cache folder, and uploads what the worker
+    /// has decoded.
+    fn poll_artwork(&mut self, ctx: &egui::Context) {
+        if !self.artwork_started {
+            self.artwork_started = true;
+            self.artwork = self
+                .deps
+                .paths
+                .as_ref()
+                .map(|paths| ArtworkTextures::new(paths.cache_dir.join("artwork"), ctx));
+        }
+        if let Some(artwork) = &mut self.artwork {
+            artwork.poll();
+        }
+    }
+
+    fn show_player_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, palette: &Palette) {
+        let now = NowPlaying::of(&self.player, &self.library.snapshot, &self.localizer);
+        let position_ms = self.clock.as_ref().map_or(0, |clock| {
+            player_bar::position_ms(clock.read(), &self.player)
+        });
+        let mut bar = PlayerBar {
+            tr: &self.localizer,
+            palette,
+            view: &self.player,
+            now: now.as_ref(),
+            position_ms,
+            settings: &self.settings,
+            queue_open: self.settings.right_panel_open,
+            artwork: self.artwork.as_mut(),
+        };
+        for action in player_bar::show(ui, &mut bar) {
+            self.handle_player_action(ctx, action);
+        }
+    }
+
+    fn handle_player_action(&mut self, ctx: &egui::Context, action: PlayerAction) {
+        let mut settings = self.settings.clone();
+        match action {
+            PlayerAction::TogglePlay => return self.send(Command::TogglePlay),
+            PlayerAction::Next => return self.send(Command::Next),
+            PlayerAction::Previous => return self.send(Command::Previous),
+            PlayerAction::Seek(position_ms) => return self.send(Command::Seek(position_ms)),
+            PlayerAction::ToggleQueue => return self.toggle_right_panel(ctx),
+            PlayerAction::SetVolume(volume) => {
+                settings.volume = volume;
+                // Raising the volume is asking to hear it.
+                if volume > 0.0 {
+                    settings.muted = false;
+                }
+            }
+            PlayerAction::ToggleMute => settings.muted = !settings.muted,
+            PlayerAction::ToggleShuffle => settings.shuffle = !settings.shuffle,
+            PlayerAction::CycleRepeat => {
+                settings.repeat = match settings.repeat {
+                    RepeatMode::Off => RepeatMode::All,
+                    RepeatMode::All => RepeatMode::One,
+                    RepeatMode::One => RepeatMode::Off,
+                };
+            }
+        }
+        self.update_settings(ctx, settings);
     }
 
     /// Installs the fonts on the first frame and applies the visuals when they changed.
@@ -227,7 +310,9 @@ impl AriaApp {
         }
     }
 
-    fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
+    /// Applies one event from the backend. [`Self::show`] does this for each event the backend
+    /// has sent; tests call it to play the backend's part.
+    pub fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
         match event {
             Event::Notice(notice) => self.notify(ctx, notice),
             Event::SettingsReplaced(settings) => {
@@ -239,9 +324,18 @@ impl AriaApp {
                 }
             }
             Event::SettingsSaved => tracing::trace!("settings saved"),
-            Event::LibraryUpdated(snapshot) => self.library.snapshot = snapshot,
+            Event::LibraryUpdated(snapshot) => {
+                self.library.snapshot = snapshot;
+                // A rescan may have written the thumbnails that were missing.
+                if let Some(artwork) = &mut self.artwork {
+                    artwork.retry_failed();
+                }
+            }
             Event::ScanProgress(scan) => self.library.scan = scan,
-            Event::Player(player) => self.library.current = player.current,
+            Event::Player(player) => {
+                self.library.current = player.current;
+                self.player = player;
+            }
             // Nothing shows the devices yet.
             Event::OutputDevices(_) => {}
         }
@@ -340,6 +434,7 @@ impl AriaApp {
             modal_open: &mut self.modal_open,
             out: &mut actions,
             library: &self.library,
+            artwork: self.artwork.as_mut(),
         };
         let route = self.history.current();
         let frame = Frame::new()

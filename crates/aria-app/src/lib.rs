@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 pub mod app;
+pub mod artwork;
 mod folders;
 pub mod nav;
 mod shortcuts;

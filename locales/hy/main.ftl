@@ -33,6 +33,15 @@ player-volume = Ձայնի ուժգնություն
 player-devices = Սարքեր
 player-queue = Հերթ
 player-lyrics = Երգի բառեր
+player-pause = Դադար
+player-shuffle = Խառնել
+player-repeat-off = Կրկնություն՝ անջատված
+player-repeat-all = Կրկնություն՝ բոլորը
+player-repeat-one = Կրկնություն՝ մեկ երգ
+player-mute = Անջատել ձայնը
+player-unmute = Միացնել ձայնը
+player-seek = Հետ կամ առաջ տալ
+player-unknown-title = Անհայտ վերնագիր
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Կհայտնվի { $phase }-րդ փուլում
 

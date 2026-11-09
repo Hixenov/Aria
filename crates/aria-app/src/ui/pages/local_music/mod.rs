@@ -135,13 +135,25 @@ fn draw(ui: &mut Ui, ctx: &mut PageCtx<'_>, state: &mut State) {
         Tab::Tracks => tracks_tab(ui, ctx, state, &snapshot),
         Tab::Albums if snapshot.albums.is_empty() => no_tracks(ui, ctx),
         Tab::Albums => {
-            if let Some(i) = groups::albums(ui, ctx.tr, &ctx.palette, &snapshot) {
+            if let Some(i) = groups::albums(
+                ui,
+                ctx.tr,
+                &ctx.palette,
+                &snapshot,
+                ctx.artwork.as_deref_mut(),
+            ) {
                 state.open(Scope::Album(i), &snapshot);
             }
         }
         Tab::Artists if snapshot.artists.is_empty() => no_tracks(ui, ctx),
         Tab::Artists => {
-            if let Some(i) = groups::artists(ui, ctx.tr, &ctx.palette, &snapshot) {
+            if let Some(i) = groups::artists(
+                ui,
+                ctx.tr,
+                &ctx.palette,
+                &snapshot,
+                ctx.artwork.as_deref_mut(),
+            ) {
                 state.open(Scope::Artist(i), &snapshot);
             }
         }
