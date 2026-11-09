@@ -189,10 +189,11 @@ fn pending_pages_say_which_phase() {
             .is_some(),
         "no {local:?} heading"
     );
+    // Local Music has its own content now, so it no longer promises a phase.
     assert!(
         harness
             .query_by_label(&en_phase("empty-phase-pending", 2))
-            .is_some()
+            .is_none()
     );
 
     for route in Route::ALL {

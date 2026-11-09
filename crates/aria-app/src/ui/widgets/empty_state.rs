@@ -18,6 +18,21 @@ const MAX_TEXT_WIDTH: f32 = 360.0;
 /// A block centered in the remaining space: `icon` on a round badge, `title` in primary
 /// text, then `body` in muted text. An empty `body` is left out.
 pub fn empty_state(ui: &mut Ui, icon: &str, title: &str, body: &str, p: &Palette) {
+    empty_state_with(ui, icon, title, body, p, 0.0, |_| {});
+}
+
+/// [`empty_state`] with a control under the text. `action_height` is the height `add_action`
+/// will take, so the whole block can be centered; it is the control's height without the gap
+/// above it.
+pub fn empty_state_with(
+    ui: &mut Ui,
+    icon: &str,
+    title: &str,
+    body: &str,
+    p: &Palette,
+    action_height: f32,
+    add_action: impl FnOnce(&mut Ui),
+) {
     let title_font = semibold(TITLE_SIZE);
     let body_font = TextStyle::Body.resolve(ui.style());
     let text_width = ui.available_width().min(MAX_TEXT_WIDTH);
@@ -32,6 +47,9 @@ pub fn empty_state(ui: &mut Ui, icon: &str, title: &str, body: &str, p: &Palette
     let mut height = BADGE_SIZE + SPACE[3] + measure(title, &title_font);
     if !body.is_empty() {
         height += SPACE[0] + measure(body, &body_font);
+    }
+    if action_height > 0.0 {
+        height += SPACE[3] + action_height;
     }
     let top = ((ui.available_height() - height) / 2.0).max(0.0);
 
@@ -59,6 +77,10 @@ pub fn empty_state(ui: &mut Ui, icon: &str, title: &str, body: &str, p: &Palette
                 Label::new(RichText::new(body).font(body_font).color(p.text_muted))
                     .selectable(false),
             );
+        }
+        if action_height > 0.0 {
+            ui.add_space(SPACE[3]);
+            add_action(ui);
         }
     });
 }

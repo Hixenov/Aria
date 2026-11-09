@@ -73,6 +73,7 @@ notice-settings-recovered = Не удалось прочитать файл на
 notice-settings-readonly = Нет доступа к файлу настроек, поэтому используются значения по умолчанию. Изменения могут не сохраниться.
 notice-settings-save-failed = Не удалось сохранить настройки. Aria попробует снова при следующем изменении.
 notice-open-folder-failed = Не удалось открыть папку.
+notice-pick-folder-failed = Не удалось открыть выбор папки.
 notice-dismiss = Закрыть
 
 ## Library notices (toasts)
@@ -99,6 +100,40 @@ playback-track-failed = Не удалось воспроизвести «{ $titl
 playback-stopped-after-failures = Воспроизведение остановлено: несколько треков подряд воспроизвести не удалось.
 playback-device-fallback = Аудиоустройство недоступно, поэтому Aria переключилась на другое.
 playback-no-device = Нет доступного аудиоустройства, поэтому воспроизведение приостановлено.
+
+## Local Music page
+
+local-add-folder = Добавить папку
+local-rescan = Пересканировать
+local-tab-tracks = Треки
+local-tab-albums = Альбомы
+local-tab-artists = Исполнители
+local-search = Поиск по музыке
+local-col-number = #
+local-col-title = Название
+local-col-artist = Исполнитель
+local-col-album = Альбом
+local-col-duration = Длительность
+local-play = Воспроизвести
+local-play-next = Играть следующим
+local-add-to-queue = Добавить в очередь
+local-back = Все треки
+local-empty-title = Музыки пока нет
+local-empty-body = Добавьте папку с музыкой, и Aria найдёт её.
+local-no-tracks-title = Треки не найдены
+local-no-tracks-body = Треки появятся здесь, когда Aria прочитает ваши папки.
+local-no-results = По вашему запросу ничего не найдено.
+# $count (Number) - how many tracks an album or an artist has
+local-track-count = { $count ->
+    [one] { $count } трек
+    [few] { $count } трека
+    [many] { $count } треков
+   *[other] { $count } трека
+}
+# $count (Number) - how many audio files the running scan has looked at so far
+library-scanning = Идёт сканирование папок, просмотрено файлов: { $count }
+library-unknown-artist = Неизвестный исполнитель
+library-unknown-album = Неизвестный альбом
 
 ## Fatal startup errors (a message box shown before Aria quits)
 

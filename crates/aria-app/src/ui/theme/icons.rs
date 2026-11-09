@@ -18,6 +18,8 @@ pub const QUEUE: &str = "\u{e6ac}";
 pub const QUOTES: &str = "\u{e660}";
 pub const CARET_LEFT: &str = "\u{e138}";
 pub const CARET_RIGHT: &str = "\u{e13a}";
+pub const CARET_UP: &str = "\u{e13c}";
+pub const CARET_DOWN: &str = "\u{e136}";
 pub const X: &str = "\u{e4f6}";
 pub const WARNING: &str = "\u{e4e0}";
 pub const INFO: &str = "\u{e2ce}";
@@ -43,6 +45,8 @@ pub const ALL: &[&str] = &[
     QUOTES,
     CARET_LEFT,
     CARET_RIGHT,
+    CARET_UP,
+    CARET_DOWN,
     X,
     WARNING,
     INFO,

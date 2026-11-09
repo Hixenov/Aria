@@ -75,6 +75,7 @@ notice-settings-recovered = Չհաջողվեց կարդալ կարգավորու
 notice-settings-readonly = Կարգավորումների ֆայլը հասանելի չէ, ուստի օգտագործվում են լռելյայն արժեքները։ Փոփոխությունները կարող են չպահպանվել։
 notice-settings-save-failed = Չհաջողվեց պահպանել կարգավորումները։ Նոր փորձ կկատարվի հաջորդ փոփոխության ժամանակ։
 notice-open-folder-failed = Չհաջողվեց բացել պանակը։
+notice-pick-folder-failed = Չհաջողվեց բացել պանակի ընտրությունը։
 notice-dismiss = Փակել
 
 ## Library notices (toasts)
@@ -100,6 +101,38 @@ playback-track-failed = Չհաջողվեց նվագարկել «{ $title }» ե�
 playback-stopped-after-failures = Նվագարկումը դադարեցվել է, քանի որ մի քանի երգ անընդմեջ չհաջողվեց նվագարկել։
 playback-device-fallback = Աուդիոսարքը հասանելի չէ, ուստի Aria-ն անցել է մեկ այլ սարքի։
 playback-no-device = Հասանելի աուդիոսարք չկա, ուստի նվագարկումը դադարեցված է։
+
+## Local Music page
+
+local-add-folder = Ավելացնել պանակ
+local-rescan = Նորից սկանավորել
+local-tab-tracks = Երգեր
+local-tab-albums = Ալբոմներ
+local-tab-artists = Կատարողներ
+local-search = Որոնել երաժշտություն
+local-col-number = #
+local-col-title = Վերնագիր
+local-col-artist = Կատարող
+local-col-album = Ալբոմ
+local-col-duration = Տևողություն
+local-play = Նվագարկել
+local-play-next = Նվագարկել հաջորդը
+local-add-to-queue = Ավելացնել հերթին
+local-back = Բոլոր երգերը
+local-empty-title = Երաժշտություն դեռ չկա
+local-empty-body = Ավելացրեք պանակ ձեր երաժշտությամբ, և Aria-ն այն կգտնի։
+local-no-tracks-title = Երգեր չեն գտնվել
+local-no-tracks-body = Երգերն այստեղ կհայտնվեն, երբ Aria-ն կարդա ձեր պանակները։
+local-no-results = Ձեր որոնմանը համապատասխանող երգ չկա։
+# $count (Number) - how many tracks an album or an artist has
+local-track-count = { $count ->
+    [one] { $count } երգ
+   *[other] { $count } երգ
+}
+# $count (Number) - how many audio files the running scan has looked at so far
+library-scanning = Պանակները սկանավորվում են, դիտարկվել է { $count } ֆայլ
+library-unknown-artist = Անհայտ կատարող
+library-unknown-album = Անհայտ ալբոմ
 
 ## Fatal startup errors (a message box shown before Aria quits)
 

@@ -19,7 +19,7 @@ use aria_core::{
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
 use crate::{
-    folders::FolderOpener,
+    folders::{FolderOpener, FolderPicker},
     nav::{History, Route},
     shortcuts::read_shortcuts,
     ui::{
@@ -27,7 +27,7 @@ use crate::{
             player_bar, right_panel,
             sidebar::{self, SidebarAction},
         },
-        pages::{self, PageAction, PageCtx},
+        pages::{self, LibraryView, PageAction, PageCtx},
         theme::{
             Palette, fonts,
             visuals::{self, SPACE},
@@ -43,6 +43,13 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const OPEN_FOLDER_FAILED: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-open-folder-failed",
+    args: Vec::new(),
+};
+
+/// Shown when the folder dialog could not be opened.
+const PICK_FOLDER_FAILED: Notice = Notice {
+    level: NoticeLevel::Warning,
+    key: "notice-pick-folder-failed",
     args: Vec::new(),
 };
 
@@ -87,6 +94,11 @@ pub struct AriaApp {
     toasts: Toasts,
     /// Folders being opened in the file manager.
     folders: FolderOpener,
+    /// The dialog for choosing a folder to add to the library.
+    picker: FolderPicker,
+    /// What the backend last reported of the library and the player. Starts empty, since a
+    /// disabled library sends nothing at all.
+    library: LibraryView,
     /// Whether the Settings page's reset dialog is open. Navigation and panel shortcuts
     /// wait while it is.
     modal_open: bool,
@@ -121,6 +133,8 @@ impl AriaApp {
             sidebar_squeezed: false,
             toasts: Toasts::new(player_bar::HEIGHT),
             folders: FolderOpener::default(),
+            picker: FolderPicker::default(),
+            library: LibraryView::default(),
             modal_open: false,
             outstanding_resets: 0,
             startup: None,
@@ -164,6 +178,7 @@ impl AriaApp {
             self.notify(&ctx, notice);
         }
         self.collect_folder_failures(&ctx);
+        self.collect_picked_folder();
         self.handle_shortcuts(&ctx);
 
         let palette = Palette::for_theme(ctx.theme(), &self.settings);
@@ -224,11 +239,11 @@ impl AriaApp {
                 }
             }
             Event::SettingsSaved => tracing::trace!("settings saved"),
-            // Nothing shows the library or the player yet.
-            Event::LibraryUpdated(_)
-            | Event::ScanProgress(_)
-            | Event::Player(_)
-            | Event::OutputDevices(_) => {}
+            Event::LibraryUpdated(snapshot) => self.library.snapshot = snapshot,
+            Event::ScanProgress(scan) => self.library.scan = scan,
+            Event::Player(player) => self.library.current = player.current,
+            // Nothing shows the devices yet.
+            Event::OutputDevices(_) => {}
         }
     }
 
@@ -241,6 +256,13 @@ impl AriaApp {
     fn collect_folder_failures(&mut self, ctx: &egui::Context) {
         if self.folders.failures() > 0 {
             self.notify(ctx, OPEN_FOLDER_FAILED);
+        }
+    }
+
+    /// Adds the folder the user chose in the dialog, if one was chosen since the last frame.
+    fn collect_picked_folder(&mut self) {
+        if let Some(folder) = self.picker.picked() {
+            self.send(Command::AddFolder(folder));
         }
     }
 
@@ -317,6 +339,7 @@ impl AriaApp {
             paths_available: self.deps.paths.is_some(),
             modal_open: &mut self.modal_open,
             out: &mut actions,
+            library: &self.library,
         };
         let route = self.history.current();
         let frame = Frame::new()
@@ -341,6 +364,15 @@ impl AriaApp {
             }
             PageAction::OpenConfigDir => self.open_folder(ctx, |paths| &paths.config_dir),
             PageAction::OpenLogDir => self.open_folder(ctx, |paths| &paths.log_dir),
+            PageAction::PlayContext { ids, start } => {
+                self.send(Command::PlayContext { ids, start });
+            }
+            PageAction::PlayNext(id) => self.send(Command::PlayNext(id)),
+            PageAction::AddToQueue(id) => self.send(Command::AddToQueue(id)),
+            PageAction::PickFolder => self.pick_folder(ctx),
+            PageAction::RemoveFolder(id) => self.send(Command::RemoveFolder(id)),
+            PageAction::Rescan => self.send(Command::Rescan),
+            PageAction::ClearArtwork => self.send(Command::ClearArtwork),
         }
     }
 
@@ -354,6 +386,14 @@ impl AriaApp {
         if let Err(err) = started {
             tracing::warn!(%err, "could not open the folder");
             self.notify(ctx, OPEN_FOLDER_FAILED);
+        }
+    }
+
+    /// Opens the folder dialog, unless one is open already.
+    fn pick_folder(&mut self, ctx: &egui::Context) {
+        if let Err(err) = self.picker.start(ctx) {
+            tracing::warn!(%err, "could not open the folder dialog");
+            self.notify(ctx, PICK_FOLDER_FAILED);
         }
     }
 

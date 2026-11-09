@@ -6,7 +6,7 @@ mod nav_item;
 mod section_header;
 mod toast;
 
-pub use empty_state::empty_state;
+pub use empty_state::{empty_state, empty_state_with};
 pub use icon_button::IconButton;
 pub use nav_item::{NAV_ROW_HEIGHT, nav_item};
 pub use section_header::section_header;

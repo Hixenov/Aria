@@ -57,5 +57,5 @@ rusqlite = { version = "0.41.1", features = ["bundled"] }
 lofty = "0.25.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 sha2 = "0.10"
-egui_extras = "0.37"
+egui_extras = { version = "0.37", default-features = false }
 pollster = "0.4"
