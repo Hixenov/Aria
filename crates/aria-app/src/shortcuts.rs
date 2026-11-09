@@ -41,8 +41,8 @@ pub(crate) struct Shortcuts {
 /// too.
 ///
 /// `typing` says a text field has the keyboard: Space then types a space, and is left alone.
-/// Otherwise Space is consumed, so it does not also press a focused button, and a held key
-/// does not toggle again with every repeat.
+/// Otherwise Space is consumed, so it does not also press a focused button. A held key acts
+/// once: see [`consume_exact`].
 pub(crate) fn read_shortcuts(input: &mut InputState, typing: bool) -> Shortcuts {
     let mut shortcuts = Shortcuts {
         toggle_right_panel: consume_exact(input, &TOGGLE_RIGHT_PANEL),
@@ -50,18 +50,6 @@ pub(crate) fn read_shortcuts(input: &mut InputState, typing: bool) -> Shortcuts 
     };
     if !typing {
         shortcuts.toggle_play = consume_exact(input, &TOGGLE_PLAY);
-        input.events.retain(|event| {
-            !matches!(
-                event,
-                egui::Event::Key {
-                    key: Key::Space,
-                    pressed: true,
-                    repeat: true,
-                    modifiers,
-                    ..
-                } if modifiers.matches_exact(Modifiers::NONE)
-            )
-        });
     }
     for (route, key) in Route::ALL.into_iter().zip(ROUTE_KEYS) {
         if consume_exact(input, &KeyboardShortcut::new(Modifiers::COMMAND, key)) {
@@ -76,23 +64,35 @@ pub(crate) fn read_shortcuts(input: &mut InputState, typing: bool) -> Shortcuts 
 }
 
 /// Consumes `shortcut` if its key was pressed this frame with exactly its modifiers, and not
-/// with AltGr.
+/// with AltGr. A key's auto-repeat events are consumed too, but never count as a press: a
+/// held chord acts once.
 ///
 /// `consume_shortcut` alone ignores extra Alt and Shift. Windows reports AltGr as Ctrl+Alt,
 /// and AltGr+key types a character on many keyboard layouts (`²` on AltGr+2, `®` on AltGr+R
 /// in US-International), so such a press is left for typing.
 fn consume_exact(input: &mut InputState, shortcut: &KeyboardShortcut) -> bool {
     let altgr = altgr_involved(input);
-    let pressed = input.events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::Key { key, pressed: true, modifiers, .. }
-                if *key == shortcut.logical_key
-                    && modifiers.matches_exact(shortcut.modifiers)
-                    && !(altgr && modifiers.ctrl && modifiers.alt)
-        )
-    });
-    pressed && input.consume_shortcut(shortcut)
+    let (mut any, mut fresh) = (false, false);
+    for event in &input.events {
+        if let egui::Event::Key {
+            key,
+            pressed: true,
+            repeat,
+            modifiers,
+            ..
+        } = event
+            && *key == shortcut.logical_key
+            && modifiers.matches_exact(shortcut.modifiers)
+            && !(altgr && modifiers.ctrl && modifiers.alt)
+        {
+            any = true;
+            fresh |= !repeat;
+        }
+    }
+    if any {
+        input.consume_shortcut(shortcut);
+    }
+    fresh
 }
 
 /// Whether the right Alt key, which is AltGr on many layouts, is held or changed this frame.
@@ -151,6 +151,34 @@ mod tests {
         input.events.push(key_event(Key::Space, Modifiers::SHIFT));
         assert!(!read_shortcuts(&mut input, false).toggle_play);
         assert_eq!(input.events.len(), 1);
+    }
+
+    /// An auto-repeat event of `key`, as a held key sends in the frames after its press.
+    fn repeat_event(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn a_frame_with_only_a_space_repeat_does_not_toggle() {
+        let mut input = InputState::default();
+        input.events.push(repeat_event(Key::Space, Modifiers::NONE));
+        assert!(!read_shortcuts(&mut input, false).toggle_play);
+        assert!(input.events.is_empty(), "the repeat was left for a button");
+    }
+
+    #[test]
+    fn a_frame_with_only_a_panel_chord_repeat_does_not_toggle() {
+        let mut input = InputState::default();
+        input.keys_down.extend([Key::ControlLeft, Key::AltLeft]);
+        input.events.push(repeat_event(Key::R, CTRL_ALT));
+        assert!(!read_shortcuts(&mut input, false).toggle_right_panel);
+        assert!(input.events.is_empty());
     }
 
     #[test]

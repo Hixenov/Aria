@@ -199,15 +199,18 @@ fn list(
         });
 }
 
-/// A section's heading, at the bottom of a row.
+/// A section's heading, at the bottom of a row of exactly `ROW` height.
 fn heading(ui: &mut Ui, p: &Palette, text: &str) {
-    let size = vec2(ui.available_width(), ROW);
-    ui.allocate_ui_with_layout(size, Layout::bottom_up(Align::LEFT), |ui| {
-        ui.add_space(SPACE[1]);
-        let font = fonts::semibold(TextStyle::Small.resolve(ui.style()).size);
-        let text = RichText::new(text).font(font).color(p.text_muted);
-        ui.add(Label::new(text).selectable(false).truncate());
-    });
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
+    let mut row = ui.new_child(
+        UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::bottom_up(Align::LEFT)),
+    );
+    row.add_space(SPACE[1]);
+    let font = fonts::semibold(TextStyle::Small.resolve(row.style()).size);
+    let text = RichText::new(text).font(font).color(p.text_muted);
+    row.add(Label::new(text).selectable(false).truncate());
 }
 
 /// One track: its cover, title and artist. A row of the user queue (`user` is its index there)

@@ -691,3 +691,67 @@ fn dropping_a_row_where_it_is_or_on_the_list_sends_nothing() {
     harness.run();
     assert!(harness.state().actions.is_empty());
 }
+
+/// Drags the row titled `from` onto the one titled `to` and returns what the panel asked for.
+fn drag(harness: &mut Harness<'_, Panel>, from: &str, to: &str) {
+    let start = harness.get_by_label(from).rect().center();
+    let end = harness.get_by_label(to).rect().center();
+    pointer(harness, vec![moved(start), button(start, true)]);
+    pointer(harness, vec![moved(start + egui::vec2(0.0, -12.0))]);
+    pointer(harness, vec![moved(end)]);
+    pointer(harness, vec![button(end, false)]);
+    harness.run();
+}
+
+fn three_user_rows() -> Harness<'static, Panel> {
+    let mut harness = panel_harness(
+        Some(1),
+        vec![up(2, true), up(3, true), up(4, true), up(5, false)],
+    );
+    harness.run();
+    harness
+}
+
+#[test]
+fn dragging_a_row_up_moves_it_to_the_target_index() {
+    let mut harness = three_user_rows();
+    drag(&mut harness, "Song 3", "Song 2");
+    assert_eq!(
+        harness.state().actions,
+        [QueueAction::Move { from: 1, to: 0 }]
+    );
+    harness.state_mut().actions.clear();
+    drag(&mut harness, "Song 4", "Song 2");
+    assert_eq!(
+        harness.state().actions,
+        [QueueAction::Move { from: 2, to: 0 }]
+    );
+}
+
+#[test]
+fn a_capped_queue_builds_only_the_rows_in_view() {
+    // The backend caps `upcoming` at 200; all of them are the user's here.
+    let upcoming = (1..=200).map(|id| up(id + 1000, true)).collect();
+    let mut harness = panel_harness(Some(1), upcoming);
+    harness.run();
+    let unknown = en("player-unknown-title");
+    let shown = harness.query_all_by_label(&unknown).count();
+    assert!(shown > 0 && shown < 40, "{shown} rows were built");
+    let first = remove_label(&unknown);
+    if let Some(button) = harness.get_all_by_label(&first).next() {
+        button.click();
+    }
+    harness.run();
+    assert_eq!(harness.state().actions, [QueueAction::Remove(0)]);
+}
+
+#[test]
+fn every_row_and_heading_is_the_same_height() {
+    let harness = mixed();
+    let top = |label: &str| harness.get_by_label(label).rect().top();
+    // User row to user row: one row. Current row to the first user row: the current row
+    // and the "Next in queue" heading.
+    assert_eq!(top("Song 3") - top("Song 2"), 48.0);
+    assert_eq!(top("Song 2") - top("Song 1"), 96.0);
+    assert_eq!(top("Song 4") - top("Song 3"), 96.0);
+}
