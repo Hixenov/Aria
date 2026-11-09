@@ -1,5 +1,5 @@
 //! Navigation and panel shortcuts: Ctrl+1…9, Alt+Left/Right, the mouse's back and forward
-//! buttons, and Ctrl+Alt+R.
+//! buttons, Ctrl+Alt+R, and Space for play and pause.
 
 use eframe::egui::{self, InputState, Key, KeyboardShortcut, Modifiers, PointerButton};
 
@@ -12,6 +12,8 @@ const TOGGLE_RIGHT_PANEL: KeyboardShortcut =
 const BACK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::ArrowLeft);
 /// Alt+Right steps forward in history.
 const FORWARD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::ArrowRight);
+/// Space plays and pauses.
+const TOGGLE_PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 /// With Ctrl (Cmd on macOS), these jump to the matching entry of [`Route::ALL`].
 const ROUTE_KEYS: [Key; 9] = [
     Key::Num1,
@@ -32,15 +34,35 @@ pub(crate) struct Shortcuts {
     pub(crate) back: bool,
     pub(crate) forward: bool,
     pub(crate) toggle_right_panel: bool,
+    pub(crate) toggle_play: bool,
 }
 
 /// Reads and consumes this frame's shortcuts, so a focused text field doesn't act on them
 /// too.
-pub(crate) fn read_shortcuts(input: &mut InputState) -> Shortcuts {
+///
+/// `typing` says a text field has the keyboard: Space then types a space, and is left alone.
+/// Otherwise Space is consumed, so it does not also press a focused button, and a held key
+/// does not toggle again with every repeat.
+pub(crate) fn read_shortcuts(input: &mut InputState, typing: bool) -> Shortcuts {
     let mut shortcuts = Shortcuts {
         toggle_right_panel: consume_exact(input, &TOGGLE_RIGHT_PANEL),
         ..Shortcuts::default()
     };
+    if !typing {
+        shortcuts.toggle_play = consume_exact(input, &TOGGLE_PLAY);
+        input.events.retain(|event| {
+            !matches!(
+                event,
+                egui::Event::Key {
+                    key: Key::Space,
+                    pressed: true,
+                    repeat: true,
+                    modifiers,
+                    ..
+                } if modifiers.matches_exact(Modifiers::NONE)
+            )
+        });
+    }
     for (route, key) in Route::ALL.into_iter().zip(ROUTE_KEYS) {
         if consume_exact(input, &KeyboardShortcut::new(Modifiers::COMMAND, key)) {
             shortcuts.jump = Some(route);
@@ -108,6 +130,45 @@ mod tests {
     }
 
     #[test]
+    fn space_toggles_play_and_is_consumed() {
+        let mut input = InputState::default();
+        input.events.push(key_event(Key::Space, Modifiers::NONE));
+        assert!(read_shortcuts(&mut input, false).toggle_play);
+        assert!(input.events.is_empty(), "Space was left for a button");
+    }
+
+    #[test]
+    fn space_in_a_text_field_is_left_for_typing() {
+        let mut input = InputState::default();
+        input.events.push(key_event(Key::Space, Modifiers::NONE));
+        assert!(!read_shortcuts(&mut input, true).toggle_play);
+        assert_eq!(input.events.len(), 1, "the key press was consumed");
+    }
+
+    #[test]
+    fn space_with_a_modifier_is_not_play() {
+        let mut input = InputState::default();
+        input.events.push(key_event(Key::Space, Modifiers::SHIFT));
+        assert!(!read_shortcuts(&mut input, false).toggle_play);
+        assert_eq!(input.events.len(), 1);
+    }
+
+    #[test]
+    fn a_held_space_toggles_once() {
+        let mut input = InputState::default();
+        input.events.push(key_event(Key::Space, Modifiers::NONE));
+        input.events.push(egui::Event::Key {
+            key: Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: Modifiers::NONE,
+        });
+        assert!(read_shortcuts(&mut input, false).toggle_play);
+        assert!(input.events.is_empty(), "a repeat was left for a button");
+    }
+
+    #[test]
     fn altgr_digit_is_left_alone() {
         let mut input = InputState::default();
         let altgr = Modifiers::CTRL | Modifiers::ALT | Modifiers::COMMAND;
@@ -121,7 +182,7 @@ mod tests {
         let mut input = InputState::default();
         input.keys_down.extend([Key::ControlLeft, Key::AltLeft]);
         input.events.push(key_event(Key::R, CTRL_ALT));
-        assert!(read_shortcuts(&mut input).toggle_right_panel);
+        assert!(read_shortcuts(&mut input, false).toggle_right_panel);
         assert!(input.events.is_empty(), "the shortcut was not consumed");
     }
 
@@ -131,7 +192,7 @@ mod tests {
         let mut input = InputState::default();
         input.keys_down.extend([Key::ControlLeft, Key::AltRight]);
         input.events.push(key_event(Key::R, CTRL_ALT));
-        assert!(!read_shortcuts(&mut input).toggle_right_panel);
+        assert!(!read_shortcuts(&mut input, false).toggle_right_panel);
         assert_eq!(input.events.len(), 1, "the key press was consumed");
     }
 
@@ -147,7 +208,7 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::CTRL | Modifiers::COMMAND,
         });
-        assert!(!read_shortcuts(&mut input).toggle_right_panel);
+        assert!(!read_shortcuts(&mut input, false).toggle_right_panel);
     }
 
     #[test]
@@ -156,7 +217,7 @@ mod tests {
         input
             .events
             .push(key_event(Key::R, CTRL_ALT | Modifiers::SHIFT));
-        assert!(!read_shortcuts(&mut input).toggle_right_panel);
+        assert!(!read_shortcuts(&mut input, false).toggle_right_panel);
     }
 
     /// Ctrl+Alt as Windows and Linux report it: Ctrl is also the command key there.

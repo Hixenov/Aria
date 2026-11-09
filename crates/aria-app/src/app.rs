@@ -30,7 +30,7 @@ use crate::{
     ui::{
         layout::{
             player_bar::{self, NowPlaying, PlayerAction, PlayerBar},
-            right_panel,
+            right_panel::{self, QueueAction, QueuePanel},
             sidebar::{self, SidebarAction},
         },
         pages::{self, LibraryView, PageAction, PageCtx},
@@ -128,6 +128,9 @@ pub struct AriaApp {
     /// Resets sent to the backend that it has not answered yet. Each answer brings the
     /// defaults, which are applied already, and changes made since are newer: it is ignored.
     outstanding_resets: u32,
+    /// Every command sent, for tests to read.
+    #[cfg(test)]
+    sent: std::cell::RefCell<Vec<Command>>,
     /// When `main` began, until the first frame logs how long it took to arrive.
     startup: Option<Instant>,
 }
@@ -167,6 +170,8 @@ impl AriaApp {
             artwork: None,
             artwork_started: false,
             settle_until: 0.0,
+            #[cfg(test)]
+            sent: std::cell::RefCell::default(),
             modal_open: false,
             outstanding_resets: 0,
             startup: None,
@@ -219,14 +224,31 @@ impl AriaApp {
         // The player bar goes first so it spans the full width of the window.
         self.show_player_bar(ui, &ctx, &palette);
         self.show_sidebar(ui, &ctx, &palette);
-        right_panel::show(
-            ui,
-            &self.localizer,
-            &palette,
-            self.settings.right_panel_open,
-        );
+        self.show_right_panel(ui, &palette);
         self.show_page(ui, &ctx, &palette);
         self.toasts.show(&ctx, &self.localizer, &palette);
+    }
+
+    fn show_right_panel(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        let mut queue = QueuePanel {
+            view: &self.player,
+            snapshot: &self.library.snapshot,
+            artwork: self.artwork.as_mut(),
+        };
+        let actions = right_panel::show(
+            ui,
+            &self.localizer,
+            palette,
+            self.settings.right_panel_open,
+            &mut queue,
+        );
+        for action in actions {
+            self.send(match action {
+                QueueAction::Remove(index) => Command::RemoveFromQueue(index),
+                QueueAction::Move { from, to } => Command::MoveInQueue { from, to },
+                QueueAction::Clear => Command::ClearQueue,
+            });
+        }
     }
 
     /// Starts the cover textures once, if there is a cache folder, and uploads what the worker
@@ -394,7 +416,12 @@ impl AriaApp {
             // The dialog is modal: nothing behind it changes until it is closed.
             return;
         }
-        let shortcuts = ctx.input_mut(read_shortcuts);
+        let typing = ctx.egui_wants_keyboard_input();
+        let shortcuts = ctx.input_mut(|input| read_shortcuts(input, typing));
+        if shortcuts.toggle_play {
+            self.settle_until = ctx.input(|input| input.time) + SETTLE_FOR;
+            self.send(Command::TogglePlay);
+        }
         if shortcuts.toggle_right_panel {
             self.toggle_right_panel(ctx);
         }
@@ -565,6 +592,8 @@ impl AriaApp {
     }
 
     fn send(&self, command: Command) {
+        #[cfg(test)]
+        self.sent.borrow_mut().push(command.clone());
         if let Some(backend) = &self.deps.backend {
             backend.send(command);
         }
@@ -846,5 +875,84 @@ mod tests {
         settings.accent_dark = Some(aria_core::settings::Rgb { r: 1, g: 2, b: 3 });
         app.update_settings(&ctx, settings);
         assert!(app.style_dirty);
+    }
+
+    fn toggles_sent(harness: &Harness<'_, AriaApp>) -> usize {
+        harness
+            .state()
+            .sent
+            .borrow()
+            .iter()
+            .filter(|command| matches!(command, Command::TogglePlay))
+            .count()
+    }
+
+    fn space_harness() -> Harness<'static, AriaApp> {
+        let mut app = app(vec![]);
+        let track = aria_library::Track {
+            id: aria_library::TrackId(1),
+            folder: aria_library::FolderId(1),
+            path: "music/1.flac".into(),
+            title: "Song".to_owned(),
+            artist: None,
+            album: None,
+            album_artist: None,
+            track_no: None,
+            disc_no: None,
+            year: None,
+            genre: None,
+            duration_ms: 1000,
+            sample_rate: 44_100,
+            channels: 2,
+            codec: Arc::from("flac"),
+            artwork: None,
+            added_at: 1,
+        };
+        app.library.snapshot = Arc::new(aria_library::LibrarySnapshot {
+            tracks: vec![track],
+            folders: vec![aria_library::Folder {
+                id: aria_library::FolderId(1),
+                path: "music".into(),
+                available: true,
+            }],
+            ..aria_library::LibrarySnapshot::default()
+        });
+        app.history.navigate(Route::LocalMusic);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 780.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn space_toggles_play() {
+        let mut harness = space_harness();
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert_eq!(toggles_sent(&harness), 1);
+    }
+
+    #[test]
+    fn space_in_search_field_types_a_space() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut harness = space_harness();
+        let english = Localizer::new(Language::En).unwrap();
+        let label = english.tr("local-search");
+        let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, &label);
+        field.focus();
+        harness.run();
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert_eq!(toggles_sent(&harness), 0, "Space played while typing");
+    }
+
+    #[test]
+    fn space_is_ignored_with_a_modal_open() {
+        let mut harness = space_harness();
+        harness.state_mut().modal_open = true;
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert_eq!(toggles_sent(&harness), 0, "Space played behind a dialog");
     }
 }

@@ -11,16 +11,19 @@ use std::{
 use aria_app::{
     app::{AppDeps, AriaApp},
     ui::{
-        layout::player_bar::{self, NowPlaying, PlayerAction, PlayerBar},
+        layout::{
+            player_bar::{self, NowPlaying, PlayerAction, PlayerBar},
+            right_panel::{self, QueueAction, QueuePanel},
+        },
         theme::{Palette, fonts},
     },
 };
 use aria_core::{
     ClockReading, PlaybackClock,
     event::Event,
-    i18n::Localizer,
+    i18n::{FluentArgs, Localizer},
     playback_service::PlayerView,
-    player::queue::RepeatMode,
+    player::queue::{RepeatMode, UpNext},
     settings::{Language, Settings},
 };
 use aria_library::{FolderId, LibrarySnapshot, Track, TrackId};
@@ -514,4 +517,177 @@ fn held_arrow_keys_accumulate() {
             PlayerAction::Seek(25_000),
         ]
     );
+}
+
+/// The right panel on its own: what it is given, and what it returned over the frames so far.
+struct Panel {
+    tr: Localizer,
+    view: PlayerView,
+    snapshot: LibrarySnapshot,
+    actions: Vec<QueueAction>,
+}
+
+fn up(id: i64, from_user: bool) -> UpNext {
+    UpNext {
+        track: TrackId(id),
+        from_user,
+    }
+}
+
+/// Tracks 1 to 5 are known by the titles "Song 1" to "Song 5".
+fn panel_harness(current: Option<i64>, upcoming: Vec<UpNext>) -> Harness<'static, Panel> {
+    let state = Panel {
+        tr: localizer(),
+        view: PlayerView {
+            upcoming,
+            ..view(current, true, 200_000)
+        },
+        snapshot: LibrarySnapshot {
+            tracks: (1..=5)
+                .map(|id| track(id, &format!("Song {id}"), Some("Singer")))
+                .collect(),
+            ..LibrarySnapshot::default()
+        },
+        actions: Vec::new(),
+    };
+    Harness::builder()
+        .with_size(SIZE)
+        .with_context_setup(fonts::install)
+        .build_ui_state(
+            |ui, panel: &mut Panel| {
+                let palette = Palette::dark();
+                let mut queue = QueuePanel {
+                    view: &panel.view,
+                    snapshot: &panel.snapshot,
+                    artwork: None,
+                };
+                let actions = right_panel::show(ui, &panel.tr, &palette, true, &mut queue);
+                panel.actions.extend(actions);
+            },
+            state,
+        )
+}
+
+/// Track 1 is current, 2 and 3 are the user's, 4 and 5 come from the list.
+fn mixed() -> Harness<'static, Panel> {
+    let mut harness = panel_harness(
+        Some(1),
+        vec![up(2, true), up(3, true), up(4, false), up(5, false)],
+    );
+    harness.run();
+    harness
+}
+
+fn remove_label(title: &str) -> String {
+    let mut args = FluentArgs::new();
+    args.set("title", title);
+    localizer().tr_args("queue-remove", &args).into_owned()
+}
+
+#[test]
+fn queue_lists_user_then_context() {
+    let harness = mixed();
+    let y = |label: &str| harness.get_by_label(label).rect().top();
+    let order = [
+        y(&en("queue-now-playing")),
+        y("Song 1"),
+        y(&en("queue-next-user")),
+        y("Song 2"),
+        y("Song 3"),
+        y(&en("queue-next-list")),
+        y("Song 4"),
+        y("Song 5"),
+    ];
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+}
+
+#[test]
+fn remove_sends_the_index() {
+    let mut harness = mixed();
+    harness.get_by_label(&remove_label("Song 3")).click();
+    harness.run();
+    assert_eq!(harness.state().actions, [QueueAction::Remove(1)]);
+}
+
+#[test]
+fn context_rows_have_no_remove_button() {
+    let harness = mixed();
+    assert!(harness.query_by_label(&remove_label("Song 2")).is_some());
+    assert!(harness.query_by_label(&remove_label("Song 4")).is_none());
+    assert!(harness.query_by_label(&remove_label("Song 5")).is_none());
+    assert!(harness.query_by_label(&remove_label("Song 1")).is_none());
+}
+
+#[test]
+fn clear_is_offered_only_with_user_items() {
+    let mut harness = mixed();
+    harness.get_by_label(&en("queue-clear")).click();
+    harness.run();
+    assert_eq!(harness.state().actions, [QueueAction::Clear]);
+
+    let mut harness = panel_harness(Some(1), vec![up(4, false)]);
+    harness.run();
+    assert!(harness.query_by_label(&en("queue-clear")).is_none());
+}
+
+#[test]
+fn empty_queue_shows_empty_state() {
+    let mut harness = panel_harness(None, Vec::new());
+    harness.run();
+    assert!(harness.query_by_label(&en("empty-right-panel")).is_some());
+    assert!(harness.query_by_label(&en("queue-clear")).is_none());
+}
+
+#[test]
+fn a_queued_track_without_a_row_shows_unknown_never_a_path() {
+    let mut harness = panel_harness(Some(1), vec![up(99, true)]);
+    harness.run();
+    assert!(
+        harness
+            .query_by_label(&en("player-unknown-title"))
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label(&en("library-unknown-artist"))
+            .is_some()
+    );
+    assert!(harness.query_by_label_contains("secret").is_none());
+}
+
+#[test]
+fn dragging_a_row_onto_another_moves_it() {
+    let mut harness = mixed();
+    let from = harness.get_by_label("Song 2").rect().center();
+    let to = harness.get_by_label("Song 3").rect().center();
+    pointer(&mut harness, vec![moved(from), button(from, true)]);
+    pointer(&mut harness, vec![moved(from + egui::vec2(0.0, 12.0))]);
+    pointer(&mut harness, vec![moved(to)]);
+    pointer(&mut harness, vec![button(to, false)]);
+    harness.run();
+    assert_eq!(
+        harness.state().actions,
+        [QueueAction::Move { from: 0, to: 1 }]
+    );
+}
+
+#[test]
+fn dropping_a_row_where_it_is_or_on_the_list_sends_nothing() {
+    let mut harness = mixed();
+    let from = harness.get_by_label("Song 2").rect().center();
+    let nudged = from + egui::vec2(0.0, 6.0);
+    pointer(&mut harness, vec![moved(from), button(from, true)]);
+    pointer(&mut harness, vec![moved(nudged)]);
+    pointer(&mut harness, vec![button(nudged, false)]);
+    harness.run();
+    assert!(harness.state().actions.is_empty());
+
+    let onto_list = harness.get_by_label("Song 4").rect().center();
+    let from = harness.get_by_label("Song 3").rect().center();
+    pointer(&mut harness, vec![moved(from), button(from, true)]);
+    pointer(&mut harness, vec![moved(from + egui::vec2(0.0, 12.0))]);
+    pointer(&mut harness, vec![moved(onto_list)]);
+    pointer(&mut harness, vec![button(onto_list, false)]);
+    harness.run();
+    assert!(harness.state().actions.is_empty());
 }

@@ -43,6 +43,15 @@ player-unknown-title = Неизвестное название
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Появится на этапе { $phase }
 
+## Queue panel
+
+queue-now-playing = Сейчас играет
+queue-next-user = Далее в очереди
+queue-next-list = Далее из списка
+queue-clear = Очистить очередь
+# $title - the track's title
+queue-remove = Убрать из очереди: { $title }
+
 ## Settings page
 
 settings-general = Общие

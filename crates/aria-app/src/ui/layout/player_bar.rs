@@ -14,7 +14,7 @@ use aria_core::{
     player::queue::RepeatMode,
     settings::Settings,
 };
-use aria_library::{ArtworkId, LibrarySnapshot};
+use aria_library::{ArtworkId, LibrarySnapshot, TrackId};
 use eframe::egui::{
     Align, Align2, Label, Layout, Margin, Panel, Rect, RichText, Sense, TextStyle, Ui, UiBuilder,
     Vec2, pos2, vec2,
@@ -106,7 +106,12 @@ impl NowPlaying {
     /// snapshot at all, still gives the localized unknown title and artist, never a path.
     /// `None` when nothing is current.
     pub fn of(view: &PlayerView, snapshot: &LibrarySnapshot, tr: &Localizer) -> Option<Self> {
-        let id = view.current?;
+        Some(Self::track(view.current?, snapshot, tr))
+    }
+
+    /// Track `id` as `snapshot` knows it, with the localized unknown title and artist for what
+    /// is missing; never a path. The queue panel's rows use it too.
+    pub fn track(id: TrackId, snapshot: &LibrarySnapshot, tr: &Localizer) -> Self {
         let track = snapshot.track(id);
         let title = track
             .map(|track| track.title.trim())
@@ -120,11 +125,11 @@ impl NowPlaying {
                 || tr.tr("library-unknown-artist").into_owned(),
                 str::to_owned,
             );
-        Some(Self {
+        Self {
             title,
             artist,
             artwork: track.and_then(|track| track.artwork.clone()),
-        })
+        }
     }
 }
 
