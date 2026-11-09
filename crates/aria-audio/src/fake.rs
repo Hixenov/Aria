@@ -3,15 +3,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::device::DeviceId;
+use crate::device::{DeviceId, DeviceInfo};
 use crate::error::AudioError;
 use crate::mixer::{InputHandle, Mixer, MixerControl};
-use crate::output::{AudioOutput, OutputFactory, OutputFormat};
+use crate::output::{AudioOutput, DeviceLister, OutputFactory, OutputFormat};
 
 #[derive(Default)]
 struct FactoryState {
     failures_left: usize,
     outputs: Vec<FakeControl>,
+    devices: Vec<DeviceInfo>,
 }
 
 /// Opens fake outputs. Clones share their state, so a test can keep one and hand one away.
@@ -35,6 +36,11 @@ impl FakeFactory {
         self.state().failures_left = count;
     }
 
+    /// Make the devices the factory lists `devices`. It lists none until then.
+    pub fn set_devices(&self, devices: Vec<DeviceInfo>) {
+        self.state().devices = devices;
+    }
+
     /// A control for every output opened so far, oldest first.
     pub fn outputs(&self) -> Vec<FakeControl> {
         self.state().outputs.clone()
@@ -46,6 +52,14 @@ impl FakeFactory {
 }
 
 impl OutputFactory for FakeFactory {
+    fn device_lister(&self) -> DeviceLister {
+        let state = Arc::clone(&self.state);
+        Arc::new(move || {
+            let state = state.lock().unwrap_or_else(PoisonError::into_inner);
+            Ok(state.devices.clone())
+        })
+    }
+
     fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError> {
         let mut state = self.state();
         if state.failures_left > 0 {

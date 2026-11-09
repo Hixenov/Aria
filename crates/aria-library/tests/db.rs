@@ -321,6 +321,35 @@ fn queue_round_trips() {
 }
 
 #[test]
+fn a_position_save_keeps_the_lists() {
+    let env = Env::new();
+    let mut lib = env.open().library;
+    lib.save_position(Some(TrackId(1)), 5_000).expect("save");
+    assert_eq!(lib.load_queue().expect("load"), None, "no queue to update");
+
+    let q = QueueRecord {
+        context: vec![TrackId(5), TrackId(2), TrackId(9)],
+        original: vec![],
+        user: vec![TrackId(7)],
+        current: Some(TrackId(5)),
+        position_ms: 1_000,
+        shuffle_seed: 11,
+        context_index: Some(0),
+    };
+    lib.save_queue(&q).expect("save");
+    lib.save_position(Some(TrackId(5)), 2_000).expect("save");
+    lib.save_position(Some(TrackId(5)), 61_500).expect("save");
+    drop(lib);
+
+    let lib = env.open().library;
+    let newest = QueueRecord {
+        position_ms: 61_500,
+        ..q
+    };
+    assert_eq!(lib.load_queue().expect("load"), Some(newest));
+}
+
+#[test]
 fn set_duration_updates_track() {
     let env = Env::new();
     let mut lib = env.open().library;

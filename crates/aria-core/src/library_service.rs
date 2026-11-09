@@ -4,7 +4,8 @@
 //! After that it serves [`LibraryRequest`]s and reports through `on_event`.
 //!
 //! A scan keeps the thread busy, so requests are read in the scanner's `on_batch`, which runs at
-//! least every 250 ms. What cannot wait is served there: the queue is saved and loaded, durations
+//! least every 250 ms. What cannot wait is served there: the queue and its position are saved, the
+//! queue is loaded, durations
 //! are stored and a second rescan is noted. Folder changes and clearing the artwork wait for the
 //! scan to end, because the scanner holds a folder's rows across `on_batch` calls.
 //!
@@ -102,6 +103,11 @@ pub enum LibraryRequest {
     ClearArtwork,
     /// Replace the saved queue.
     SaveQueue(QueueRecord),
+    /// Replace only the current track and position of the saved queue.
+    SavePosition {
+        current: Option<TrackId>,
+        position_ms: u64,
+    },
     /// Read the saved queue. Always answered with [`LibraryEvent::QueueLoaded`], even while the
     /// library is disabled, so nobody waits for it in vain.
     LoadQueue,
@@ -343,6 +349,14 @@ impl Service {
             LibraryRequest::SaveQueue(record) => {
                 if let Err(error) = library.save_queue(&record) {
                     tracing::warn!(%error, "the queue could not be saved");
+                }
+            }
+            LibraryRequest::SavePosition {
+                current,
+                position_ms,
+            } => {
+                if let Err(error) = library.save_position(current, position_ms) {
+                    tracing::warn!(%error, "the queue position could not be saved");
                 }
             }
             LibraryRequest::LoadQueue => {
@@ -743,17 +757,25 @@ mod tests {
         // Stopped inside the scan's first `on_batch`, which wrote the first tracks.
         log.wait_for(is_progress);
         handle.send(LibraryRequest::SaveQueue(record()));
+        handle.send(LibraryRequest::SavePosition {
+            current: Some(TrackId(8)),
+            position_ms: 9_876,
+        });
         handle.send(LibraryRequest::SetDuration(TrackId(1), 123_456));
         handle.send(LibraryRequest::LoadQueue);
         release.send(()).unwrap();
 
         // Stopped again, by the answer. No scan end has been seen, so the scan is running here,
         // and what another connection reads was written during it.
+        let moved = QueueRecord {
+            position_ms: 9_876,
+            ..record()
+        };
         let answer = log.wait_for(is_queue);
-        assert_eq!(answer, LibraryEvent::QueueLoaded(Some(record())));
+        assert_eq!(answer, LibraryEvent::QueueLoaded(Some(moved.clone())));
         assert_eq!(log.scan_ends(), 0, "the scan had already ended");
         let other = env.open();
-        assert_eq!(other.load_queue().unwrap(), Some(record()));
+        assert_eq!(other.load_queue().unwrap(), Some(moved.clone()));
         let snapshot = other.snapshot().unwrap();
         assert_eq!(snapshot.track(TrackId(1)).unwrap().duration_ms, 123_456);
         drop(other);
@@ -762,7 +784,7 @@ mod tests {
         log.wait_for(|e| snapshot_with(e, TREE));
         assert_eq!(log.scan_ends(), 1);
         assert!(handle.shutdown(WAIT));
-        assert_eq!(env.open().load_queue().unwrap(), Some(record()));
+        assert_eq!(env.open().load_queue().unwrap(), Some(moved));
     }
 
     #[test]

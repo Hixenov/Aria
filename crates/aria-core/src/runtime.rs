@@ -28,7 +28,7 @@ use std::{
     time::Duration,
 };
 
-use aria_audio::{DeviceKind, Engine, EngineEvent, OutputFactory, PlaybackClock, list_devices};
+use aria_audio::{DeviceLister, Engine, EngineEvent, OutputFactory, PlaybackClock};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -131,6 +131,7 @@ struct PlaybackLink {
     service: PlaybackService,
     events: UnboundedReceiver<EngineEvent>,
     clock: Arc<PlaybackClock>,
+    devices: DeviceLister,
 }
 
 impl PlaybackLink {
@@ -140,6 +141,7 @@ impl PlaybackLink {
             // Fails only once the backend has exited, when nobody is listening.
             let _ = events_tx.send(event);
         });
+        let devices = output.device_lister();
         let engine = Engine::start(output, on_event)?;
         let clock = engine.clock();
         let mut service = PlaybackService::new(engine, RandomState::new().hash_one(0_u8));
@@ -148,6 +150,7 @@ impl PlaybackLink {
             service,
             events,
             clock,
+            devices,
         })
     }
 }
@@ -212,11 +215,13 @@ impl Backend {
             service: playback,
             events: engine_events,
             clock,
+            devices,
         } = playback;
         let worker = Worker {
             sink,
             library,
             playback,
+            devices,
             events: event_tx,
             waker,
             debounce: cfg.debounce,
@@ -356,6 +361,8 @@ struct Worker {
     /// `None` when the backend runs without a library, or after its thread died.
     library: Option<LibraryHandle>,
     playback: PlaybackService,
+    /// Lists the devices the engine's factory opens.
+    devices: DeviceLister,
     events: Sender<Event>,
     waker: Waker,
     debounce: Duration,
@@ -428,7 +435,7 @@ impl Worker {
                     None => {
                         tracing::error!("the audio engine stopped unexpectedly");
                         engine_events = None;
-                        self.playback.on_engine(EngineEvent::NoDevice);
+                        self.playback.engine_lost();
                         self.flush_playback();
                     }
                 },
@@ -481,8 +488,9 @@ impl Worker {
     /// system default.
     fn list_devices(&self) {
         let (events, waker) = (self.events.clone(), Arc::clone(&self.waker));
+        let list = Arc::clone(&self.devices);
         tokio::task::spawn_blocking(move || {
-            let devices = list_devices(DeviceKind::Output).unwrap_or_else(|error| {
+            let devices = list().unwrap_or_else(|error| {
                 tracing::warn!(%error, "the output devices could not be listed");
                 Vec::new()
             });
@@ -653,7 +661,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use aria_audio::{DeviceId, OutputFormat, fake::FakeFactory};
+    use aria_audio::{DeviceId, DeviceInfo, OutputFormat, fake::FakeFactory};
     use aria_library::{FolderId, TrackId};
 
     use super::*;
@@ -964,14 +972,28 @@ mod tests {
 
     #[test]
     fn output_devices_are_listed_off_the_worker() {
+        let factory = FakeFactory::new(OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        });
+        let speakers = DeviceInfo {
+            id: DeviceId("speakers".into()),
+            name: "Speakers".into(),
+            is_default: true,
+        };
+        factory.set_devices(vec![speakers.clone()]);
+        let services = BackendServices {
+            library: None,
+            output: Box::new(factory),
+            settings: Settings::default(),
+        };
         let (waker, wakes) = counting_waker();
-        let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
 
         handle.send(Command::ListDevices);
 
-        drain_until_within(&handle, LIBRARY_MAX, |e| {
-            e.iter().any(|e| matches!(e, Event::OutputDevices(_)))
-        });
+        let listed = Event::OutputDevices(vec![speakers]);
+        drain_until(&handle, |e| e.contains(&listed));
         assert!(wakes.load(Ordering::SeqCst) >= 1);
         assert!(handle.shutdown(MAX));
     }

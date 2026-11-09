@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use aria_audio::fake::{FakeControl, FakeFactory};
 use aria_audio::testing::{write_gapless_pair, write_tone_wav};
 use aria_audio::{
-    AudioError, AudioOutput, ClockReading, DeviceId, Engine, EngineCommand, EngineEvent,
-    EngineHandle, OutputFactory, OutputFormat, PlaybackClock, TrackRequest,
+    AudioError, AudioOutput, ClockReading, DeviceId, DeviceLister, Engine, EngineCommand,
+    EngineEvent, EngineHandle, OutputFactory, OutputFormat, PlaybackClock, TrackRequest,
 };
 use tempfile::TempDir;
 
@@ -1181,6 +1181,10 @@ struct StuckFactory {
 }
 
 impl OutputFactory for StuckFactory {
+    fn device_lister(&self) -> DeviceLister {
+        Arc::new(|| Ok(Vec::new()))
+    }
+
     fn open(&self, _device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError> {
         let _ = self.reached.send(());
         let _ = self.release.recv();

@@ -45,8 +45,15 @@ pub const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 pub const FAILURE_RESET_MS: u64 = 1_000;
 /// How many upcoming tracks a [`PlayerView`] holds.
 pub const UPCOMING_LIMIT: usize = 200;
-/// How many replaced announcements are kept. The engine takes a command within milliseconds, so
-/// only the newest few can still be ahead of it.
+/// How many replaced announcements are kept.
+///
+/// Only a `SetNext` replaces one, and the engine takes each command within milliseconds, so an
+/// announcement older than the newest few can only still be ahead of the engine if that many queue
+/// changes came in those milliseconds. Should one be dropped and then start anyway, its start is
+/// ignored: the service still waits on the track before it, so it announces nothing, the engine
+/// plays the dropped track to its end, and the queue then moves on from the track before it, which
+/// plays the dropped track a second time. Eight changes within a few milliseconds take more than a
+/// person can do, so eight is enough.
 const SUPERSEDED_LIMIT: usize = 8;
 
 /// Playback stopped after [`MAX_CONSECUTIVE_FAILURES`].
@@ -116,9 +123,14 @@ pub struct PlaybackService {
     restore: Restore,
     /// Play was pressed with nothing to play while the restore was still on its way.
     play_after_restore: bool,
-    /// What was last saved, or found on restoring.
-    saved: Option<QueueRecord>,
+    /// The lists of the queue (context, user queue, original order, seed, index) changed since
+    /// they were last saved or restored.
+    lists_dirty: bool,
+    /// The current track and position last saved, or found on restoring.
+    saved_position: Option<(Option<TrackId>, u64)>,
     last_save: Option<Instant>,
+    /// The engine thread has died, so nothing will ever play.
+    engine_gone: bool,
     // What the settings last said. These start as the engine and the queue do.
     volume: f32,
     device: Option<DeviceId>,
@@ -151,8 +163,10 @@ impl PlaybackService {
             failures: 0,
             restore: Restore::AwaitingSnapshot,
             play_after_restore: false,
-            saved: None,
+            lists_dirty: false,
+            saved_position: None,
             last_save: None,
+            engine_gone: false,
             volume: 1.0,
             device: None,
             gapless: true,
@@ -223,6 +237,10 @@ impl PlaybackService {
             EngineEvent::TrackEnded { token } => {
                 if self.current.as_ref().is_some_and(|c| c.token == token) {
                     self.ended = true;
+                    // A track can end between two ticks, so its play counts here too.
+                    if self.duration_ms().saturating_sub(self.played_from) >= FAILURE_RESET_MS {
+                        self.failures = 0;
+                    }
                     // While paused the engine would hold the next track without starting it.
                     if !self.playing {
                         self.move_on();
@@ -246,6 +264,7 @@ impl PlaybackService {
     /// if its row is among that. The first snapshot starts the restore.
     pub fn on_snapshot(&mut self, snapshot: Arc<LibrarySnapshot>) {
         self.queue.retain(|id| snapshot.track(id).is_some());
+        self.lists_dirty = true;
         self.snapshot = Some(snapshot);
         if self.restore == Restore::AwaitingSnapshot {
             self.restore = Restore::AwaitingQueue;
@@ -263,10 +282,14 @@ impl PlaybackService {
             return;
         }
         self.restore = Restore::Done;
+        // Until now nothing can have set a context, so this is all user queue.
+        let added = !self.queue.upcoming(1).is_empty();
         if let Some(record) = record {
             self.restore_queue(record);
         }
-        self.saved = Some(self.record());
+        // What was restored is what is saved, apart from additions made while it was on its way.
+        self.lists_dirty = added;
+        self.saved_position = Some((self.queue.current(), self.position()));
         if mem::take(&mut self.play_after_restore) {
             self.toggle_play();
         }
@@ -307,8 +330,16 @@ impl PlaybackService {
         }
     }
 
+    /// The engine thread has died. Nothing can play from now on, and the view says so.
+    pub fn engine_lost(&mut self) {
+        self.engine_gone = true;
+        self.playing = false;
+        self.notify(NO_DEVICE);
+        self.publish();
+    }
+
     /// The worker's regular call: ends a run of failures once a track has played long enough, and
-    /// saves the queue if it is due and has changed.
+    /// saves what changed in the queue if a save is due.
     pub fn tick(&mut self) {
         self.tick_at(Instant::now());
     }
@@ -326,21 +357,16 @@ impl PlaybackService {
         let due = self
             .last_save
             .is_none_or(|at| now.duration_since(at) >= SAVE_INTERVAL);
-        if due && self.restore == Restore::Done {
-            let record = self.record();
-            if self.saved.as_ref() != Some(&record) {
-                self.last_save = Some(now);
-                self.save(record);
-            }
+        if due && self.restore == Restore::Done && self.save_pending() {
+            self.last_save = Some(now);
         }
     }
 
-    /// The last thing before shutdown: saves the queue and silences the engine. The queue is left
-    /// alone if it was never restored, as it would only overwrite the saved one with nothing.
+    /// The last thing before shutdown: saves what is pending and silences the engine. The queue is
+    /// left alone if it was never restored, as it would only overwrite the saved one with nothing.
     pub fn finish(&mut self) {
         if self.restore == Restore::Done {
-            let record = self.record();
-            self.save(record);
+            self.save_pending();
         }
         self.engine.send(EngineCommand::Stop);
     }
@@ -362,21 +388,28 @@ impl PlaybackService {
         self.events.push(Event::Notice(notice));
     }
 
-    fn publish(&mut self) {
-        let current = self.queue.current();
-        let stored = current
+    /// The length of the current track: the library's, or else the engine's, or else 0.
+    fn duration_ms(&self) -> u64 {
+        let stored = self
+            .queue
+            .current()
             .and_then(|id| self.row(id))
             .map_or(0, |row| row.duration_ms);
+        if stored > 0 { stored } else { self.reported_ms }
+    }
+
+    fn publish(&mut self) {
         let view = PlayerView {
-            current,
+            current: self.queue.current(),
             playing: self.playing,
-            duration_ms: if stored > 0 { stored } else { self.reported_ms },
+            duration_ms: self.duration_ms(),
             upcoming: self.queue.upcoming(UPCOMING_LIMIT),
         };
         self.events.push(Event::Player(view));
     }
 
     fn queue_changed(&mut self) {
+        self.lists_dirty = true;
         self.sync_next();
         self.publish();
     }
@@ -392,13 +425,23 @@ impl PlaybackService {
         }
     }
 
-    fn record(&self) -> QueueRecord {
-        self.queue.to_record(self.position())
-    }
-
-    fn save(&mut self, record: QueueRecord) {
-        self.saved = Some(record.clone());
-        self.requests.push(LibraryRequest::SaveQueue(record));
+    /// Saves what changed since the last save: the whole queue if its lists did, else the position
+    /// alone if that did, which costs the library one row. Returns whether anything went out.
+    fn save_pending(&mut self) -> bool {
+        let (current, position_ms) = (self.queue.current(), self.position());
+        if mem::take(&mut self.lists_dirty) {
+            let record = self.queue.to_record(position_ms);
+            self.requests.push(LibraryRequest::SaveQueue(record));
+        } else if self.saved_position != Some((current, position_ms)) {
+            self.requests.push(LibraryRequest::SavePosition {
+                current,
+                position_ms,
+            });
+        } else {
+            return false;
+        }
+        self.saved_position = Some((current, position_ms));
+        true
     }
 
     /// Runs `step` on the queue. A track whose row is gone cannot be played again, so for it,
@@ -457,7 +500,7 @@ impl PlaybackService {
         });
         self.current = Some(given);
         self.played_from = start_ms;
-        self.playing = play;
+        self.playing = play && !self.engine_gone;
         self.sync_next();
     }
 
@@ -516,6 +559,7 @@ impl PlaybackService {
             tracing::debug!(token, "ignoring the start of a track no longer known");
             return;
         };
+        self.lists_dirty = true;
         match self.past_dead_repeat(Queue::advance_finished) {
             Some(track) if track == given.track => {
                 self.current = Some(given);
@@ -542,6 +586,7 @@ impl PlaybackService {
 
     /// The current track has ended and no start will say what comes next, so the queue does.
     fn move_on(&mut self) {
+        self.lists_dirty = true;
         match self.past_dead_repeat(Queue::advance_finished) {
             Some(track) => self.load(track, 0, self.playing),
             None => self.stop_at_end(),
@@ -573,6 +618,7 @@ impl PlaybackService {
             tracing::debug!(token, "ignoring the failure of a track no longer known");
             return;
         };
+        self.lists_dirty = true;
         // An announced track is still ahead in the queue, unless the queue changed meanwhile.
         let replacement = if was_current {
             None
@@ -599,7 +645,6 @@ impl PlaybackService {
 
     fn restore_queue(&mut self, record: QueueRecord) {
         let position_ms = record.position_ms;
-        // Until now nothing can have set a context, so this is all user queue.
         let added: Vec<UpNext> = self.queue.upcoming(usize::MAX);
         let mut queue = Queue::from_record(record, self.shuffle, self.repeat, |id| self.exists(id));
         for item in added {
@@ -634,11 +679,16 @@ impl PlaybackService {
     fn begin(&mut self, track: TrackId, play: bool) {
         self.restore = Restore::Done;
         self.play_after_restore = false;
+        self.lists_dirty = true;
         self.load(track, 0, play);
         self.publish();
     }
 
     fn toggle_play(&mut self) {
+        if self.engine_gone {
+            self.notify(NO_DEVICE);
+            return self.publish();
+        }
         if self.current.is_some() {
             self.playing = !self.playing;
             self.engine.send(if self.playing {
@@ -993,6 +1043,19 @@ mod tests {
 
         fn upcoming(&self) -> Vec<TrackId> {
             self.view().upcoming.iter().map(|up| up.track).collect()
+        }
+
+        fn saved_positions(&self) -> Vec<(Option<TrackId>, u64)> {
+            self.requests
+                .iter()
+                .filter_map(|request| match request {
+                    LibraryRequest::SavePosition {
+                        current,
+                        position_ms,
+                    } => Some((*current, *position_ms)),
+                    _ => None,
+                })
+                .collect()
         }
 
         fn saved_records(&self) -> Vec<&QueueRecord> {
@@ -1643,6 +1706,34 @@ mod tests {
         assert_eq!(rig.notices[0].args, [("title", "Track 2".to_owned())]);
     }
 
+    #[test]
+    fn a_short_track_played_in_full_ends_a_run_of_failures() {
+        let music = Music::new().missing().missing().tone(1_500).tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2, 3, 4], 0);
+
+        // No tick at all: the track ends between two of them.
+        rig.run_until("the track after it", |rig| {
+            rig.service.queue.current() == Some(t(4))
+        });
+
+        assert_eq!(rig.notices("playback-track-failed").len(), 2);
+        assert_eq!(rig.service.failures, 0);
+    }
+
+    #[test]
+    fn a_track_under_a_second_does_not_end_a_run_of_failures() {
+        let music = Music::new().missing().missing().tone(500).tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2, 3, 4], 0);
+
+        rig.run_until("the track after it", |rig| {
+            rig.service.queue.current() == Some(t(4))
+        });
+
+        assert_eq!(rig.service.failures, 2);
+    }
+
     // Commands.
 
     #[test]
@@ -1981,6 +2072,40 @@ mod tests {
     // Saving and restoring.
 
     #[test]
+    fn plain_play_saves_the_lists_only_once() {
+        let music = Music::new().tone(10_000).tone(300);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2], 0);
+        let start = Instant::now();
+        rig.service.tick_at(start);
+        rig.collect();
+        assert_eq!(rig.saved_records().len(), 1, "the new context is saved");
+
+        for n in 1..=5 {
+            let before = rig.reading().position_ms;
+            rig.run_until("more play", |rig| rig.reading().position_ms > before);
+            rig.service.tick_at(start + SAVE_INTERVAL * n);
+            rig.collect();
+        }
+
+        assert_eq!(rig.saved_records().len(), 1, "{:?}", rig.requests);
+        assert_eq!(rig.view().current, Some(t(1)), "still the first track");
+        let positions = rig.saved_positions();
+        assert_eq!(positions.len(), 5, "{:?}", rig.requests);
+        assert!(positions.iter().all(|(current, _)| *current == Some(t(1))));
+        assert!(positions.windows(2).all(|pair| pair[0].1 < pair[1].1));
+
+        rig.send(Command::AddToQueue(t(2)));
+        rig.service.tick_at(start + SAVE_INTERVAL * 6);
+        rig.collect();
+        assert_eq!(
+            rig.saved_records().len(),
+            2,
+            "a change to the lists is saved"
+        );
+    }
+
+    #[test]
     fn the_queue_is_saved_every_interval_while_it_changes() {
         let music = Music::new().tone(300).tone(300);
         let mut rig = Rig::with(&music);
@@ -2008,6 +2133,45 @@ mod tests {
             .tick_at(start + Duration::from_secs(1) + SAVE_INTERVAL * 3);
         rig.collect();
         assert_eq!(rig.saved_records().len(), 2, "nothing has changed");
+    }
+
+    #[test]
+    fn a_paused_queue_that_did_not_change_is_not_saved() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        rig.send(Command::TogglePlay);
+        let token = rig.current_token();
+        rig.wait_until("the pause", |rig| {
+            rig.reading().token == token && !rig.reading().playing
+        });
+        let start = Instant::now();
+        rig.service.tick_at(start);
+        rig.service.tick_at(start + SAVE_INTERVAL);
+        rig.service.finish();
+        rig.collect();
+
+        assert_eq!(rig.requests.len(), 1, "{:?}", rig.requests);
+        assert_eq!(rig.saved_records().len(), 1);
+    }
+
+    #[test]
+    fn exit_saves_a_position_that_moved_since_the_last_save() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        rig.service.tick_at(Instant::now());
+        rig.collect();
+        assert_eq!(rig.saved_records().len(), 1);
+
+        rig.run_until("some play", |rig| rig.reading().position_ms > 100);
+        rig.service.finish();
+        rig.collect();
+
+        assert_eq!(rig.saved_records().len(), 1, "the lists did not change");
+        let positions = rig.saved_positions();
+        assert_eq!(positions.len(), 1, "{:?}", rig.requests);
+        assert!(positions[0].1 > 100);
     }
 
     #[test]
@@ -2158,6 +2322,31 @@ mod tests {
 
         assert_eq!(rig.upcoming(), [t(1), t(2)]);
         assert!(!rig.view().playing);
+        // Nothing else will change the lists, so the next save must carry them.
+        rig.service.tick_at(Instant::now());
+        rig.collect();
+        let saved = rig.saved_records();
+        assert_eq!(saved.len(), 1, "{:?}", rig.requests);
+        assert_eq!(saved[0].user, [t(1), t(2)]);
+    }
+
+    #[test]
+    fn a_dead_engine_never_shows_playing() {
+        let music = Music::new().tone(3_000).tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2], 0);
+
+        rig.service.engine_lost();
+        rig.collect();
+        assert!(!rig.view().playing);
+
+        rig.send(Command::TogglePlay);
+        assert!(!rig.view().playing);
+        rig.send(Command::Next);
+        assert!(!rig.view().playing);
+        rig.play(&[2], 0);
+        assert!(!rig.view().playing);
+        assert_eq!(rig.notices("playback-no-device").len(), 2);
     }
 
     #[test]

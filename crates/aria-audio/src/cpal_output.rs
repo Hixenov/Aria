@@ -9,10 +9,10 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample};
 
-use crate::device::{DeviceId, device_error, find_output_device};
+use crate::device::{DeviceId, DeviceKind, device_error, find_output_device, list_devices};
 use crate::error::AudioError;
 use crate::mixer::{InputHandle, Mixer, MixerControl};
-use crate::output::{AudioOutput, OutputFactory, OutputFormat};
+use crate::output::{AudioOutput, DeviceLister, OutputFactory, OutputFormat};
 
 /// How much the callback renders at a time, before converting to the device's sample type.
 const SCRATCH_FRAMES: usize = 1024;
@@ -28,6 +28,10 @@ const CLOSE_WAIT: Duration = Duration::from_secs(2);
 pub struct CpalFactory;
 
 impl OutputFactory for CpalFactory {
+    fn device_lister(&self) -> DeviceLister {
+        Arc::new(|| list_devices(DeviceKind::Output))
+    }
+
     fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError> {
         let device = device.cloned();
         let health = Arc::new(StreamHealth::default());

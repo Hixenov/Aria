@@ -1,6 +1,8 @@
 //! What the player needs from an audio output.
 
-use crate::device::DeviceId;
+use std::sync::Arc;
+
+use crate::device::{DeviceId, DeviceInfo};
 use crate::error::AudioError;
 use crate::mixer::InputHandle;
 
@@ -25,8 +27,16 @@ pub trait AudioOutput: Send {
     fn failed(&self) -> bool;
 }
 
+/// Lists the output devices a factory can open. It can be slow, so it is for a thread that may
+/// wait.
+pub type DeviceLister = Arc<dyn Fn() -> Result<Vec<DeviceInfo>, AudioError> + Send + Sync>;
+
 /// Opens outputs. Each call opens a new, independent one.
 pub trait OutputFactory: Send {
     /// Open `device`, or the system default when it is `None`.
     fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError>;
+
+    /// A way to list the devices this factory opens, which can be kept after the factory has been
+    /// handed to an engine.
+    fn device_lister(&self) -> DeviceLister;
 }

@@ -287,6 +287,23 @@ impl Library {
         Ok(())
     }
 
+    /// Replaces the current track and position of the saved queue, and nothing else: one row,
+    /// however long the lists are. Without a saved queue there is nothing to update.
+    pub fn save_position(
+        &mut self,
+        current: Option<TrackId>,
+        position_ms: u64,
+    ) -> Result<(), LibraryError> {
+        self.conn.execute(
+            "UPDATE queue_state SET current = ?1, position_ms = ?2 WHERE id = 1",
+            (
+                current.map(|t| t.0),
+                i64::try_from(position_ms).unwrap_or(i64::MAX),
+            ),
+        )?;
+        Ok(())
+    }
+
     /// Replaces the saved queue.
     pub fn save_queue(&mut self, q: &QueueRecord) -> Result<(), LibraryError> {
         let tx = self.conn.transaction()?;
