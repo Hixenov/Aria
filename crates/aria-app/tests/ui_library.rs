@@ -379,3 +379,131 @@ fn large_snapshot_draws_only_visible_rows() {
         "{drawn} of 50000 rows were drawn"
     );
 }
+
+fn album(title: &str, artist: &str, ids: &[i64]) -> Album {
+    Album {
+        title: Some(Arc::from(title)),
+        artist: Some(Arc::from(artist)),
+        tracks: ids.iter().map(|&id| TrackId(id)).collect(),
+        artwork: None,
+        year: None,
+    }
+}
+
+/// Opens the album called `name` from the Albums tab.
+fn open_album(harness: &mut Harness<'_, Page>, name: &str) {
+    harness
+        .get_by_role_and_label(Role::Tab, &en("local-tab-albums"))
+        .click();
+    harness.run();
+    harness.get_by_role_and_label(Role::Button, name).click();
+    harness.run();
+}
+
+/// The ids a double click on `label` hands over: the visible list in its order.
+fn visible_order(harness: &mut Harness<'_, Page>, label: &str) -> Vec<i64> {
+    harness.state_mut().actions.clear();
+    double_click(harness, label);
+    match harness.state().actions.as_slice() {
+        [PageAction::PlayContext { ids, .. }] => ids.iter().map(|id| id.0).collect(),
+        other => panic!("expected one PlayContext, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_tracks_tab_leaves_an_album() {
+    let mut snap = snapshot(vec![
+        track(1, "On Album", Some("A"), Some("Record"), 1000),
+        track(2, "Elsewhere", Some("B"), None, 1000),
+    ]);
+    snap.albums = vec![album("Record", "A", &[1])];
+    let mut harness = harness(snap);
+    open_album(&mut harness, "Record");
+    assert!(harness.query_by_label("Elsewhere").is_none());
+
+    harness
+        .get_by_role_and_label(Role::Tab, &en("local-tab-tracks"))
+        .click();
+    harness.run();
+    assert!(
+        harness.query_by_label("Elsewhere").is_some(),
+        "the scope stayed"
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, &en("local-back"))
+            .is_none(),
+        "the back button stayed"
+    );
+}
+
+#[test]
+fn an_open_album_stays_open_when_a_new_snapshot_inserts_one_before_it() {
+    let tracks = vec![
+        track(1, "Mine", Some("A"), Some("Zulu"), 1000),
+        track(2, "Theirs", Some("B"), Some("Aardvark"), 1000),
+    ];
+    let mut before = snapshot(tracks.clone());
+    before.albums = vec![album("Zulu", "A", &[1])];
+    let mut harness = harness(before);
+    open_album(&mut harness, "Zulu");
+    assert!(harness.query_by_label("Mine").is_some());
+
+    // Albums are listed by name, so the new one takes index 0 and Zulu moves to 1.
+    let mut after = snapshot(tracks);
+    after.albums = vec![album("Aardvark", "B", &[2]), album("Zulu", "A", &[1])];
+    harness.state_mut().library.snapshot = Arc::new(after);
+    harness.run();
+    assert!(
+        harness.query_by_label("Mine").is_some(),
+        "Zulu's tracks are gone"
+    );
+    assert!(
+        harness.query_by_label("Theirs").is_none(),
+        "another album's tracks show"
+    );
+}
+
+#[test]
+fn an_album_lists_its_tracks_in_album_order_until_a_header_is_clicked() {
+    let mut first = track(1, "Zed", Some("A"), Some("Record"), 1000);
+    first.track_no = Some(1);
+    let mut second = track(2, "Alpha", Some("A"), Some("Record"), 1000);
+    second.track_no = Some(2);
+    let mut snap = snapshot(vec![first, second]);
+    snap.albums = vec![album("Record", "A", &[1, 2])];
+    let mut harness = harness(snap);
+    open_album(&mut harness, "Record");
+
+    assert_eq!(
+        visible_order(&mut harness, "Zed"),
+        [1, 2],
+        "track order, not title order"
+    );
+    harness
+        .get_by_role_and_label(Role::Button, &en("local-col-title"))
+        .click();
+    harness.run();
+    assert_eq!(
+        visible_order(&mut harness, "Zed"),
+        [2, 1],
+        "the header click sorts by title"
+    );
+}
+
+#[test]
+fn a_scan_shows_before_any_folder_is_listed() {
+    let mut harness = harness(LibrarySnapshot::default());
+    harness.state_mut().library.scan = Some(ScanProgress {
+        seen: 1,
+        changed: 0,
+    });
+    harness.run();
+    let tr = english();
+    let mut args = aria_core::i18n::FluentArgs::new();
+    args.set("count", 1_u64);
+    let text = tr.tr_args("library-scanning", &args);
+    assert!(text.contains("1 file so far"), "no singular form: {text}");
+    assert!(harness.query_by_label(&text).is_some(), "no {text:?}");
+    assert!(harness.query_by_label(&en("local-empty-title")).is_some());
+}

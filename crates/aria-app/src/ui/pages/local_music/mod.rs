@@ -43,6 +43,51 @@ pub struct LibraryView {
     pub current: Option<TrackId>,
 }
 
+/// Which album or artist the Tracks tab is limited to, by name. A snapshot numbers its
+/// groups by their order, and a new one can renumber them, so the number alone cannot say
+/// which group is open. Names are lowercase, as the library groups them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Open {
+    /// The album's title, and the album artist (else the artist).
+    Album(Option<String>, Option<String>),
+    Artist(Option<String>),
+}
+
+impl Open {
+    /// The identity of the group `scope` points at in `snapshot`.
+    fn of(scope: Scope, snapshot: &LibrarySnapshot) -> Option<Self> {
+        let lower = |s: &Option<Arc<str>>| s.as_deref().map(str::to_lowercase);
+        match scope {
+            Scope::All => None,
+            Scope::Album(i) => snapshot
+                .albums
+                .get(i)
+                .map(|a| Self::Album(lower(&a.title), lower(&a.artist))),
+            Scope::Artist(i) => snapshot
+                .artists
+                .get(i)
+                .map(|a| Self::Artist(lower(&a.name))),
+        }
+    }
+
+    /// Where the group is in `snapshot`, if it still is.
+    fn find(&self, snapshot: &LibrarySnapshot) -> Option<Scope> {
+        let lower = |s: &Option<Arc<str>>| s.as_deref().map(str::to_lowercase);
+        match self {
+            Self::Album(title, artist) => snapshot
+                .albums
+                .iter()
+                .position(|a| lower(&a.title) == *title && lower(&a.artist) == *artist)
+                .map(Scope::Album),
+            Self::Artist(name) => snapshot
+                .artists
+                .iter()
+                .position(|a| lower(&a.name) == *name)
+                .map(Scope::Artist),
+        }
+    }
+}
+
 /// What the page remembers between frames.
 #[derive(Clone, Default)]
 struct State {
@@ -50,6 +95,10 @@ struct State {
     /// What is typed in the search field.
     query: String,
     view: TrackView,
+    /// The group the view is limited to, so it can be found again in a new snapshot.
+    open: Option<Open>,
+    /// The snapshot `open` was last looked up in.
+    resolved_in: std::sync::Weak<LibrarySnapshot>,
 }
 
 /// Draws the page.
@@ -64,11 +113,15 @@ pub fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
 
 fn draw(ui: &mut Ui, ctx: &mut PageCtx<'_>, state: &mut State) {
     let snapshot = Arc::clone(&ctx.library.snapshot);
-    state.drop_stale_scope(&snapshot);
+    state.follow_open_group(&snapshot);
     let has_folders = !snapshot.folders.is_empty();
 
     header(ui, ctx, has_folders);
     if !has_folders {
+        // The library can scan before a snapshot lists its folder, as at startup.
+        if let Some(scan) = ctx.library.scan {
+            scanning(ui, ctx.tr, &ctx.palette, scan);
+        }
         no_folders(ui, ctx);
         return;
     }
@@ -83,35 +136,47 @@ fn draw(ui: &mut Ui, ctx: &mut PageCtx<'_>, state: &mut State) {
         Tab::Albums if snapshot.albums.is_empty() => no_tracks(ui, ctx),
         Tab::Albums => {
             if let Some(i) = groups::albums(ui, ctx.tr, &ctx.palette, &snapshot) {
-                state.open(Scope::Album(i));
+                state.open(Scope::Album(i), &snapshot);
             }
         }
         Tab::Artists if snapshot.artists.is_empty() => no_tracks(ui, ctx),
         Tab::Artists => {
             if let Some(i) = groups::artists(ui, ctx.tr, &ctx.palette, &snapshot) {
-                state.open(Scope::Artist(i));
+                state.open(Scope::Artist(i), &snapshot);
             }
         }
     }
 }
 
 impl State {
-    /// Shows the tracks of `scope`, whatever was searched for before.
-    fn open(&mut self, scope: Scope) {
+    /// Shows the tracks of `scope` in `snapshot`, whatever was searched for before.
+    fn open(&mut self, scope: Scope, snapshot: &Arc<LibrarySnapshot>) {
         self.query.clear();
+        self.open = Open::of(scope, snapshot);
+        self.resolved_in = Arc::downgrade(snapshot);
         self.view.set_scope(scope);
         self.tab = Tab::Tracks;
     }
 
-    /// A new snapshot can have fewer albums or artists than the one the scope pointed into.
-    fn drop_stale_scope(&mut self, snapshot: &LibrarySnapshot) {
-        let gone = match self.view.scope() {
-            Scope::All => false,
-            Scope::Album(i) => i >= snapshot.albums.len(),
-            Scope::Artist(i) => i >= snapshot.artists.len(),
+    /// Goes back to every track.
+    fn show_all(&mut self) {
+        self.open = None;
+        self.view.set_scope(Scope::All);
+    }
+
+    /// Keeps the view on the group that was opened when a new snapshot renumbers the groups,
+    /// and goes back to every track if the group is gone.
+    fn follow_open_group(&mut self, snapshot: &Arc<LibrarySnapshot>) {
+        if self.resolved_in.ptr_eq(&Arc::downgrade(snapshot)) {
+            return;
+        }
+        self.resolved_in = Arc::downgrade(snapshot);
+        let Some(open) = &self.open else {
+            return;
         };
-        if gone {
-            self.view.set_scope(Scope::All);
+        match open.find(snapshot) {
+            Some(scope) => self.view.move_scope(scope),
+            None => self.show_all(),
         }
     }
 }
@@ -148,7 +213,7 @@ fn controls(ui: &mut Ui, ctx: &mut PageCtx<'_>, state: &mut State) {
             if tab_button(ui, ctx, &ctx.tr.tr(key), state.tab == tab) {
                 if tab == Tab::Tracks {
                     // The tab is the way back to every track.
-                    state.view.set_scope(Scope::All);
+                    state.show_all();
                 }
                 state.tab = tab;
             }
@@ -212,7 +277,7 @@ fn tracks_tab(
                 .add(IconButton::new(icons::CARET_LEFT, &back, &ctx.palette))
                 .clicked()
             {
-                state.view.set_scope(Scope::All);
+                state.show_all();
             }
             ui.add(
                 Label::new(
@@ -237,9 +302,12 @@ fn tracks_tab(
         return;
     }
     if let Some(key) = tracks::show(ui, ctx, snapshot, &mut state.view) {
-        let (current, ascending) = state.view.sort();
         // Another column starts ascending; the same one turns around.
-        state.view.set_sort(key, key != current || !ascending);
+        let ascending = match state.view.sort() {
+            Some((current, ascending)) => current != key || !ascending,
+            None => true,
+        };
+        state.view.set_sort(key, ascending);
     }
 }
 
@@ -288,4 +356,94 @@ fn no_tracks(ui: &mut Ui, ctx: &PageCtx<'_>) {
 /// `value`, or the localized `unknown` message when the tag is missing.
 fn or_unknown<'a>(tr: &'a Localizer, value: Option<&'a str>, unknown: &str) -> Cow<'a, str> {
     value.map_or_else(|| tr.tr(unknown), Cow::Borrowed)
+}
+
+#[cfg(test)]
+mod tests {
+    use aria_library::{Album, Artist};
+
+    use super::*;
+
+    fn album(title: &str, artist: &str) -> Album {
+        Album {
+            title: Some(Arc::from(title)),
+            artist: Some(Arc::from(artist)),
+            tracks: Vec::new(),
+            artwork: None,
+            year: None,
+        }
+    }
+
+    fn snapshot(albums: Vec<Album>, artists: &[&str]) -> Arc<LibrarySnapshot> {
+        Arc::new(LibrarySnapshot {
+            albums,
+            artists: artists
+                .iter()
+                .map(|name| Artist {
+                    name: Some(Arc::from(*name)),
+                    tracks: Vec::new(),
+                })
+                .collect(),
+            ..LibrarySnapshot::default()
+        })
+    }
+
+    #[test]
+    fn an_open_album_is_followed_when_a_snapshot_renumbers_the_albums() {
+        let before = snapshot(vec![album("Kind of Blue", "Miles Davis")], &[]);
+        let mut state = State::default();
+        state.follow_open_group(&before);
+        state.open(Scope::Album(0), &before);
+
+        // A new album sorts in front, so the open one is now at index 1.
+        let after = snapshot(
+            vec![
+                album("Abbey Road", "Beatles"),
+                album("KIND OF BLUE", "miles davis"),
+            ],
+            &[],
+        );
+        state.follow_open_group(&after);
+        assert_eq!(state.view.scope(), Scope::Album(1));
+        assert_eq!(state.tab, Tab::Tracks);
+    }
+
+    #[test]
+    fn an_open_artist_is_followed_and_a_sort_survives() {
+        let before = snapshot(Vec::new(), &["Miles Davis"]);
+        let mut state = State::default();
+        state.open(Scope::Artist(0), &before);
+        state.view.set_sort(SortKey::Album, false);
+
+        let after = snapshot(Vec::new(), &["Beatles", "Miles Davis"]);
+        state.follow_open_group(&after);
+        assert_eq!(state.view.scope(), Scope::Artist(1));
+        assert_eq!(state.view.sort(), Some((SortKey::Album, false)));
+    }
+
+    #[test]
+    fn a_group_that_is_gone_returns_to_every_track() {
+        let before = snapshot(vec![album("Kind of Blue", "Miles Davis")], &[]);
+        let mut state = State::default();
+        state.open(Scope::Album(0), &before);
+
+        let after = snapshot(vec![album("Abbey Road", "Beatles")], &[]);
+        state.follow_open_group(&after);
+        assert_eq!(state.view.scope(), Scope::All);
+        assert_eq!(state.open, None);
+        // And it stays there when the next snapshot brings the album back.
+        state.follow_open_group(&before);
+        assert_eq!(state.view.scope(), Scope::All);
+    }
+
+    #[test]
+    fn showing_all_forgets_the_open_group() {
+        let snap = snapshot(vec![album("A", "B")], &[]);
+        let mut state = State::default();
+        state.open(Scope::Album(0), &snap);
+        state.show_all();
+        let other = snapshot(vec![album("Z", "Y"), album("A", "B")], &[]);
+        state.follow_open_group(&other);
+        assert_eq!(state.view.scope(), Scope::All);
+    }
 }

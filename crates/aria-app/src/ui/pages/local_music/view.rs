@@ -73,6 +73,9 @@ pub struct TrackView {
     query: String,
     key: SortKey,
     ascending: bool,
+    /// The user chose the sort, by clicking a header. Until then an album lists its tracks
+    /// in the album's own order (disc, track, title).
+    explicit: bool,
     scope: Scope,
     /// The snapshot `lowered` and `rows` were made from. Weak, so that remembering it neither
     /// keeps an old library alive nor lets a new one pass for it: while a weak pointer
@@ -99,6 +102,7 @@ impl TrackView {
             query: String::new(),
             key: SortKey::default(),
             ascending: true,
+            explicit: false,
             scope: Scope::default(),
             source: Weak::new(),
             lowered: Vec::new(),
@@ -118,25 +122,46 @@ impl TrackView {
         }
     }
 
-    /// Sorts by `key`. Tracks that have no value for it come last, either way round.
+    /// Sorts by `key`, as the user's own choice. Tracks that have no value for it come last,
+    /// either way round.
     pub fn set_sort(&mut self, key: SortKey, ascending: bool) {
-        if (key, ascending) != (self.key, self.ascending) {
+        let was_default_order = self.in_source_order();
+        if (key, ascending) != (self.key, self.ascending) || was_default_order {
             (self.key, self.ascending) = (key, ascending);
+            self.stale = true;
+        }
+        self.explicit = true;
+    }
+
+    /// Draws from `scope` instead of the whole library. A sort the user chose is dropped, so
+    /// the new scope starts in its default order: title, or the album's own order.
+    pub fn set_scope(&mut self, scope: Scope) {
+        if scope != self.scope {
+            self.scope = scope;
+            (self.key, self.ascending, self.explicit) = (SortKey::Title, true, false);
             self.stale = true;
         }
     }
 
-    /// Draws from `scope` instead of the whole library.
-    pub fn set_scope(&mut self, scope: Scope) {
+    /// Points at the same group under another index, because a new snapshot moved it. The
+    /// sort stays as it is.
+    pub fn move_scope(&mut self, scope: Scope) {
         if scope != self.scope {
             self.scope = scope;
             self.stale = true;
         }
     }
 
-    /// The sort in effect: the key, and whether it is ascending.
-    pub fn sort(&self) -> (SortKey, bool) {
-        (self.key, self.ascending)
+    /// Whether the rows are left in the order the scope gives them: inside an album, until
+    /// the user picks a sort.
+    fn in_source_order(&self) -> bool {
+        matches!(self.scope, Scope::Album(_)) && !self.explicit
+    }
+
+    /// The sort in effect: the key, and whether it is ascending. `None` while an album is in
+    /// its own order.
+    pub fn sort(&self) -> Option<(SortKey, bool)> {
+        (!self.in_source_order()).then_some((self.key, self.ascending))
     }
 
     /// The scope in effect.
@@ -179,7 +204,9 @@ impl TrackView {
         }
         // A stable sort, with the direction inside the comparison: reversing the result
         // instead would also reverse the order of equal tracks.
-        rows.sort_by(|&a, &b| self.compare(snapshot, a, b));
+        if !self.in_source_order() {
+            rows.sort_by(|&a, &b| self.compare(snapshot, a, b));
+        }
         rows
     }
 
@@ -439,6 +466,99 @@ mod tests {
         assert!(
             ids(&mut view, &snap).is_empty(),
             "a scope that is gone shows nothing"
+        );
+    }
+
+    /// A snapshot with one album holding tracks 3, 1, 2 in disc and track order, whose
+    /// titles run the other way round.
+    fn album_snapshot() -> Arc<LibrarySnapshot> {
+        let mut tracks = vec![
+            track(1, "Alpha", Some("A"), Some("X"), 1000),
+            track(2, "Bravo", Some("A"), Some("X"), 1000),
+            track(3, "Charlie", Some("A"), Some("X"), 1000),
+        ];
+        (tracks[2].disc_no, tracks[2].track_no) = (Some(1), Some(1));
+        (tracks[0].disc_no, tracks[0].track_no) = (Some(1), Some(2));
+        (tracks[1].disc_no, tracks[1].track_no) = (Some(2), Some(1));
+        Arc::new(LibrarySnapshot {
+            tracks,
+            albums: vec![Album {
+                title: Some(Arc::from("X")),
+                artist: Some(Arc::from("A")),
+                tracks: vec![TrackId(3), TrackId(1), TrackId(2)],
+                artwork: None,
+                year: None,
+            }],
+            ..LibrarySnapshot::default()
+        })
+    }
+
+    #[test]
+    fn an_album_lists_its_tracks_in_disc_and_track_order() {
+        let snap = album_snapshot();
+        let mut view = TrackView::new();
+        assert_eq!(
+            ids(&mut view, &snap),
+            [1, 2, 3],
+            "outside an album: by title"
+        );
+        assert_eq!(view.sort(), Some((SortKey::Title, true)));
+
+        view.set_scope(Scope::Album(0));
+        assert_eq!(
+            ids(&mut view, &snap),
+            [3, 1, 2],
+            "disc 1 track 1, disc 1 track 2, disc 2"
+        );
+        assert_eq!(view.sort(), None, "no header is marked");
+        view.set_query("a");
+        assert_eq!(
+            ids(&mut view, &snap),
+            [3, 1, 2],
+            "the search keeps that order"
+        );
+    }
+
+    #[test]
+    fn an_explicit_sort_inside_an_album_wins_until_the_scope_changes() {
+        let snap = album_snapshot();
+        let mut view = TrackView::new();
+        view.set_scope(Scope::Album(0));
+        assert_eq!(ids(&mut view, &snap), [3, 1, 2]);
+
+        // Even the sort that Title is by default is a choice once it is clicked.
+        view.set_sort(SortKey::Title, true);
+        assert_eq!(ids(&mut view, &snap), [1, 2, 3]);
+        view.set_sort(SortKey::Title, false);
+        assert_eq!(ids(&mut view, &snap), [3, 2, 1]);
+
+        // The same album under another index keeps the sort.
+        view.move_scope(Scope::Album(0));
+        assert_eq!(ids(&mut view, &snap), [3, 2, 1]);
+
+        view.set_scope(Scope::All);
+        view.set_scope(Scope::Album(0));
+        assert_eq!(
+            ids(&mut view, &snap),
+            [3, 1, 2],
+            "a new scope starts in its default order"
+        );
+    }
+
+    #[test]
+    fn moving_a_scope_keeps_an_explicit_sort_and_setting_one_drops_it() {
+        let snap = album_snapshot();
+        let mut view = TrackView::new();
+        view.set_scope(Scope::Artist(0));
+        view.set_sort(SortKey::Title, false);
+        view.move_scope(Scope::Artist(1));
+        assert_eq!(view.sort(), Some((SortKey::Title, false)));
+        let _ = ids(&mut view, &snap);
+        view.set_scope(Scope::Artist(2));
+        assert_eq!(
+            view.sort(),
+            Some((SortKey::Title, true)),
+            "another scope starts over with title, ascending"
         );
     }
 }

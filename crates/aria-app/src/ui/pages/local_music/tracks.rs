@@ -149,9 +149,9 @@ fn header_button(
     p: &Palette,
     text: &str,
     key: SortKey,
-    sort: (SortKey, bool),
+    sort: Option<(SortKey, bool)>,
 ) -> bool {
-    let active = sort.0 == key;
+    let active = sort.is_some_and(|(sorted, _)| sorted == key);
     let color = if active { p.text } else { p.text_muted };
     let mut clicked = false;
     ui.horizontal(|ui| {
@@ -159,7 +159,7 @@ fn header_button(
         let label = RichText::new(text).font(semibold(14.0)).color(color);
         clicked = ui.add(Button::new(label).frame(false)).clicked();
         if active {
-            let arrow = if sort.1 {
+            let arrow = if sort.is_some_and(|(_, ascending)| ascending) {
                 icons::CARET_UP
             } else {
                 icons::CARET_DOWN

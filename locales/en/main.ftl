@@ -128,7 +128,10 @@ local-track-count = { $count ->
    *[other] { $count } tracks
 }
 # $count (Number) - how many audio files the running scan has looked at so far
-library-scanning = Scanning your folders, { $count } files so far
+library-scanning = { $count ->
+    [one] Scanning your folders, { $count } file so far
+   *[other] Scanning your folders, { $count } files so far
+}
 library-unknown-artist = Unknown artist
 library-unknown-album = Unknown album
 
