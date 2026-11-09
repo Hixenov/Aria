@@ -400,8 +400,7 @@ fn repaints_only_while_playing() {
             }
         });
         harness.step();
-        let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
-        seen
+        seen.lock().map(|seen| seen.clone()).unwrap_or_default()
     };
     assert!(delays(true).contains(&Duration::from_millis(250)));
     assert!(!delays(false).contains(&Duration::from_millis(250)));
