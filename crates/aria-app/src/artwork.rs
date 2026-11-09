@@ -181,10 +181,21 @@ impl ArtworkTextures {
         }
     }
 
-    /// Forgets which covers failed, so they are tried again when asked for. Call it when the
-    /// library changes: a rescan may have written the thumbnails that were missing.
+    /// Forgets which covers failed, so they are tried again when asked for. Call it when a
+    /// scan has finished, which may have written the thumbnails that were missing: not on every
+    /// snapshot, or a cover that is really gone would be asked for again with each one.
     pub fn retry_failed(&mut self) {
         self.failed.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_failed(&self, id: &ArtworkId) -> bool {
+        self.failed.contains(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_pending(&self, id: &ArtworkId) -> bool {
+        self.pending.contains(id)
     }
 }
 

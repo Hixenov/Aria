@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn the_view_carries_the_engine_token_of_the_current_track() {
+    fn the_view_carries_the_engine_token_of_a_loaded_track() {
         let music = Music::new().tone(200).tone(3_000);
         let mut rig = Rig::with(&music);
         assert_eq!(rig.service.clock.read().token, 0);
@@ -1148,15 +1148,48 @@ mod tests {
         rig.send(Command::Next);
         let second = rig.current_token();
         assert_ne!(second, first);
-        assert_eq!(rig.view().token, second, "a new track brings its token");
+        assert_eq!(rig.view().token, second, "a new load brings its token");
+    }
 
-        // Through the gapless path too.
-        rig.send(Command::PlayContext {
-            ids: vec![t(1), t(2)],
-            start: 0,
-        });
+    #[test]
+    fn the_view_takes_the_announced_token_when_the_next_track_starts() {
+        let music = Music::new().tone(200).tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2], 0);
+        let first = rig.current_token();
+        // The engine was told of the second track under this token, with no load.
+        let announced = rig.announced_token();
+        assert_ne!(announced, first);
+        assert_eq!(rig.view().token, first);
+
         rig.run_until("the second track", is_playing(2));
+
+        assert_eq!(rig.view().token, announced);
+        assert_eq!(rig.current_token(), announced);
+    }
+
+    #[test]
+    fn the_view_token_follows_a_failure_and_is_zero_when_nothing_is_loaded() {
+        let music = Music::new().tone(200).missing().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2, 3], 0);
+        rig.run_until("the third track", is_playing(3));
+        assert_ne!(rig.view().token, 0);
         assert_eq!(rig.view().token, rig.current_token());
+
+        let music = Music::new()
+            .missing()
+            .missing()
+            .missing()
+            .missing()
+            .missing()
+            .missing();
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2, 3, 4, 5, 6], 0);
+        rig.wait_until("the stop", |rig| {
+            !rig.notices("playback-stopped-after-failures").is_empty()
+        });
+        assert_eq!(rig.view().token, 0, "nothing is loaded after the stop");
     }
 
     #[test]

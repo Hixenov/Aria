@@ -45,6 +45,10 @@ use crate::{
 
 /// How long [`eframe::App::on_exit`] waits for the backend to save and stop.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long, in seconds, the app redraws often after a command that moves the position.
+const SETTLE_FOR: f64 = 1.0;
+/// How often it redraws then.
+const SETTLE_REPAINT: Duration = Duration::from_millis(50);
 /// Shown when a folder could not be opened in the file manager.
 const OPEN_FOLDER_FAILED: Notice = Notice {
     level: NoticeLevel::Warning,
@@ -113,6 +117,9 @@ pub struct AriaApp {
     clock: Option<Arc<PlaybackClock>>,
     /// Cover textures. Made on the first frame, once there is a context and a cache folder.
     artwork: Option<ArtworkTextures>,
+    /// Until when, in egui's time, the app redraws often so that a seek or a skip shows its
+    /// new position. The clock changes without any event to say so.
+    settle_until: f64,
     /// Whether making `artwork` has been tried.
     artwork_started: bool,
     /// Whether the Settings page's reset dialog is open. Navigation and panel shortcuts
@@ -159,6 +166,7 @@ impl AriaApp {
             clock,
             artwork: None,
             artwork_started: false,
+            settle_until: 0.0,
             modal_open: false,
             outstanding_resets: 0,
             startup: None,
@@ -252,8 +260,25 @@ impl AriaApp {
             queue_open: self.settings.right_panel_open,
             artwork: self.artwork.as_mut(),
         };
-        for action in player_bar::show(ui, &mut bar) {
+        let actions = player_bar::show(ui, &mut bar);
+        let now = ctx.input(|input| input.time);
+        let moves_position = |action: &PlayerAction| {
+            matches!(
+                action,
+                PlayerAction::Seek(_)
+                    | PlayerAction::Previous
+                    | PlayerAction::Next
+                    | PlayerAction::TogglePlay
+            )
+        };
+        if actions.iter().any(moves_position) {
+            self.settle_until = now + SETTLE_FOR;
+        }
+        for action in actions {
             self.handle_player_action(ctx, action);
+        }
+        if now < self.settle_until {
+            ctx.request_repaint_after(SETTLE_REPAINT);
         }
     }
 
@@ -326,12 +351,16 @@ impl AriaApp {
             Event::SettingsSaved => tracing::trace!("settings saved"),
             Event::LibraryUpdated(snapshot) => {
                 self.library.snapshot = snapshot;
-                // A rescan may have written the thumbnails that were missing.
-                if let Some(artwork) = &mut self.artwork {
+            }
+            Event::ScanProgress(scan) => {
+                // Covers that were missing may have been written by the scan that just ended;
+                // between snapshots, a missing cover stays missing.
+                let finished = self.library.scan.is_some() && scan.is_none();
+                self.library.scan = scan;
+                if finished && let Some(artwork) = &mut self.artwork {
                     artwork.retry_failed();
                 }
             }
-            Event::ScanProgress(scan) => self.library.scan = scan,
             Event::Player(player) => {
                 self.library.current = player.current;
                 self.player = player;
@@ -717,6 +746,38 @@ mod tests {
         };
         let localizer = Localizer::new(Language::En).unwrap();
         AriaApp::new(settings, localizer, AppDeps::none(), notices)
+    }
+
+    #[test]
+    fn failed_covers_are_retried_when_a_scan_ends_not_with_every_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = app(vec![]);
+        let id = aria_library::ArtworkId("gone".into());
+        let mut textures = ArtworkTextures::new(dir.path().to_path_buf(), &ctx);
+        assert!(textures.get(&id).is_none());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !textures.has_failed(&id) {
+            assert!(Instant::now() < deadline, "the cover was not tried");
+            thread::sleep(Duration::from_millis(2));
+            textures.poll();
+        }
+        app.artwork = Some(textures);
+
+        // A snapshot, even during a scan, leaves the failure alone.
+        let scan = aria_library::ScanProgress::default();
+        app.handle_event(&ctx, Event::ScanProgress(Some(scan)));
+        app.handle_event(&ctx, Event::LibraryUpdated(Arc::default()));
+        assert!(app.artwork.as_ref().is_some_and(|a| a.has_failed(&id)));
+
+        // The end of the scan forgets it, so the next draw asks again.
+        app.handle_event(&ctx, Event::ScanProgress(None));
+        let Some(artwork) = app.artwork.as_mut() else {
+            panic!("the textures are there");
+        };
+        assert!(!artwork.has_failed(&id));
+        assert!(artwork.get(&id).is_none());
+        assert!(artwork.is_pending(&id));
     }
 
     #[test]

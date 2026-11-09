@@ -16,8 +16,8 @@ use aria_core::{
 };
 use aria_library::{ArtworkId, LibrarySnapshot};
 use eframe::egui::{
-    Align, Align2, Key, Label, Layout, Margin, Panel, Pos2, Rect, RichText, Sense, TextStyle, Ui,
-    UiBuilder, Vec2, WidgetInfo, pos2, vec2,
+    Align, Align2, Label, Layout, Margin, Panel, Rect, RichText, Sense, TextStyle, Ui, UiBuilder,
+    Vec2, pos2, vec2,
 };
 
 use super::surface_frame;
@@ -30,7 +30,7 @@ use crate::{
             icons,
             visuals::SPACE,
         },
-        widgets::IconButton,
+        widgets::{IconButton, Scrub},
     },
 };
 
@@ -58,14 +58,16 @@ const SEEK_ROW: f32 = 16.0;
 const TIME_WIDTH: f32 = 44.0;
 /// Width of the volume bar.
 const VOLUME_WIDTH: f32 = 88.0;
-/// Thickness of a bar's track.
-const TRACK: f32 = 4.0;
-/// Radius of a bar's knob.
-const KNOB: f32 = 5.0;
 /// How far an arrow key moves the seek bar.
 const SEEK_STEP_MS: u64 = 5_000;
 /// How far an arrow key moves the volume bar.
 const VOLUME_STEP: f32 = 0.05;
+/// How close the clock must be to a seek's target for the seek to count as done.
+const SEEK_SETTLE_MS: u64 = 750;
+/// How long, in seconds, a seek is shown before the clock's position is trusted again.
+const SEEK_SETTLE_TIMEOUT: f64 = 1.0;
+/// How often the bar redraws while a seek settles.
+const SETTLE_REPAINT: Duration = Duration::from_millis(50);
 /// How often the bar redraws while playing, to move the position.
 const REPAINT_EVERY: Duration = Duration::from_millis(250);
 
@@ -321,8 +323,16 @@ fn seek_row(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         pos2(total.left() - gap, row.bottom()),
     );
 
+    // A seek just made is shown, and keyboard steps start from it, until the clock has caught
+    // up: the engine answers a few frames later, and the bar must not jump back meanwhile.
+    let memory = ui.make_persistent_id("aria_seek_pending");
+    let now = ui.input(|input| input.time);
+    let pending = ui
+        .data(|data| data.get_temp::<PendingSeek>(memory))
+        .filter(|pending| !pending.settled(bar.view.token, bar.position_ms, now));
+    let base_ms = pending.map_or(bar.position_ms, |pending| pending.target_ms);
     let fraction = if duration > 0 {
-        (bar.position_ms as f64 / duration as f64).clamp(0.0, 1.0) as f32
+        (base_ms as f64 / duration as f64).clamp(0.0, 1.0) as f32
     } else {
         0.0
     };
@@ -344,11 +354,30 @@ fn seek_row(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     // While dragging, the bar and the time show where the pointer is.
     let shown_ms = match moved.dragging {
         Some(at) if seekable => at_ms(at, duration),
-        _ => bar.position_ms,
+        _ => base_ms,
     };
+    let mut pending = pending;
     if let (Some(at), true) = (moved.committed, seekable) {
-        out.push(PlayerAction::Seek(at_ms(at, duration)));
+        let target_ms = at_ms(at, duration);
+        out.push(PlayerAction::Seek(target_ms));
+        pending = Some(PendingSeek {
+            token: bar.view.token,
+            from_ms: base_ms,
+            target_ms,
+            since: now,
+        });
     }
+    if pending.is_some() {
+        // Even paused, nothing else would draw the clock's answer.
+        ui.ctx().request_repaint_after(SETTLE_REPAINT);
+    }
+    ui.data_mut(|data| {
+        if let Some(pending) = pending {
+            data.insert_temp(memory, pending);
+        } else {
+            data.remove::<PendingSeek>(memory);
+        }
+    });
 
     let elapsed_text = format_time(shown_ms);
     let total_text = if duration > 0 {
@@ -362,6 +391,32 @@ fn seek_row(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     zone(ui, total, Layout::left_to_right(Align::Center), |ui| {
         ui.add(time_label(&total_text, p));
     });
+}
+
+/// A seek the user made, which the clock has not reported yet.
+#[derive(Clone, Copy)]
+struct PendingSeek {
+    /// The track it was made in.
+    token: u64,
+    /// Where the track was when it was made.
+    from_ms: u64,
+    target_ms: u64,
+    /// When it was made, in egui's time.
+    since: f64,
+}
+
+impl PendingSeek {
+    /// Whether it is over: the track changed, the clock got to the target (from the side it
+    /// started on), or it took too long.
+    fn settled(&self, token: u64, position_ms: u64, now: f64) -> bool {
+        let reached = if self.target_ms >= self.from_ms {
+            // Forward: at the target, or already past it as playback goes on.
+            position_ms + SEEK_SETTLE_MS >= self.target_ms
+        } else {
+            position_ms <= self.target_ms + SEEK_SETTLE_MS
+        };
+        self.token != token || now - self.since > SEEK_SETTLE_TIMEOUT || reached
+    }
 }
 
 fn time_label(text: &str, p: &Palette) -> Label {
@@ -463,98 +518,4 @@ fn pending(
         ui.label(RichText::new(name).color(p.text));
         ui.label(RichText::new(&*hint).color(p.text_muted));
     });
-}
-
-/// A thin horizontal bar to drag: the seek bar and the volume bar.
-struct Scrub<'a> {
-    /// Names the bar among others in the same `Ui`.
-    id: &'static str,
-    /// Where it sits, knob room included.
-    rect: Rect,
-    /// How far along it is, `0.0..=1.0`.
-    value: f32,
-    enabled: bool,
-    /// Names it for assistive technology.
-    label: &'a str,
-    /// How far an arrow key moves it.
-    step: f32,
-}
-
-/// What the user did to a [`Scrub`] this frame, as fractions of its length.
-#[derive(Default)]
-struct Moved {
-    /// Where the pointer is, while it drags the knob.
-    dragging: Option<f32>,
-    /// Where the user let go, clicked, or moved it with the keyboard.
-    committed: Option<f32>,
-}
-
-impl Scrub<'_> {
-    fn show(self, ui: &mut Ui, p: &Palette) -> Moved {
-        let Self {
-            id,
-            rect,
-            value,
-            enabled,
-            label,
-            step,
-        } = self;
-        let id = ui.scope_id().with(id);
-        let sense = if enabled {
-            Sense::click_and_drag()
-        } else {
-            Sense::hover()
-        };
-        let response = ui.interact(rect, id, sense);
-        // Assistive technology reads the value as a percentage.
-        let percent = f64::from(value) * 100.0;
-        response.widget_info(|| WidgetInfo::slider(enabled, percent, label));
-
-        let line = Rect::from_min_max(
-            pos2(rect.left() + KNOB, rect.center().y - TRACK / 2.0),
-            pos2(rect.right() - KNOB, rect.center().y + TRACK / 2.0),
-        );
-        let at = |pos: Pos2| ((pos.x - line.left()) / line.width().max(1.0)).clamp(0.0, 1.0);
-        let mut moved = Moved::default();
-        if enabled {
-            let pointer = response.interact_pointer_pos().map(at);
-            if response.dragged() {
-                moved.dragging = pointer;
-            }
-            if response.drag_stopped() || response.clicked() {
-                moved.committed = pointer;
-            }
-            if response.has_focus() {
-                let key = |key| ui.input(|input| input.key_pressed(key));
-                if key(Key::ArrowRight) || key(Key::ArrowUp) {
-                    moved.committed = Some((value + step).min(1.0));
-                } else if key(Key::ArrowLeft) || key(Key::ArrowDown) {
-                    moved.committed = Some((value - step).max(0.0));
-                }
-            }
-        }
-
-        if ui.is_rect_visible(rect) {
-            let shown = moved.dragging.unwrap_or(value);
-            let filled = if enabled { p.accent } else { p.text_muted };
-            let painter = ui.painter();
-            painter.rect_filled(line, TRACK / 2.0, p.surface_raised);
-            let done = Rect::from_min_max(
-                line.min,
-                pos2(line.left() + line.width() * shown, line.bottom()),
-            );
-            painter.rect_filled(done, TRACK / 2.0, filled);
-            if enabled && (response.hovered() || response.dragged() || response.has_focus()) {
-                let knob = pos2(done.right(), line.center().y);
-                painter.circle_filled(knob, KNOB, p.text);
-                if response.has_focus() {
-                    painter.circle_stroke(knob, KNOB + 1.5, (1.5, p.focus));
-                }
-            }
-        }
-        if enabled {
-            response.on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
-        }
-        moved
-    }
 }

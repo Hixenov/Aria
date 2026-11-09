@@ -405,3 +405,113 @@ fn repaints_only_while_playing() {
     assert!(delays(true).contains(&Duration::from_millis(250)));
     assert!(!delays(false).contains(&Duration::from_millis(250)));
 }
+
+/// Collects the delays of every repaint request made while `step` runs.
+fn repaint_delays<S>(
+    harness: &mut Harness<'_, S>,
+    step: impl FnOnce(&mut Harness<'_, S>),
+) -> Vec<Duration> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    harness.ctx.set_request_repaint_callback(move |info| {
+        if let Ok(mut seen) = sink.lock() {
+            seen.push(info.delay);
+        }
+    });
+    step(harness);
+    seen.lock().map(|seen| seen.clone()).unwrap_or_default()
+}
+
+const SOON: Duration = Duration::from_millis(50);
+
+#[test]
+fn a_seek_is_shown_until_the_clock_catches_up() {
+    let mut harness = bar_harness(view(Some(1), true, 100_000), 10_000);
+    let label = en("player-seek");
+    let to = point_on(&harness, &label, 0.75);
+    click_at(&mut harness, to);
+    let [PlayerAction::Seek(target)] = harness.state().actions[..] else {
+        panic!("expected one seek, got {:?}", harness.state().actions);
+    };
+    assert!((74_000..=76_000).contains(&target));
+
+    // The clock still says 0:10, which is where the track was. The bar keeps the target.
+    harness.run();
+    assert!(
+        harness.query_by_label("0:10").is_none(),
+        "the bar jumped back"
+    );
+    assert!(harness.query_by_label("1:15").is_some());
+
+    // Once the clock answers, it is the clock's position that shows.
+    harness.state_mut().position_ms = 80_000;
+    harness.run();
+    assert!(harness.query_by_label("1:20").is_some());
+}
+
+#[test]
+fn a_seek_while_paused_repaints_until_the_clock_answers() {
+    let mut harness = bar_harness(view(Some(1), false, 100_000), 10_000);
+    let to = point_on(&harness, &en("player-seek"), 0.5);
+    let delays = repaint_delays(&mut harness, |harness| click_at(harness, to));
+    assert!(
+        delays.contains(&SOON),
+        "no quick repaint after the seek: {delays:?}"
+    );
+
+    harness.state_mut().position_ms = 50_000;
+    harness.step();
+    let delays = repaint_delays(&mut harness, |harness| harness.step());
+    assert!(
+        !delays.contains(&SOON),
+        "still repainting after the answer: {delays:?}"
+    );
+}
+
+#[test]
+fn previous_while_paused_repaints_for_a_moment() {
+    let mut harness = app_harness();
+    let ctx = harness.ctx.clone();
+    harness
+        .state_mut()
+        .handle_event(&ctx, Event::Player(view(Some(1), false, 100_000)));
+    harness.run();
+    let idle = repaint_delays(&mut harness, |harness| harness.step());
+    assert!(!idle.contains(&SOON), "an idle bar repaints: {idle:?}");
+
+    let delays = repaint_delays(&mut harness, |harness| {
+        harness
+            .get_by_role_and_label(Role::Button, &en("player-previous"))
+            .click();
+        harness.run();
+    });
+    assert!(
+        delays.contains(&SOON),
+        "no quick repaint after Previous: {delays:?}"
+    );
+}
+
+#[test]
+fn held_arrow_keys_accumulate() {
+    let mut harness = bar_harness(view(Some(1), true, 100_000), 10_000);
+    harness
+        .get_by_role_and_label(Role::Slider, &en("player-seek"))
+        .focus();
+    // A few frames with the focus, as there are in real use, before the keys come.
+    harness.run();
+    harness.step();
+    // The clock does not move between the presses, as when keys repeat faster than the engine
+    // answers.
+    for _ in 0..3 {
+        harness.key_press(egui::Key::ArrowRight);
+        harness.step();
+    }
+    assert_eq!(
+        harness.state().actions,
+        [
+            PlayerAction::Seek(15_000),
+            PlayerAction::Seek(20_000),
+            PlayerAction::Seek(25_000),
+        ]
+    );
+}
