@@ -1,5 +1,6 @@
 //! The Library card: the folders, and adding, rescanning and clearing the artwork cache.
 
+use aria_core::i18n::FluentArgs;
 use aria_library::Folder;
 use eframe::egui::{Button, Label, RichText, TextStyle, Ui};
 
@@ -46,10 +47,13 @@ fn folder_row(ui: &mut Ui, ctx: &mut PageCtx<'_>, folder: &Folder) {
     let p = ctx.palette;
     let path = folder.path.display().to_string();
     row(ui, &p, &path, |ui| {
-        let remove = ui.add(Button::new(tr.tr("settings-remove")));
-        // Every folder has this button: say which one it removes.
-        ui.ctx()
-            .accesskit_node_builder(remove.id, |node| node.set_description(&*path));
+        // Every folder has this button: its accessible name says which one it removes.
+        let mut args = FluentArgs::new();
+        args.set("folder", path.as_str());
+        let name = tr.tr_args("settings-remove-named", &args);
+        let remove = ui
+            .add(Button::new(tr.tr("settings-remove")))
+            .accessible_name(&*name);
         if remove.clicked() {
             open_dialog(ui, ctx.modal_open, Dialog::RemoveFolder(folder.id));
         }

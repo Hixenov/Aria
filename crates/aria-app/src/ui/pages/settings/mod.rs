@@ -417,10 +417,19 @@ fn dialog_text(dialog: Dialog) -> (&'static str, &'static str) {
 fn confirm_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
     let tr = ctx.tr;
     let p = ctx.palette;
-    // Without a kind, the dialog was opened by setting the flag: it is the reset one.
-    let dialog = ui
-        .data(|data| data.get_temp::<Dialog>(Id::unique(DIALOG_KIND_ID)))
-        .unwrap_or(Dialog::Reset);
+    // Without a kind there is nothing to confirm, and guessing could do the wrong thing: close.
+    let Some(dialog) = ui.data(|data| data.get_temp::<Dialog>(Id::unique(DIALOG_KIND_ID))) else {
+        *ctx.modal_open = false;
+        return;
+    };
+    // A folder that has left the library since the dialog opened has nothing to remove.
+    if let Dialog::RemoveFolder(id) = dialog
+        && !ctx.library.snapshot.folders.iter().any(|f| f.id == id)
+    {
+        *ctx.modal_open = false;
+        ui.data_mut(|data| data.remove::<Dialog>(Id::unique(DIALOG_KIND_ID)));
+        return;
+    }
     let (title_key, body_key) = dialog_text(dialog);
     let frame = Frame::new()
         .fill(p.surface)

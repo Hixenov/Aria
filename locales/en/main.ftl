@@ -75,6 +75,7 @@ settings-library = Library
 settings-folders-empty = No folders yet. Add a folder with your music.
 settings-folder-unavailable = Can't be reached
 settings-remove = Remove
+settings-remove-named = Remove { $folder }
 settings-remove-folder-title = Remove this folder?
 settings-remove-folder-body = The folder is taken out of your library. Its files stay on disk.
 settings-clear-artwork = Clear artwork cache

@@ -75,6 +75,7 @@ settings-library = Библиотека
 settings-folders-empty = Папок пока нет. Добавьте папку с вашей музыкой.
 settings-folder-unavailable = Недоступна
 settings-remove = Удалить
+settings-remove-named = Удалить { $folder }
 settings-remove-folder-title = Убрать эту папку?
 settings-remove-folder-body = Папка будет убрана из библиотеки. Её файлы останутся на диске.
 settings-clear-artwork = Очистить кэш обложек

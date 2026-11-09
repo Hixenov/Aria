@@ -888,7 +888,7 @@ fn an_empty_library_still_shows_the_section() {
 #[test]
 fn remove_folder_asks_first() {
     let mut harness = settings_only(english(), vec![], vec![folder(7, "music-a", true)]);
-    click_button(&mut harness, &en("settings-remove"));
+    click_button(&mut harness, "Remove music-a");
     assert!(harness.state().actions.is_empty(), "removed without asking");
     assert!(harness.state().modal_open);
     // The dialog says the files stay on disk.
@@ -900,7 +900,7 @@ fn remove_folder_asks_first() {
     assert!(harness.state().actions.is_empty());
     assert!(!harness.state().modal_open);
     // Confirm removes it.
-    click_button(&mut harness, &en("settings-remove"));
+    click_button(&mut harness, "Remove music-a");
     click_button(&mut harness, &en("settings-confirm"));
     assert_eq!(
         harness.state().actions,
@@ -942,4 +942,77 @@ fn reset_keeps_folders() {
     // Only the settings are reset: nothing asks for a folder to go, and the list stays.
     assert_eq!(harness.state().actions, [PageAction::ResetSettings]);
     assert!(harness.query_by_label("music-a").is_some());
+}
+
+#[test]
+fn each_remove_button_names_its_folder() {
+    let folders = vec![folder(1, "music-a", true), folder(2, "music-b", true)];
+    let harness = settings_only(english(), vec![], folders);
+    for name in ["Remove music-a", "Remove music-b"] {
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Button, name)
+                .is_some(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn removal_follows_the_folder_when_the_list_changes_under_the_dialog() {
+    let folders = vec![folder(1, "music-a", true), folder(2, "music-b", true)];
+    let mut harness = settings_only(english(), vec![], folders);
+    click_button(&mut harness, "Remove music-b");
+    // A new snapshot arrives with the folders the other way round.
+    let swapped = vec![folder(2, "music-b", true), folder(1, "music-a", true)];
+    harness.state_mut().library.snapshot = Arc::new(LibrarySnapshot {
+        folders: swapped,
+        ..LibrarySnapshot::default()
+    });
+    harness.run();
+    click_button(&mut harness, &en("settings-confirm"));
+    assert_eq!(
+        harness.state().actions,
+        [PageAction::RemoveFolder(FolderId(2))]
+    );
+}
+
+#[test]
+fn the_dialog_closes_when_its_folder_is_gone() {
+    let mut harness = settings_only(english(), vec![], vec![folder(1, "music-a", true)]);
+    click_button(&mut harness, "Remove music-a");
+    assert!(harness.state().modal_open);
+    harness.state_mut().library.snapshot = Arc::new(LibrarySnapshot::default());
+    harness.run();
+    assert!(!harness.state().modal_open, "the dialog stayed open");
+    assert!(harness.state().actions.is_empty(), "sent a removal");
+    assert!(harness.query_by_label(&en("settings-confirm")).is_none());
+}
+
+#[test]
+fn a_dialog_of_no_known_kind_closes_instead_of_resetting() {
+    let mut harness = settings_only(english(), vec![], vec![]);
+    harness.state_mut().modal_open = true;
+    harness.run();
+    assert!(!harness.state().modal_open);
+    assert!(harness.query_by_label(&en("settings-confirm")).is_none());
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn the_page_scrolls_to_reset_at_a_normal_height() {
+    let app = AriaApp::new(english(), localizer(Language::En), AppDeps::none(), vec![]);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 780.0))
+        .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Num9);
+    harness.run();
+    let reset = en("settings-reset");
+    harness
+        .get_by_role_and_label(Role::Button, &reset)
+        .scroll_to_me();
+    harness.run();
+    click_button(&mut harness, &reset);
+    let tr = localizer(Language::En);
+    assert!(dialog_open(&harness, &tr), "Reset was not reachable");
 }

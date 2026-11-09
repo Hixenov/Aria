@@ -77,6 +77,7 @@ settings-library = Գրադարան
 settings-folders-empty = Պանակներ դեռ չկան։ Ավելացրեք ձեր երաժշտության պանակը։
 settings-folder-unavailable = Անհասանելի է
 settings-remove = Հեռացնել
+settings-remove-named = Հեռացնել { $folder }
 settings-remove-folder-title = Հեռացնե՞լ այս պանակը
 settings-remove-folder-body = Պանակը կհեռացվի գրադարանից։ Դրա ֆայլերը կմնան սկավառակի վրա։
 settings-clear-artwork = Մաքրել շապիկների քեշը

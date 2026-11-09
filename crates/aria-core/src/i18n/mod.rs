@@ -263,6 +263,7 @@ mod tests {
         "settings-folders-empty",
         "settings-folder-unavailable",
         "settings-remove",
+        "settings-remove-named",
         "settings-remove-folder-title",
         "settings-remove-folder-body",
         "settings-clear-artwork",
