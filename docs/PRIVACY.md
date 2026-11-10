@@ -18,7 +18,7 @@ Everything Aria writes stays on your machine:
    them.
 4. `app.ron`: eframe's persisted state: window position/size and UI layout state (egui memory).
 5. Logs: daily rolling files `aria.YYYY-MM-DD.log` (the date is in UTC); the last 7 files
-   are kept and older ones are deleted.
+   are kept and older ones are deleted. Logs at debug level contain the full paths of music files.
 6. `panic.log`, in the same folder as the logs: one line per crash, with the thread, source
    location and message. It is appended to and never rotated or deleted by Aria.
 7. `library.db`, your music library, in the data folder. It holds the full paths of the music

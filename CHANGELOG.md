@@ -26,7 +26,7 @@ All notable changes to this project are documented here. The format is based on
 
 - Files changed while Aria runs appear after a rescan or the next start.
 - Gapless trimming depends on data in the file; formats without it may keep a small gap.
-- Real audio output is verified on Windows only; Linux and macOS are built and tested in CI only.
+- Real audio output is to be verified on Windows only (by hand, pending); Linux and macOS are built and tested in CI only.
 - Aria cannot edit tags.
 - The audio thread runs at normal priority, so heavy system load can cause glitches.
 - Hand verification by a person (listening to each format, gapless, unplugging headphones) is pending; see the manual check list.
