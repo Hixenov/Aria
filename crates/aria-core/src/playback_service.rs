@@ -784,6 +784,7 @@ impl PlaybackService {
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::Cell,
         path::PathBuf,
         sync::mpsc::{self, Receiver},
         thread,
@@ -808,6 +809,11 @@ mod tests {
     /// Only a failing test waits this long.
     const DEADLINE: Duration = Duration::from_secs(20);
     const CHUNK_FRAMES: usize = 2_048;
+    /// The least time between two pulls: a chunk at four times real speed. A real device takes
+    /// audio as it plays it; a test that takes it any faster can run seconds ahead of the engine's
+    /// clock on a busy machine (CI), and overshoot whatever it was waiting for.
+    const PULL_SPACING: Duration =
+        Duration::from_micros(CHUNK_FRAMES as u64 * 1_000_000 / FORMAT.sample_rate as u64 / 4);
     const SEED: u64 = 7;
 
     fn t(n: i64) -> TrackId {
@@ -914,6 +920,8 @@ mod tests {
         notices: Vec<Notice>,
         views: Vec<PlayerView>,
         requests: Vec<LibraryRequest>,
+        /// When the fake device last took a chunk.
+        last_pull: Cell<Option<Instant>>,
     }
 
     impl Rig {
@@ -932,6 +940,7 @@ mod tests {
                 notices: Vec::new(),
                 views: Vec::new(),
                 requests: Vec::new(),
+                last_pull: Cell::new(None),
             }
         }
 
@@ -1015,6 +1024,10 @@ mod tests {
         }
 
         fn pull(&self) -> Vec<f32> {
+            if let Some(last) = self.last_pull.get() {
+                thread::sleep(PULL_SPACING.saturating_sub(last.elapsed()));
+            }
+            self.last_pull.set(Some(Instant::now()));
             self.output()
                 .map_or_else(Vec::new, |output| output.pull(CHUNK_FRAMES))
         }
