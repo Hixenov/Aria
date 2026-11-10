@@ -291,6 +291,9 @@ struct Service {
     deferred: VecDeque<Change>,
     /// A scan should start once the changes above are applied.
     want_scan: bool,
+    /// The running scan was cancelled to remove a folder, so the folders left are scanned again
+    /// once it is gone.
+    rescan_after_removal: bool,
     /// Shutdown was requested, or the handle is gone.
     stopping: bool,
     progress: Throttle,
@@ -305,6 +308,7 @@ impl Service {
             deferred: VecDeque::new(),
             // The startup scan.
             want_scan: true,
+            rescan_after_removal: false,
             stopping: false,
             progress: Throttle::default(),
         }
@@ -397,8 +401,18 @@ impl Service {
                 Err(error) => self.report_failure(&error),
             },
             Change::RemoveFolder(id) => match library.remove_folder(id) {
-                Ok(()) => self.send_snapshot(library),
-                Err(error) => self.report_failure(&error),
+                Ok(()) => {
+                    if mem::take(&mut self.rescan_after_removal)
+                        && library.folders().is_ok_and(|folders| !folders.is_empty())
+                    {
+                        self.want_scan = true;
+                    }
+                    self.send_snapshot(library);
+                }
+                Err(error) => {
+                    self.rescan_after_removal = false;
+                    self.report_failure(&error);
+                }
             },
             Change::ClearArtwork => {
                 // A failure can leave some of the work done, so the snapshot goes out either way.
@@ -410,15 +424,22 @@ impl Service {
         }
     }
 
-    /// Reads the requests that have arrived, without waiting for more.
-    fn drain(&mut self, library: &mut Library) {
+    /// Reads the requests that have arrived, without waiting for more. During a scan (`scanning`),
+    /// a folder added is stored at once and walked after the scan, and a folder to remove stops
+    /// the scan, so that the removal does not wait for the rest of the walk.
+    fn drain(&mut self, library: &mut Library, scanning: bool) {
         while !self.stopping {
             match self.requests.try_recv() {
-                Ok(request) => {
-                    if let Some(change) = self.serve_now(library, request) {
+                Ok(request) => match self.serve_now(library, request) {
+                    Some(change @ Change::AddFolder(_)) if scanning => self.apply(library, change),
+                    Some(change @ Change::RemoveFolder(_)) if scanning => {
+                        self.cancel.store(true, Ordering::Relaxed);
+                        self.rescan_after_removal = true;
                         self.deferred.push_back(change);
                     }
-                }
+                    Some(change) => self.deferred.push_back(change),
+                    None => {}
+                },
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => self.stop(),
             }
@@ -427,7 +448,7 @@ impl Service {
 
     /// What a running scan does between files.
     fn on_batch(&mut self, library: &mut Library, progress: ScanProgress) {
-        self.drain(library);
+        self.drain(library, true);
         self.report_progress(progress, Instant::now());
     }
 
@@ -448,8 +469,13 @@ impl Service {
             self.on_batch(library, progress);
         });
         self.emit(LibraryEvent::Progress(None));
+        if self.rescan_after_removal {
+            // The flag was raised for the removal, which a Shutdown arriving now still follows:
+            // its request is in the channel before its flag, so the drain below finds it.
+            self.cancel.store(false, Ordering::Relaxed);
+        }
         // A shutdown that ended the scan is read here, so no snapshot is built for it.
-        self.drain(library);
+        self.drain(library, false);
         match result {
             Ok(summary) => {
                 self.report_scan(&summary, &before);
@@ -788,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_changes_wait_for_the_scan() {
+    fn a_folder_added_during_a_scan_shows_at_once_and_is_walked_after_it() {
         let env = Env::new();
         let music = env.folder("music", TREE);
         let more = env.folder("more", 2);
@@ -800,11 +826,60 @@ mod tests {
         handle.send(LibraryRequest::AddFolder(more));
         release.send(()).unwrap();
 
-        // The folder shows as soon as the scan is over, before the scan it starts has finished.
+        // The folder shows while the scan it interrupted is still running.
         log.wait_for(|e| matches!(e, LibraryEvent::Snapshot(s) if s.folders.len() == 2));
-        assert_eq!(log.scan_ends(), 1, "it was added during the scan");
+        assert_eq!(log.scan_ends(), 0, "it was added during the scan");
         log.wait_for(|e| snapshot_with(e, TREE + 2));
         assert_eq!(log.scan_ends(), 2, "an added folder starts a scan");
+        assert!(handle.shutdown(WAIT));
+    }
+
+    #[test]
+    fn a_folder_removed_during_a_scan_goes_without_waiting_for_the_walk() {
+        let env = Env::new();
+        let music = env.folder("music", TREE);
+        env.seed(&music);
+        let (on_event, mut log, release) = pausing(&[is_progress]);
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        log.wait_for(is_progress);
+        let id = env.open().folders().unwrap()[0].id;
+
+        handle.send(LibraryRequest::RemoveFolder(id));
+        release.send(()).unwrap();
+
+        log.wait_for(|e| matches!(e, LibraryEvent::Snapshot(s) if s.folders.is_empty()));
+        assert_eq!(log.scan_ends(), 1, "the scan was cancelled, not finished");
+        assert!(handle.shutdown(WAIT));
+        log.finish();
+        assert_eq!(log.scan_ends(), 1, "no folder is left to scan");
+        assert_eq!(env.open().track_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn removing_a_folder_during_a_scan_rescans_the_others() {
+        let env = Env::new();
+        let music = env.folder("music", TREE);
+        let more = env.folder("more", 2);
+        {
+            let mut library = env.open();
+            library.add_folder(&music).unwrap();
+            library.add_folder(&more).unwrap();
+        }
+        let (on_event, mut log, release) = pausing(&[is_progress]);
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        log.wait_for(is_progress);
+        // The first folder added is the big one.
+        let id = env.open().folders().unwrap()[0].id;
+
+        handle.send(LibraryRequest::RemoveFolder(id));
+        release.send(()).unwrap();
+
+        log.wait_for(|e| snapshot_with(e, 2));
+        assert_eq!(
+            log.scan_ends(),
+            2,
+            "the cancelled scan, then the one after the removal"
+        );
         assert!(handle.shutdown(WAIT));
     }
 
