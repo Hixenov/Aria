@@ -99,6 +99,14 @@ enum Restore {
     Done,
 }
 
+/// A track put in place by the restore at startup, and where it was left.
+#[derive(Clone, Copy)]
+struct Restored {
+    token: u64,
+    track: TrackId,
+    position_ms: u64,
+}
+
 /// The synchronous state machine behind playback. The worker owns it.
 pub struct PlaybackService {
     engine: EngineHandle,
@@ -124,6 +132,11 @@ pub struct PlaybackService {
     /// Failures in a row.
     failures: u32,
     restore: Restore,
+    /// The track `restore_queue` loaded paused, while no user action has loaded anything since.
+    restored: Option<Restored>,
+    /// The restored track the engine could not open: it stays current, with its saved position,
+    /// and Play tries it again.
+    unplayable_restore: Option<Restored>,
     /// Play was pressed with nothing to play while the restore was still on its way.
     play_after_restore: bool,
     /// The lists of the queue (context, user queue, original order, seed, index) changed since
@@ -164,6 +177,8 @@ impl PlaybackService {
             played_from: 0,
             reported_ms: 0,
             failures: 0,
+            restored: None,
+            unplayable_restore: None,
             restore: Restore::AwaitingSnapshot,
             play_after_restore: false,
             lists_dirty: false,
@@ -425,7 +440,10 @@ impl PlaybackService {
         match &self.current {
             Some(current) if current.token == reading.token => reading.position_ms,
             Some(_) => self.played_from,
-            None => 0,
+            None => self
+                .unplayable_restore
+                .filter(|restored| Some(restored.track) == self.queue.current())
+                .map_or(0, |restored| restored.position_ms),
         }
     }
 
@@ -491,6 +509,8 @@ impl PlaybackService {
     /// Replaces everything in the engine with `track`, and says what follows it.
     fn load(&mut self, track: TrackId, start_ms: u64, play: bool) {
         self.forget_tracks();
+        self.restored = None;
+        self.unplayable_restore = None;
         let Some((given, request)) = self.give(track) else {
             // Only a current track whose row has gone gets here.
             self.playing = false;
@@ -622,6 +642,17 @@ impl PlaybackService {
             tracing::debug!(token, "ignoring the failure of a track no longer known");
             return;
         };
+        if let Some(restored) = self.restored.filter(|r| r.token == token && !self.playing) {
+            // Nobody asked for this track, so the saved queue and position stay as they were.
+            // Play tries it again, for the drive may be back by then.
+            self.forget_tracks();
+            self.restored = None;
+            self.unplayable_restore = Some(restored);
+            let notice = Notice::new(NoticeLevel::Warning, "playback-track-failed")
+                .with_arg("title", failed.title);
+            self.notify(notice);
+            return self.publish();
+        }
         self.lists_dirty = true;
         // An announced track is still ahead in the queue, unless the queue changed meanwhile.
         let replacement = if was_current {
@@ -659,7 +690,13 @@ impl PlaybackService {
             // The engine would end a track placed on its last frame at once.
             let stored = self.row(track).map_or(0, |row| row.duration_ms);
             let at_end = stored > 0 && position_ms >= stored;
-            self.load(track, if at_end { 0 } else { position_ms }, false);
+            let position_ms = if at_end { 0 } else { position_ms };
+            self.load(track, position_ms, false);
+            self.restored = self.current.as_ref().map(|given| Restored {
+                token: given.token,
+                track,
+                position_ms,
+            });
         }
         self.publish();
     }
@@ -700,6 +737,12 @@ impl PlaybackService {
             } else {
                 EngineCommand::Pause
             });
+            return self.publish();
+        }
+        if let Some(restored) = self.unplayable_restore.filter(|restored| {
+            Some(restored.track) == self.queue.current() && self.exists(restored.track)
+        }) {
+            self.load(restored.track, restored.position_ms, true);
             return self.publish();
         }
         match self.queue.advance_manual() {
@@ -1739,16 +1782,55 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_while_paused_stays_paused() {
+    fn a_failed_restore_leaves_the_queue_and_the_saved_position_alone() {
         let music = Music::new().missing().tone(300);
         let mut rig = Rig::idle();
         rig.snapshot(music.snapshot());
-        rig.restore(Some(record(&[1, 2])));
+        let mut saved = record(&[1, 2]);
+        saved.position_ms = 567;
+        rig.restore(Some(saved));
 
-        rig.wait_until("the next track", shows(2));
+        rig.wait_until("the failure", |rig| {
+            rig.service.unplayable_restore.is_some()
+        });
+        rig.service.tick_at(Instant::now() + SAVE_INTERVAL * 2);
+        rig.service.tick_at(Instant::now() + SAVE_INTERVAL * 4);
+        rig.pump();
 
+        assert_eq!(rig.view().current, Some(t(1)));
+        assert_eq!(rig.upcoming(), [t(2)]);
         assert!(!rig.view().playing);
         assert!(rig.factory.outputs().is_empty());
+        assert_eq!(rig.notices("playback-track-failed").len(), 1);
+        assert!(rig.notices("playback-stopped-after-failures").is_empty());
+        assert_eq!(rig.service.position(), 567);
+        assert!(
+            !rig.requests.iter().any(|r| matches!(
+                r,
+                LibraryRequest::SaveQueue(_) | LibraryRequest::SavePosition { .. }
+            )),
+            "{:?}",
+            rig.requests
+        );
+    }
+
+    #[test]
+    fn play_after_a_failed_restore_tries_the_same_track_again() {
+        let music = Music::new().missing().tone(3_000);
+        let mut rig = Rig::idle();
+        rig.snapshot(music.snapshot());
+        rig.restore(Some(record(&[1, 2])));
+        rig.wait_until("the failure", |rig| {
+            rig.service.unplayable_restore.is_some()
+        });
+
+        rig.send(Command::TogglePlay);
+
+        assert_eq!(rig.view().current, Some(t(1)));
+        assert!(rig.view().playing);
+        rig.wait_until("the second try to fail", shows(2));
+        assert_eq!(rig.notices("playback-track-failed").len(), 2);
+        assert!(rig.view().playing, "after a user action it moves on");
     }
 
     #[test]
