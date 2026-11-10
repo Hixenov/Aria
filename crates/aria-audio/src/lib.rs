@@ -19,7 +19,7 @@ pub use clock::{ClockReading, PlaybackClock};
 pub use cpal_output::CpalFactory;
 pub use decode::{Clip, StreamInfo, TrackDecoder, decode_clip};
 pub use device::{DeviceId, DeviceInfo, DeviceKind, list_devices};
-pub use engine::{Engine, EngineCommand, EngineEvent, EngineHandle, TrackRequest};
+pub use engine::{Engine, EngineCommand, EngineEvent, EngineHandle, IDLE_GRACE, TrackRequest};
 pub use error::AudioError;
 pub use mixer::{FADE_MS, InputHandle, MAX_INPUTS, Mixer, MixerControl};
 pub use output::{AudioOutput, DeviceLister, OutputFactory, OutputFormat};

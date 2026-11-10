@@ -23,6 +23,13 @@ use crate::resample::{Resampler, convert_channels};
 
 /// How often the thread looks at the output while a track is active.
 const TICK: Duration = Duration::from_millis(10);
+/// How long the output may stay open while nothing is playing. An open stream keeps the device
+/// awake, and may keep the machine from sleeping, so it is closed after this and opened again by
+/// the next Play.
+pub const IDLE_GRACE: Duration = Duration::from_secs(15);
+/// After going idle, the thread keeps its regular look at the output this long, for the last audio
+/// a callback was still playing when the pause came to show on the clock.
+const IDLE_SETTLE: Duration = Duration::from_millis(100);
 /// Rebuilding after an output failure stops at this many within [`REBUILD_WINDOW`]. Some errors
 /// repeat for as long as a device is in a bad way, and each one fails the new output too.
 const MAX_REBUILDS: usize = 3;
@@ -92,6 +99,16 @@ impl Engine {
         factory: Box<dyn OutputFactory>,
         on_event: Box<dyn Fn(EngineEvent) + Send>,
     ) -> io::Result<EngineHandle> {
+        Self::start_with_idle_grace(factory, on_event, IDLE_GRACE)
+    }
+
+    /// Like [`start`](Self::start), but closes an idle output after `idle_grace` instead of
+    /// [`IDLE_GRACE`]. For tests, which would not wait that long.
+    pub fn start_with_idle_grace(
+        factory: Box<dyn OutputFactory>,
+        on_event: Box<dyn Fn(EngineEvent) + Send>,
+        idle_grace: Duration,
+    ) -> io::Result<EngineHandle> {
         let (commands, received) = mpsc::channel();
         let (done_tx, done) = mpsc::sync_channel(1);
         let clock = Arc::new(PlaybackClock::default());
@@ -103,7 +120,7 @@ impl Engine {
                     done: done_tx,
                     clock: Arc::clone(&worker_clock),
                 };
-                Worker::new(factory, on_event, worker_clock).run(&received);
+                Worker::new(factory, on_event, worker_clock, idle_grace).run(&received);
             })?;
         Ok(EngineHandle {
             commands,
@@ -382,6 +399,12 @@ struct Worker {
     /// When recent rebuilds after an output failure happened.
     rebuilds: VecDeque<Instant>,
     reading: ClockReading,
+    /// How long an output may stay open without sound.
+    idle_grace: Duration,
+    /// Since when the output has been open without sound, if it has been.
+    idle_since: Option<Instant>,
+    /// The handle is gone, so the thread ends.
+    shut_down: bool,
 }
 
 impl Worker {
@@ -389,6 +412,7 @@ impl Worker {
         factory: Box<dyn OutputFactory>,
         on_event: Box<dyn Fn(EngineEvent) + Send>,
         clock: Arc<PlaybackClock>,
+        idle_grace: Duration,
     ) -> Self {
         Self {
             factory,
@@ -408,30 +432,75 @@ impl Worker {
             mixed: Vec::new(),
             rebuilds: VecDeque::new(),
             reading: ClockReading::default(),
+            idle_grace,
+            idle_since: None,
+            shut_down: false,
+        }
+    }
+
+    /// How long to wait for a command: the regular look while sound is wanted or has just stopped,
+    /// then until the idle output is due to close, and for as long as it takes without an output.
+    fn wait_for_command(&mut self, commands: &Receiver<EngineCommand>) -> Option<EngineCommand> {
+        let idle = self.sink.is_some() && !(self.playing && self.has_track());
+        if !idle {
+            self.idle_since = None;
+        }
+        let timeout = match (&self.sink, idle) {
+            (None, _) => None,
+            (Some(_), false) => Some(TICK),
+            (Some(_), true) => {
+                let idle_for = self.idle_since.get_or_insert_with(Instant::now).elapsed();
+                if idle_for < IDLE_SETTLE.min(self.idle_grace) {
+                    Some(TICK)
+                } else {
+                    Some(self.idle_grace.saturating_sub(idle_for))
+                }
+            }
+        };
+        match timeout {
+            Some(timeout) => match commands.recv_timeout(timeout) {
+                Ok(command) => Some(command),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.shut_down = true;
+                    None
+                }
+            },
+            None => match commands.recv() {
+                Ok(command) => Some(command),
+                Err(_) => {
+                    self.shut_down = true;
+                    None
+                }
+            },
+        }
+    }
+
+    /// Closes an output that has had no sound for the grace period. A track left loaded is kept at
+    /// the position it was heard at, and the next Play opens an output there.
+    fn close_idle_output(&mut self) {
+        let due = self
+            .idle_since
+            .is_some_and(|since| since.elapsed() >= self.idle_grace);
+        if due && self.sink.is_some() {
+            tracing::debug!("closing the idle output");
+            self.replace_output(false);
+            self.idle_since = None;
         }
     }
 
     fn run(mut self, commands: &Receiver<EngineCommand>) {
         loop {
-            // With an output and a track there is always something to watch. Otherwise nothing
-            // can change until a command arrives.
-            let first = if self.sink.is_some() && self.has_track() {
-                match commands.recv_timeout(TICK) {
-                    Ok(command) => Some(command),
-                    Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => return,
-                }
-            } else {
-                match commands.recv() {
-                    Ok(command) => Some(command),
-                    Err(_) => return,
-                }
-            };
+            let first = self.wait_for_command(commands);
+            if self.shut_down {
+                return;
+            }
             let batch = first.into_iter().chain(commands.try_iter()).collect();
             for command in coalesce(batch) {
                 self.handle(command);
             }
             self.check_output();
+            self.close_idle_output();
             self.fill();
             self.settle();
             // In this order, so that whoever hears of an event finds the clock agreeing with it.
@@ -1012,7 +1081,7 @@ mod tests {
             channels: 2,
         });
         let clock = Arc::new(PlaybackClock::default());
-        let mut worker = Worker::new(Box::new(factory), Box::new(|_| {}), clock);
+        let mut worker = Worker::new(Box::new(factory), Box::new(|_| {}), clock, IDLE_GRACE);
         // A join worked out from frames read, whose audio then never came out of the resampler.
         let mut first = Segment::unplayable(request(1), 0);
         first.end_index = Some(1_000);

@@ -72,6 +72,7 @@ impl OutputFactory for FakeFactory {
             format: self.format,
             device: device.cloned(),
             failed: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
         });
         state.outputs.push(FakeControl {
             shared: Arc::clone(&shared),
@@ -85,12 +86,19 @@ struct FakeShared {
     format: OutputFormat,
     device: Option<DeviceId>,
     failed: AtomicBool,
+    closed: AtomicBool,
 }
 
 /// An output driven by hand through its [`FakeControl`].
 pub struct FakeOutput {
     shared: Arc<FakeShared>,
     control: MixerControl,
+}
+
+impl Drop for FakeOutput {
+    fn drop(&mut self) {
+        self.shared.closed.store(true, Ordering::Release);
+    }
 }
 
 impl AudioOutput for FakeOutput {
@@ -128,6 +136,11 @@ impl FakeControl {
     /// Mark the output failed, as a lost device would.
     pub fn fail(&self) {
         self.shared.failed.store(true, Ordering::Release);
+    }
+
+    /// Whether the output has been dropped, as a closed stream would be.
+    pub fn is_closed(&self) -> bool {
+        self.shared.closed.load(Ordering::Acquire)
     }
 
     /// The device the output was opened on. `None` is the system default.
