@@ -127,6 +127,13 @@ library-newer = Գրադարանը պահպանվել է Aria-ի ավելի նո
 library-unavailable = Չհաջողվեց բացել գրադարանը, ուստի այն առայժմ անջատված է։ Aria-ի մնացած գործառույթները շարունակում են աշխատել։
 library-action-failed = Գրադարանում սխալ տեղի ունեցավ, և գործողությունը չավարտվեց։ Ձեր երաժշտական ֆայլերը չեն փոխվել։
 playlist-name-invalid = Երգացանկի անունը պետք է լինի 1-ից 100 նիշ։
+track-favorite = Ավելացնել ընտրանի
+track-unfavorite = Հեռացնել ընտրանուց
+track-add-to-playlist = Ավելացնել երգացանկին
+playlist-new = Նոր երգացանկ…
+playlist-name-label = Անուն
+playlist-create = Ստեղծել
+playlist-rename = Վերանվանել
 
 ## Playback notices (toasts)
 

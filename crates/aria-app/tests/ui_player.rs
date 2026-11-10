@@ -120,6 +120,7 @@ fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
                     position_ms: bar.position_ms,
                     settings: &bar.settings,
                     queue_open: false,
+                    collections: &Default::default(),
                     artwork: None,
                 };
                 let actions = player_bar::show(ui, &mut shown);

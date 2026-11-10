@@ -125,6 +125,13 @@ library-newer = The library was saved by a newer version of Aria, so it's turned
 library-unavailable = The library couldn't be opened, so it's turned off for now. The rest of Aria keeps working.
 library-action-failed = Something went wrong in the library, and that action didn't finish. Your music files weren't changed.
 playlist-name-invalid = A playlist name needs 1 to 100 characters.
+track-favorite = Add to favorites
+track-unfavorite = Remove from favorites
+track-add-to-playlist = Add to playlist
+playlist-new = New playlist…
+playlist-name-label = Name
+playlist-create = Create
+playlist-rename = Rename
 
 ## Playback notices (toasts)
 

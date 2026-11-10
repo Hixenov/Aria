@@ -15,7 +15,7 @@ use aria_core::{
     i18n::{FluentArgs, Localizer},
     settings::Settings,
 };
-use aria_library::{FolderId, TrackId};
+use aria_library::{Collections, FolderId, PlaylistId, TrackId};
 use eframe::egui::Ui;
 
 pub use self::local_music::{LibraryView, Scope, SortKey, Tab, TrackView};
@@ -46,6 +46,9 @@ pub struct PageCtx<'a> {
     pub out: &'a mut Vec<PageAction>,
     /// The library as the backend last reported it.
     pub library: &'a LibraryView,
+    /// Favorites, playlists and recent plays as the backend last reported them. They can name
+    /// tracks `library` does not know yet, or no longer.
+    pub collections: &'a Collections,
     /// The output devices as the backend last listed them. Empty until it answers.
     pub devices: &'a [DeviceInfo],
     /// Cover textures, when the thumbnails' folder is known. Without it, covers show as
@@ -83,6 +86,54 @@ pub enum PageAction {
     Rescan,
     /// Delete the saved artwork thumbnails.
     ClearArtwork,
+    /// Mark or unmark a track as a favorite.
+    SetFavorite {
+        /// The track.
+        track: TrackId,
+        /// Whether it is now a favorite.
+        favorite: bool,
+    },
+    /// Append a track to a playlist.
+    AddToPlaylist {
+        /// The playlist.
+        playlist: PlaylistId,
+        /// The track.
+        track: TrackId,
+    },
+    /// Remove the entry at this stored position of a playlist.
+    RemoveFromPlaylist {
+        /// The playlist.
+        playlist: PlaylistId,
+        /// The entry's stored position.
+        position: u32,
+    },
+    /// Move an entry of a playlist from one stored position to another.
+    MoveInPlaylist {
+        /// The playlist.
+        playlist: PlaylistId,
+        /// The entry's stored position now.
+        from: u32,
+        /// Its stored position afterwards.
+        to: u32,
+    },
+    /// Delete a playlist. Its tracks stay in the library.
+    DeletePlaylist(PlaylistId),
+    /// Forget every recorded play.
+    ClearHistory,
+    /// Open the name dialog. Confirming it sends CreatePlaylist or RenamePlaylist.
+    AskPlaylistName(NameFor),
+}
+
+/// What the playlist name dialog is asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameFor {
+    /// A new playlist, starting with `first` if given.
+    New {
+        /// The track the playlist starts with.
+        first: Option<TrackId>,
+    },
+    /// A new name for this playlist.
+    Rename(PlaylistId),
 }
 
 /// Draws the page for `route`.

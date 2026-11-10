@@ -126,6 +126,13 @@ library-newer = Библиотека сохранена более новой в
 library-unavailable = Не удалось открыть библиотеку, поэтому она пока отключена. Остальные функции Aria продолжают работать.
 library-action-failed = В библиотеке произошла ошибка, и действие не завершено. Ваши музыкальные файлы не изменены.
 playlist-name-invalid = Название плейлиста должно быть от 1 до 100 символов.
+track-favorite = Добавить в избранное
+track-unfavorite = Убрать из избранного
+track-add-to-playlist = Добавить в плейлист
+playlist-new = Новый плейлист…
+playlist-name-label = Название
+playlist-create = Создать
+playlist-rename = Переименовать
 
 ## Playback notices (toasts)
 

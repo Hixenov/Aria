@@ -2,13 +2,16 @@
 
 mod empty_state;
 mod icon_button;
+mod name_dialog;
 mod nav_item;
 mod scrub;
 mod section_header;
 mod toast;
+pub mod track_menu;
 
 pub use empty_state::{empty_state, empty_state_with};
 pub use icon_button::IconButton;
+pub use name_dialog::{NameAnswer, NameDialog};
 pub use nav_item::{NAV_ROW_HEIGHT, nav_item};
 pub use scrub::{Moved, Scrub};
 pub use section_header::section_header;

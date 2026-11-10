@@ -27,6 +27,7 @@ pub struct IconButton<'a> {
     size: f32,
     icon_size: f32,
     selected: Option<bool>,
+    dot: bool,
     prominent: bool,
 }
 
@@ -40,6 +41,7 @@ impl<'a> IconButton<'a> {
             size: SIZE,
             icon_size: ICON_SIZE,
             selected: None,
+            dot: true,
             prominent: false,
         }
     }
@@ -54,6 +56,12 @@ impl<'a> IconButton<'a> {
     /// Makes it a toggle; a selected toggle has an accent icon and a dot beneath it.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = Some(selected);
+        self
+    }
+
+    /// Leaves out the dot under a selected toggle, where the accent icon says enough.
+    pub fn without_dot(mut self) -> Self {
+        self.dot = false;
         self
     }
 
@@ -105,7 +113,7 @@ impl Widget for IconButton<'_> {
                 icon_font(self.icon_size),
                 icon_color,
             );
-            if selected {
+            if selected && self.dot {
                 let dot = pos2(center.x, rect.bottom() - SELECTED_DOT);
                 painter.circle_filled(dot, SELECTED_DOT, p.accent);
             }
