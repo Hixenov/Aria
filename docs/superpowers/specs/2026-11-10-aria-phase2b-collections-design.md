@@ -214,7 +214,8 @@ One new `Settings` field with a serde default: `history_enabled` (default `true`
   keeps the last `Collections` it had.
 - A database error while recording a play is logged and otherwise ignored. Playback goes on.
 - A library that failed to open (the existing "library disabled" state) leaves the three pages
-  in their empty states, and the new controls disabled.
+  in their empty states. A collection command sent in that state is answered with the existing
+  "library unavailable" notice, so a click is never silently lost.
 - Paths in logs go through the existing redaction.
 
 ## 7. Privacy
