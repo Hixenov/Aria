@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.2.0] - unreleased (pre-release: Phase 2a, local player)
+## [0.2.0] - 2026-11-10 (pre-release: Phase 2a, local player)
 
 ### Added
 
