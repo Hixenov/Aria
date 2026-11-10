@@ -43,7 +43,8 @@ pub const SAVE_INTERVAL: Duration = Duration::from_secs(5);
 pub const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 /// How long a track must play to end a run of failures.
 pub const FAILURE_RESET_MS: u64 = 1_000;
-/// How long a track must play for a play to be recorded. A shorter track counts when it ends.
+/// How long a track must play for a play to be recorded. A track shorter than this counts when it
+/// ends; a longer one that ends counts only if it played this long, so a seek to its end does not.
 pub const PLAY_COUNTS_AFTER_MS: u64 = 30_000;
 /// How many upcoming tracks a [`PlayerView`] holds.
 pub const UPCOMING_LIMIT: usize = 200;
@@ -282,8 +283,9 @@ impl PlaybackService {
                     if self.duration_ms().saturating_sub(self.played_from) >= FAILURE_RESET_MS {
                         self.failures = 0;
                     }
-                    // A track shorter than the threshold counts once it has played in full.
-                    self.record_play();
+                    if self.ended_as_a_play() {
+                        self.record_play();
+                    }
                     // While paused the engine would hold the next track without starting it.
                     if !self.playing {
                         self.move_on();
@@ -488,6 +490,16 @@ impl PlaybackService {
             _ => 0,
         };
         self.heard_ms + since_seek
+    }
+
+    /// Whether the current track, which has just ended, counts as played: it is shorter than the
+    /// threshold, or it played that long, its last stretch before any tick included. This goes by
+    /// the duration rather than the clock, which may already name the next track.
+    fn ended_as_a_play(&self) -> bool {
+        let duration_ms = self.duration_ms();
+        duration_ms < self.play_counts_after_ms
+            || self.heard_ms + duration_ms.saturating_sub(self.played_from)
+                >= self.play_counts_after_ms
     }
 
     /// Records a play of the current track, once, if history is on.
@@ -2390,6 +2402,23 @@ mod tests {
         });
 
         assert_eq!(plays(&rig), [t(1)]);
+    }
+
+    #[test]
+    fn a_long_track_seeked_to_its_end_does_not_count() {
+        let music = Music::new().tone(3_000).tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1, 2], 0);
+        rig.run_until("some play", |rig| rig.position() >= 167);
+
+        rig.send(Command::Seek(2_900));
+        rig.run_ticking_until("the track after it", |rig| {
+            rig.service.queue.current() == Some(t(2))
+        });
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+
+        rig.run_ticking_until("a play", |rig| !plays(rig).is_empty());
+        assert_eq!(plays(&rig), [t(2)], "the next track counts as usual");
     }
 
     #[test]
