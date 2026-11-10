@@ -17,13 +17,22 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 aria-core = { workspace = true }
+aria-library = { workspace = true }
+egui_extras = { workspace = true }
 eframe = { workspace = true }
+image = { workspace = true }
 open = { workspace = true }
+pollster = { workspace = true }
+# The folder picker and the fatal-startup message box. No Linux backend is compiled in unless
+# one is chosen below.
+rfd = { workspace = true }
 tracing = { workspace = true }
 
-# The fatal-startup message box; elsewhere the error goes to stderr and the log only.
-[target.'cfg(windows)'.dependencies]
-rfd = { workspace = true }
+# On Linux and the BSDs, rfd talks to the XDG desktop portal. That is pure Rust and needs no
+# system library, unlike its `gtk3` backend, which needs the GTK 3 development files. Its
+# `wayland` feature, which only sets the dialog's parent window, is left off for the same reason.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+rfd = { workspace = true, features = ["xdg-portal"] }
 
 [lints]
 workspace = true

@@ -1,6 +1,11 @@
 //! Events sent from the backend to the UI thread.
 
-use crate::{notice::Notice, settings::Settings};
+use std::sync::Arc;
+
+use aria_audio::DeviceInfo;
+use aria_library::{LibrarySnapshot, ScanProgress};
+
+use crate::{notice::Notice, playback_service::PlayerView, settings::Settings};
 
 /// Something the backend reports to the UI thread.
 #[derive(Debug, Clone, PartialEq)]
@@ -12,4 +17,15 @@ pub enum Event {
     SettingsReplaced(Settings),
     /// A notice to show the user.
     Notice(Notice),
+    /// The library changed; this is how it now is.
+    LibraryUpdated(Arc<LibrarySnapshot>),
+    /// A scan is running, or `None` when it has ended. Arrives at most 4 times
+    /// a second.
+    ScanProgress(Option<ScanProgress>),
+    /// The player changed; this is how it now is.
+    Player(PlayerView),
+    /// The output devices, as asked for with
+    /// [`Command::ListDevices`](crate::command::Command::ListDevices). Empty if they could not be
+    /// listed.
+    OutputDevices(Vec<DeviceInfo>),
 }

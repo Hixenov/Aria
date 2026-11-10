@@ -11,12 +11,17 @@ mod search;
 mod settings;
 
 use aria_core::{
+    DeviceInfo,
     i18n::{FluentArgs, Localizer},
     settings::Settings,
 };
+use aria_library::{FolderId, TrackId};
 use eframe::egui::Ui;
 
+pub use self::local_music::{LibraryView, Scope, SortKey, Tab, TrackView};
+
 use crate::{
+    artwork::ArtworkTextures,
     nav::Route,
     ui::{
         theme::Palette,
@@ -39,6 +44,13 @@ pub struct PageCtx<'a> {
     pub modal_open: &'a mut bool,
     /// Requests for the app, handled after the page is drawn.
     pub out: &'a mut Vec<PageAction>,
+    /// The library as the backend last reported it.
+    pub library: &'a LibraryView,
+    /// The output devices as the backend last listed them. Empty until it answers.
+    pub devices: &'a [DeviceInfo],
+    /// Cover textures, when the thumbnails' folder is known. Without it, covers show as
+    /// placeholders.
+    pub artwork: Option<&'a mut ArtworkTextures>,
 }
 
 /// A request from a page to the app.
@@ -52,6 +64,25 @@ pub enum PageAction {
     OpenConfigDir,
     /// Open the log folder in the file manager.
     OpenLogDir,
+    /// Make `ids`, in this order, the list being played, and start the one at `start`.
+    PlayContext {
+        /// The tracks, as the page shows them.
+        ids: Vec<TrackId>,
+        /// The index in `ids` of the track to start.
+        start: usize,
+    },
+    /// Play a track right after the current one.
+    PlayNext(TrackId),
+    /// Put a track at the end of the queue.
+    AddToQueue(TrackId),
+    /// Ask the user for a folder to add to the library.
+    PickFolder,
+    /// Take a folder out of the library. Its files are left alone.
+    RemoveFolder(FolderId),
+    /// Scan the library's folders again.
+    Rescan,
+    /// Delete the saved artwork thumbnails.
+    ClearArtwork,
 }
 
 /// Draws the page for `route`.

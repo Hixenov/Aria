@@ -50,11 +50,13 @@ fn copy_file(from: &Path, to: &Path) -> io::Result<u64> {
 const RECOVERED: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-settings-recovered",
+    args: Vec::new(),
 };
 /// Settings cannot be saved this session.
 const READ_ONLY: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-settings-readonly",
+    args: Vec::new(),
 };
 
 /// Loads and saves settings at a fixed path.
@@ -214,14 +216,17 @@ mod tests {
     use super::*;
     use crate::{
         notice::{Notice, NoticeLevel},
+        player::RepeatMode,
         settings::{Language, Rgb, Theme},
     };
+    use aria_audio::DeviceId;
     use std::fs;
 
     fn recovered() -> Notice {
         Notice {
             level: NoticeLevel::Warning,
             key: "notice-settings-recovered",
+            args: Vec::new(),
         }
     }
 
@@ -229,6 +234,7 @@ mod tests {
         Notice {
             level: NoticeLevel::Warning,
             key: "notice-settings-readonly",
+            args: Vec::new(),
         }
     }
 
@@ -447,6 +453,101 @@ mod tests {
         let r = SettingsStore::new(path).load();
         assert_eq!(r.settings.sidebar_width, 320.0);
         assert_eq!(r.notice, None);
+    }
+
+    /// Settings worth keeping, in the text of a file and as loaded.
+    const KEPT: &str = "theme = \"dark\"\nlanguage = \"ru\"\nsidebar_width = 240.0\n";
+
+    fn kept() -> Settings {
+        Settings {
+            theme: Theme::Dark,
+            language: Some(Language::Ru),
+            sidebar_width: 240.0,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn a_wrong_typed_new_setting_costs_only_itself() {
+        let wrong = [
+            "volume = \"loud\"",
+            "volume = true",
+            "volume = [1, 2]",
+            "muted = 1",
+            "muted = \"yes\"",
+            "shuffle = 1",
+            "shuffle = { on = true }",
+            "repeat = \"sometimes\"",
+            "repeat = 3",
+            "output_device = 5",
+            "output_device = { id = 1 }",
+            "gapless = \"yes\"",
+            "gapless = 2026-11-07",
+        ];
+        for line in wrong {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("settings.toml");
+            let text = format!("{KEPT}{line}\n");
+            fs::write(&path, &text).unwrap();
+            let r = SettingsStore::new(path.clone()).load();
+            assert_eq!(r.settings, kept(), "{line}");
+            assert_eq!(r.notice, None, "{line}");
+            assert!(r.writable, "{line}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), text, "{line}");
+            assert!(backups(tmp.path()).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_wrong_typed_setting_leaves_its_neighbours() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let text = "volume = \"loud\"\nmuted = true\nshuffle = true\nrepeat = \"all\"\n\
+                    output_device = \"name:Speakers\"\ngapless = \"maybe\"\n";
+        fs::write(&path, text).unwrap();
+        let r = SettingsStore::new(path).load();
+        assert_eq!(r.notice, None);
+        assert_eq!(r.settings.volume, 1.0, "its default, not zero");
+        assert!(r.settings.gapless, "its default, not false");
+        assert!(r.settings.muted && r.settings.shuffle);
+        assert_eq!(r.settings.repeat, RepeatMode::All);
+        assert_eq!(
+            r.settings.output_device,
+            Some(DeviceId("name:Speakers".into()))
+        );
+    }
+
+    #[test]
+    fn a_whole_number_is_still_a_volume() {
+        for (line, volume) in [
+            ("volume = 0", 0.0),
+            ("volume = 1", 1.0),
+            ("volume = 7", 1.0),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("settings.toml");
+            fs::write(&path, line).unwrap();
+            let r = SettingsStore::new(path).load();
+            assert_eq!(r.settings.volume, volume, "{line}");
+            assert_eq!(r.notice, None, "{line}");
+        }
+    }
+
+    #[test]
+    fn saved_new_settings_load_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(tmp.path().join("settings.toml"));
+        let s = Settings {
+            volume: 0.25,
+            muted: true,
+            shuffle: true,
+            repeat: RepeatMode::One,
+            output_device: Some(DeviceId("name:Speakers".into())),
+            gapless: false,
+            ..Settings::default()
+        };
+        store.save(&s).unwrap();
+        assert_eq!(store.load().settings, s);
     }
 
     #[test]

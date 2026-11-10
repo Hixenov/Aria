@@ -1,0 +1,565 @@
+# Aria Phase 2a (Local Player) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Turn the Phase 1 shell into a working offline music player: folders scan into a SQLite library, and tracks play through Aria's own audio engine with a working player bar and queue.
+
+**Architecture:** Two new GUI-free crates. `aria-audio` holds devices, decoding, resampling, mixing outputs and the player engine; `aria-library` holds SQLite, scanning, tags and artwork. `aria-core` gains a pure `player` module and wires both into the backend. `aria-app` draws the Local Music page, player bar, queue panel and settings sections.
+
+**Tech Stack:** Rust 1.99.1, egui/eframe 0.37, Symphonia 0.6, symphonia-adapter-libopus 0.3, CPAL 0.18, rubato 5, rtrb 0.4, rusqlite 0.41 (bundled), lofty 0.25, image 0.25, sha2, egui_extras 0.37, rfd 0.17, pollster.
+
+**Spec:** `docs/superpowers/specs/2026-11-06-aria-phase2a-local-player-design.md`
+
+## Global Constraints
+
+- No `unsafe` in Aria's crates (`unsafe_code = "forbid"`); no `unwrap`/`expect` outside tests; no suppressed warnings; no `#[allow]` to hide problems.
+- Every new crate sets `[lints] workspace = true` and inherits `[workspace.package]` fields. Dependencies go in root `[workspace.dependencies]`.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` pass at the end of every task.
+- The real-time callback takes no locks, allocates nothing, frees nothing and touches no files.
+- The UI thread never blocks, and never does disk, database or decoding work.
+- Aria never writes to or deletes the user's audio files.
+- Every user-visible string goes through Fluent in `locales/{en,ru,hy}/main.ftl`; all three are filled in, with real Russian and Armenian text.
+- File paths are logged at debug level only. Notices name a track by its title.
+- `docs/ROADMAP.md` is not edited on this branch.
+- Git needs this prefix on this exFAT drive: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=E:/claude/aria`.
+- Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Prerequisites on this PC before Task 1: CMake and ffmpeg on `PATH`.
+
+## Review Focus
+
+1. **A queued or next track vanishes** (file deleted or moved) after it was handed to the engine: it is skipped with a notice, and playback neither hangs nor crashes. Test in Task 4.
+2. **The library changes under playback** (rescan, a removed folder): the playing track continues, `TrackId`s of surviving files do not change, and queue entries for deleted tracks disappear. Tests in Tasks 7 and 10.
+3. **Tracks shorter than the ring buffer**: several tracks sit in the buffer at once, and started and ended events still arrive in order with correct positions. Test in Task 4.
+4. **Impatient input**: repeated Next, seeking while paused, seeking past the end. The final state matches the last request. Test in Task 4.
+5. **Files that lie about being audio**: a 0-byte `.mp3` or a text file named `.flac` is skipped by the scan, and fails cleanly if played. Tests in Tasks 2 and 7.
+
+---
+
+### Task 1: Crates, dependencies, fixtures and CI
+
+**Files:**
+- Create: `crates/aria-audio/{Cargo.toml,src/lib.rs}`, `crates/aria-library/{Cargo.toml,src/lib.rs}`
+- Create: `scripts/make-fixtures.sh`, `crates/aria-audio/tests/fixtures/*`, `crates/aria-audio/tests/fixtures/README.md`
+- Modify: `Cargo.toml`, `Cargo.lock`, `.github/workflows/ci.yml`, `deny.toml` (only if needed)
+
+**Interfaces:**
+- Produces: the crates `aria-audio` and `aria-library`; fixtures `tone.{mp3,flac,wav,m4a,ogg,opus}`, `tone-alac.m4a`, `tone-48k.flac`, `tone-mono.wav`, `tagged.mp3`, `cover.flac`, `silence-gap-a.flac`, `silence-gap-b.flac`.
+
+- [ ] **Step 1:** Add to root `[workspace.dependencies]`: `symphonia` (0.6.1, features `aac, alac, flac, isomp4, mkv, mp3, ogg, pcm, vorbis, wav`, plus `opt-simd`), `symphonia-adapter-libopus` 0.3.0, `cpal` 0.18.2, `rubato` 5.0.1, `rtrb` 0.4.1, `rusqlite` 0.41.1 with `bundled`, `lofty` 0.25.5, `image` 0.25.10 (`default-features = false`, `jpeg`, `png`), `sha2`, `egui_extras` 0.37, `pollster`, `aria-audio` and `aria-library` as path dependencies. Keep `image` and `egui_extras` versions compatible with what eframe already pulls.
+- [ ] **Step 2:** Write `scripts/make-fixtures.sh` using ffmpeg to generate 1-second 440 Hz tones at 44.1 kHz stereo in each format. `tone-48k.flac` is 48 kHz. `tone-mono.wav` is mono. `tagged.mp3` carries title "Fixture Title", artist "Fixture Artist", album "Fixture Album", track 3. `cover.flac` embeds a generated 300×300 PNG. `silence-gap-a.flac` and `-b.flac` are consecutive halves of one continuous tone, cut at a sample boundary. Run it and commit the output; total size under 500 KB. `README.md` states the files are generated by the script and released under the project's license.
+- [ ] **Step 3:** Add `libasound2-dev` to the Linux packages in `ci.yml`, and a step that prints `cmake --version` on every OS so a missing CMake fails loudly.
+- [ ] **Step 4:** Verify `cargo build --workspace --locked` passes (this builds libopus and SQLite). If `cargo deny` is installed, run `cargo deny check licenses sources`; otherwise rely on CI. New license needs go in `deny.toml` with a comment naming the crate.
+- [ ] **Step 5:** Commit: `build: add audio and library crates, fixtures and CI packages`.
+
+### Task 2: Decoding and resampling
+
+**Files:**
+- Create: `crates/aria-audio/src/{error.rs,decode.rs,resample.rs}`
+- Test: `crates/aria-audio/tests/decode.rs`
+
+**Interfaces:**
+- Produces:
+  - `pub enum AudioError` (`thiserror`): `Open`, `Unsupported`, `Decode`, `Resample`, `Device`, `NoDevice`, `DeviceNotFound`.
+  - `pub struct StreamInfo { pub sample_rate: u32, pub channels: u16, pub total_frames: Option<u64>, pub codec: String }`
+  - `pub struct TrackDecoder`: `open(path: &Path) -> Result<Self, AudioError>`, `info(&self) -> &StreamInfo`, `next_block(&mut self) -> Result<Option<&[f32]>, AudioError>` (interleaved, delay and padding already trimmed, `None` at end), `seek(&mut self, frame: u64) -> Result<u64, AudioError>` (returns the frame reached).
+  - `pub struct Clip { pub samples: Vec<f32>, pub sample_rate: u32, pub channels: u16 }`
+  - `pub fn decode_clip(path: &Path, max_frames: u64, rate: u32, channels: u16) -> Result<Clip, AudioError>`
+  - `pub struct Resampler`: `new(from: u32, to: u32, channels: u16) -> Result<Self, AudioError>`, `process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), AudioError>`, `flush(&mut self, out: &mut Vec<f32>) -> Result<(), AudioError>`, `reset(&mut self)`.
+  - `pub fn convert_channels(input: &[f32], from: u16, to: u16, out: &mut Vec<f32>)`
+
+- [ ] **Step 1: Write the failing tests** in `tests/decode.rs`:
+  - `every_format_decodes`: for each `tone.*`, `tone-alac.m4a`, total frames decoded are within 2% of 44,100, and the RMS is above 0.05.
+  - `gapless_trim_is_exact_for_flac`: `tone.flac` yields exactly the frames in `info().total_frames`.
+  - `seek_is_accurate`: after `seek(22_050)` on FLAC and WAV, the returned frame is 22,050; on the other formats, within 2,048.
+  - `garbage_is_an_error`: a 0-byte `.mp3` and a text file named `.flac` give `Err`, not a panic.
+  - `truncated_file_ends_cleanly`: the first half of `tone.flac` written to a temp file gives some blocks, then `Ok(None)` or `Err`, never a panic.
+  - `unicode_path_opens`: `tone.wav` copied to `тест-թեստ-テスト.wav` opens.
+  - `resampler_keeps_duration_and_pitch`: 1 s at 44.1 kHz to 48 kHz gives 48,000 ±64 frames, and zero crossings stay within 1% of 880 per second.
+  - `channels_convert`: mono to stereo duplicates; stereo to mono averages; 6 to 2 copies the first two.
+  - `decode_clip_limits_length`: `max_frames = 1000` gives exactly 1,000 frames at the target rate and channels.
+- [ ] **Step 2:** Run `cargo test -p aria-audio --test decode`. Expected: fails to compile.
+- [ ] **Step 3: Implement.** Build one `CodecRegistry` in a `OnceLock`, registering Symphonia's codecs and `symphonia_adapter_libopus::OpusDecoder`. Trim using the track's `delay` and `padding`. A recoverable `DecodeError` packet is skipped; `ResetRequired` resets the decoder. A decode failure past 3 consecutive packets returns `Err`. `Resampler` wraps rubato's `Async` sinc resampler, and is a passthrough when `from == to`. `convert_channels`: mono to N duplicates, N to mono averages, otherwise copy the first `min(from, to)` channels and leave the rest silent.
+- [ ] **Step 4:** Run the tests. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(audio): decoder and resampler`.
+
+### Task 3: Devices, mixer and outputs
+
+**Files:**
+- Create: `crates/aria-audio/src/{device.rs,mixer.rs,output.rs,cpal_output.rs,fake.rs}`
+- Test: unit tests in `mixer.rs`, `crates/aria-audio/tests/output.rs`
+
+**Interfaces:**
+- Consumes: `AudioError`.
+- Produces:
+  - `pub struct DeviceId(pub String)` (Serialize, Deserialize, Clone, Eq, Hash). The value is the Display form of `cpal::DeviceId`, or `name:<device name>` when `DeviceTrait::id` fails.
+  - `pub enum DeviceKind { Input, Output }`; `pub struct DeviceInfo { pub id: DeviceId, pub name: String, pub is_default: bool }`; `pub fn list_devices(kind: DeviceKind) -> Result<Vec<DeviceInfo>, AudioError>`.
+  - `pub struct OutputFormat { pub sample_rate: u32, pub channels: u16 }`
+  - `pub struct InputHandle`: `write(&mut self, samples: &[f32]) -> usize` (non-blocking), `free(&self) -> usize`, `written(&self) -> u64`, `consumed(&self) -> u64` (both in samples, one shared index space), `clear(&mut self)`, `set_gain(&self, gain: f32)`, `set_paused(&self, paused: bool)`.
+  - `pub trait AudioOutput: Send { fn format(&self) -> OutputFormat; fn add_input(&mut self, capacity_frames: usize) -> Result<InputHandle, AudioError>; fn failed(&self) -> bool; }`
+  - `pub trait OutputFactory: Send { fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError>; }`
+  - `pub struct CpalFactory;`
+  - `pub struct FakeFactory` / `FakeOutput` behind `pub mod fake`: `FakeFactory::new(format)`, `.fail_open(n)`, `.outputs() -> Vec<FakeControl>`; `FakeControl::pull(frames) -> Vec<f32>` drives the mixer by hand, `.fail()` marks the output failed, `.device() -> Option<DeviceId>`.
+  - `pub struct Mixer`: `render(&mut self, out: &mut [f32])`, the code the callback runs and the fake pulls. `pub const MAX_INPUTS: usize = 8`, `pub const FADE_MS: u32 = 5`.
+
+Mixer rules, which the signatures do not determine:
+- New inputs reach a running mixer through an rtrb ring of prepared input slots, and removed inputs leave through a return ring, so the callback neither allocates nor frees.
+- `clear` stores the current `written` index in an atomic. The mixer fades out over `FADE_MS` of whatever is buffered, discards up to that index, then fades in. Discarded samples count as consumed.
+- `set_paused(true)` fades out, then outputs silence without consuming. `set_paused(false)` fades in.
+- Gain changes ramp within one callback buffer, so volume moves do not click.
+- A `Stream` is not `Send` on every host, so `CpalFactory` creates and holds each stream on a dedicated thread named `aria-audio-output`, parked until the output drops.
+- The sample format comes from `default_output_config`; `f32`, `i16`, `u16` and `i32` are handled through one generic function using `cpal::FromSample`.
+- The stream error callback sets `failed` on `ErrorKind::DeviceNotAvailable` only. `DeviceChanged` and xruns are logged at debug.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `sums_inputs_with_gain` (mixer): two inputs of constant 0.25 at gains 1.0 and 0.5 render 0.375 after the ramp.
+  - `underrun_is_silence`: an empty input renders zeros without changing `consumed`.
+  - `clear_drops_buffered_audio`: after writing 1,000 samples and `clear`, the next write's samples reach the output, and `consumed` equals `written` once drained.
+  - `clear_fades_without_a_jump`: rendering across a `clear` on a constant 1.0 input never changes by more than 0.05 between adjacent samples.
+  - `paused_input_keeps_its_samples`: `consumed` is unchanged across a paused render, and resumes after.
+  - `several_outputs_run_at_once` (`tests/output.rs`): two `FakeOutput`s with different formats, each with its own input, render independently.
+  - `open_failure_reports_error`: `FakeFactory::fail_open(1)` fails once, then succeeds.
+  - `list_devices_does_not_panic`: `list_devices` for both kinds returns `Ok` or `Err` on a machine with no devices.
+- [ ] **Step 2:** Run `cargo test -p aria-audio`. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the interfaces and rules above.
+- [ ] **Step 4:** Run the tests. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(audio): devices, mixer and outputs`.
+
+### Task 4: Player engine
+
+**Files:**
+- Create: `crates/aria-audio/src/{engine.rs,clock.rs}`
+- Test: `crates/aria-audio/tests/engine.rs`
+
+**Interfaces:**
+- Consumes: `TrackDecoder`, `Resampler`, `convert_channels`, `AudioOutput`, `OutputFactory`, `InputHandle`, `FakeFactory`.
+- Produces:
+  - `pub struct TrackRequest { pub token: u64, pub path: PathBuf }`
+  - `pub enum EngineCommand { Load { track: TrackRequest, start_ms: u64, play: bool }, SetNext(Option<TrackRequest>), Play, Pause, Seek(u64), SetVolume(f32), SetDevice(Option<DeviceId>), SetGapless(bool), Stop }`
+  - `pub enum EngineEvent { TrackStarted { token: u64, duration_ms: Option<u64> }, TrackEnded { token: u64 }, TrackFailed { token: u64 }, DeviceFellBack, NoDevice, Stopped }`
+  - `pub struct ClockReading { pub token: u64, pub position_ms: u64, pub playing: bool }`; `pub struct PlaybackClock` with `read(&self) -> ClockReading`, shared through `Arc`.
+  - `pub struct Engine`: `start(factory: Box<dyn OutputFactory>, on_event: Box<dyn Fn(EngineEvent) + Send>) -> io::Result<EngineHandle>`.
+  - `pub struct EngineHandle`: `send(&self, cmd: EngineCommand)`, `clock(&self) -> Arc<PlaybackClock>`, `shutdown(self, timeout: Duration) -> bool`.
+
+Engine rules:
+- One thread named `aria-audio-engine`. It waits on commands with a 10 ms timeout while a track is active, and blocks on commands when idle.
+- The output opens lazily on the first `Load` with `play: true`. `Load` with `play: false` only prepares position, so startup needs no device.
+- Volume applies through `set_gain`. Mute is `SetVolume(0.0)` from the backend.
+- The ring holds about 1 second. The thread decodes while `free()` has room.
+- A list of segments `{ start_index, token, source_start_frame, rate }` in the shared sample-index space maps `consumed()` to `(token, position)`. `TrackStarted` and `TrackEnded` fire when `consumed()` crosses a segment boundary, not when decoding reaches it. Each loop publishes the mapped reading to `PlaybackClock` atomics.
+- At end of file, with `SetNext` set and gapless on, the thread opens the next track and keeps writing. The resampler is rebuilt or passed through as needed, without touching the output. With gapless off, the thread waits for the ring to drain, then starts the next track.
+- With no next track at end of file, it waits for the drain, sends `TrackEnded`, then `Stopped`.
+- `Seek` past the end clamps to the track's last frame and behaves as end of file. `Seek` while paused updates the clock at once and stays paused.
+- An open or decode failure of a current or next track sends `TrackFailed { token }`, and the engine waits for the next command. It does not advance on its own.
+- When `output.failed()` turns true: note the clock position, try `factory.open(configured device)`, then `factory.open(None)`. Falling back sends `DeviceFellBack`. Reseek the decoder to the noted position and resume. If both opens fail, pause and send `NoDevice`; the next `Play` retries the open.
+- `SetDevice` reopens the output at the current position, playing or paused.
+
+- [ ] **Step 1: Write the failing tests** in `tests/engine.rs`, driving `FakeControl::pull` by hand:
+  - `plays_a_track_to_the_end`: events are `TrackStarted`, `TrackEnded`, `Stopped`, in that order, and pulled non-silent frames are within 2% of 44,100.
+  - `gapless_join_has_no_gap`: `silence-gap-a.flac` then `-b.flac` with gapless on: pulled audio has no run of more than 2 zero samples at the join, and the waveform stays continuous.
+  - `gapless_off_still_advances`: the same pair with gapless off plays both and events stay ordered.
+  - `rate_change_between_tracks`: `tone.flac` then `tone-48k.flac` plays both on a 44.1 kHz fake, with the second's length within 2% of 44,100 output frames, and without opening a new output.
+  - `started_fires_when_heard`: after `Load`, `TrackStarted` has not fired until frames are pulled, and the clock's token changes only after pulling past the join.
+  - `short_tracks_keep_their_order` (Review Focus 3): three 0.1 s clips in sequence give started and ended pairs in order, and the clock position never exceeds a clip's length.
+  - `next_track_vanishing_is_reported` (Review Focus 1): `SetNext` to a path deleted before the join sends `TrackEnded` for the current track, then `TrackFailed` for the next, and the thread still answers commands.
+  - `missing_file_fails_load`: `Load` of a missing path sends `TrackFailed` only.
+  - `impatient_seeks_settle_on_the_last` (Review Focus 4): ten `Seek`s then `Seek(500)` while paused leave the clock at 500 ±50 ms; `Seek(10_000_000)` ends the track.
+  - `pause_stops_consumption`: `Pause` holds the clock steady across pulls; `Play` continues from there.
+  - `device_loss_resumes_at_position`: after 0.5 s, `FakeControl::fail()` leads to a second output, the clock within 100 ms of the old position, and `DeviceFellBack` when the configured device is the one that failed.
+  - `no_device_pauses`: with `fail_open` covering both attempts, `NoDevice` arrives and the clock stops; a later `Play` after opens recover resumes.
+  - `load_without_play_opens_no_output`: `Load { play: false }` leaves `outputs()` empty.
+  - `shutdown_stops_the_thread`: `shutdown` returns `true` within 2 s mid-track.
+- [ ] **Step 2:** Run `cargo test -p aria-audio --test engine`. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the rules above.
+- [ ] **Step 4:** Run the tests 5 times in a row to expose races. Expected: pass every time.
+- [ ] **Step 5:** Commit: `feat(audio): player engine with gapless and device recovery`.
+
+### Task 5: Library database
+
+**Files:**
+- Create: `crates/aria-library/src/{error.rs,model.rs,paths.rs,db.rs,migrations.rs}`
+- Test: `crates/aria-library/tests/db.rs`
+
+**Interfaces:**
+- Produces:
+  - `pub struct TrackId(pub i64)`, `pub struct FolderId(pub i64)` (Copy, Eq, Hash, Ord).
+  - `pub struct Track { pub id, pub folder, pub path: PathBuf, pub title: String, pub artist: Option<Arc<str>>, pub album: Option<Arc<str>>, pub album_artist: Option<Arc<str>>, pub track_no: Option<u32>, pub disc_no: Option<u32>, pub year: Option<i32>, pub genre: Option<Arc<str>>, pub duration_ms: u64, pub sample_rate: u32, pub channels: u16, pub codec: Arc<str>, pub artwork: Option<ArtworkId>, pub added_at: i64 }`
+  - `pub struct ArtworkId(pub Arc<str>)` (hash text).
+  - `pub struct Folder { pub id: FolderId, pub path: PathBuf, pub available: bool }`
+  - `pub struct QueueRecord { pub context: Vec<TrackId>, pub user: Vec<TrackId>, pub current: Option<TrackId>, pub position_ms: u64, pub shuffle_seed: u64, pub context_index: Option<usize> }`
+  - `pub enum LibraryError` with `NewerSchema { found: u32, supported: u32 }`, `Database`, `Io`, `FolderInsideExisting`, `FolderAlreadyAdded`.
+  - `pub struct Library`: `open(db: &Path, artwork_dir: &Path) -> Result<Opened, LibraryError>`, where `pub struct Opened { pub library: Library, pub recovered: bool }`; `folders(&self) -> Result<Vec<Folder>, LibraryError>`; `add_folder(&mut self, path: &Path) -> Result<FolderId, LibraryError>`; `remove_folder(&mut self, id: FolderId) -> Result<(), LibraryError>`; `save_queue(&mut self, q: &QueueRecord) -> Result<(), LibraryError>`; `load_queue(&self) -> Result<Option<QueueRecord>, LibraryError>`; `set_duration(&mut self, id: TrackId, ms: u64) -> Result<(), LibraryError>`; `track_count(&self) -> Result<u64, LibraryError>`.
+  - `pub(crate)` path codec `encode_path(&Path) -> Vec<u8>`, `decode_path(&[u8]) -> PathBuf`.
+
+Rules:
+- Schema from spec section 4.1, plus `folders.available INTEGER NOT NULL DEFAULT 1`. `tracks.path` is a unique BLOB. Migrations are a `const` list, indexed by `user_version`.
+- `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`.
+- Corrupt means `SQLITE_NOTADB`, `SQLITE_CORRUPT`, or `PRAGMA quick_check` not returning `ok` at open. The file moves to `library.db.bak`, overwriting an older `.bak`, and `Opened.recovered` is `true`.
+- `add_folder` compares normalized paths (`std::path::absolute`, component-wise, case-insensitive on Windows). Inside an existing folder gives `FolderInsideExisting`. The same folder gives `FolderAlreadyAdded`. A parent of existing folders absorbs them: their tracks move to the new id and their rows are deleted, in one transaction.
+- Encoding: Unix uses `OsStrExt::as_bytes`; Windows uses `encode_wide` as little-endian bytes.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `fresh_database_migrates`: `user_version` equals the latest; reopening keeps data.
+  - `newer_database_is_refused_and_untouched`: with `user_version` set past the latest, `open` gives `NewerSchema`, and the file's bytes are unchanged.
+  - `corrupt_database_is_replaced`: a file of random bytes gives `recovered == true`, `library.db.bak` holds those bytes, and the new database works.
+  - `paths_round_trip`: Cyrillic, Armenian and emoji paths; on Unix also a non-UTF-8 name; on Windows also an unpaired surrogate.
+  - `folder_rules`: same folder, nested folder and parent absorption, with tracks kept across absorption.
+  - `remove_folder_deletes_rows_only`: rows are gone and a real file in that folder still exists.
+  - `queue_round_trips`: `save_queue` then `load_queue` is equal; saving twice keeps the latest only.
+- [ ] **Step 2:** Run `cargo test -p aria-library --test db`. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the interfaces and rules above.
+- [ ] **Step 4:** Run the tests. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(library): SQLite storage, migrations and folders`.
+
+### Task 6: Tags and artwork
+
+**Files:**
+- Create: `crates/aria-library/src/{tags.rs,artwork.rs}`
+- Test: `crates/aria-library/tests/tags.rs`; fixtures come from `crates/aria-audio/tests/fixtures` by relative path.
+
+**Interfaces:**
+- Produces:
+  - `pub struct TrackTags { title, artist, album, album_artist, track_no, disc_no, year, genre, duration_ms, sample_rate, channels, codec, picture: Option<Vec<u8>> }`, with the same field types as `Track`.
+  - `pub fn read_tags(path: &Path) -> Result<TrackTags, LibraryError>`
+  - `pub struct ArtworkCache`: `new(dir: PathBuf) -> Self`, `store(&self, bytes: &[u8]) -> Result<Option<ArtworkId>, LibraryError>`, `path_of(&self, id: &ArtworkId) -> PathBuf`, `clear(&self) -> Result<(), LibraryError>`.
+  - `pub fn find_folder_image(dir: &Path) -> Option<PathBuf>`
+  - Constants: `THUMB_SIZE: u32 = 256`, `MAX_IMAGE_SIDE: u32 = 8192`, `MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024`, `THUMB_QUALITY: u8 = 85`.
+
+Rules:
+- Duration comes from lofty's properties. No title means the file stem.
+- Blank or whitespace-only tags become `None`.
+- The id is the hex of the first 16 bytes of SHA-256 of the source bytes. The file is `<id>.jpg`. An existing file is not rebuilt.
+- Dimensions are checked from the header before decoding. Oversized, undecodable or unsupported images give `Ok(None)` and a debug log, never `Err`.
+- `find_folder_image` matches `cover`, `folder` and `front` with `.jpg`, `.jpeg`, `.png`, ignoring case, in that order.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `reads_tags`: `tagged.mp3` gives the fixture title, artist, album and track 3, with duration near 1,000 ms.
+  - `missing_tags_fall_back_to_file_name`: `tone.wav` copied to `Моя песня.wav` has the title `Моя песня` and `None` artist.
+  - `blank_tags_are_none`.
+  - `embedded_picture_is_read`: `cover.flac` has a picture, and `store` makes a 256-pixel-max JPEG.
+  - `same_image_is_stored_once`: storing the same bytes twice gives the same id and one file.
+  - `oversized_image_is_refused`: a generated PNG of 9,000×1 gives `Ok(None)`.
+  - `garbage_image_is_ignored`.
+  - `folder_image_order`: with `front.png` and `Cover.JPG` present, `Cover.JPG` wins.
+  - `clear_removes_thumbnails`.
+- [ ] **Step 2:** Run the tests. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the interfaces and rules above.
+- [ ] **Step 4:** Run the tests. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(library): tag reading and artwork cache`.
+
+### Task 7: Scanner and snapshot
+
+**Files:**
+- Create: `crates/aria-library/src/{scan.rs,snapshot.rs}`
+- Modify: `crates/aria-library/src/db.rs`
+- Test: `crates/aria-library/tests/scan.rs`
+
+**Interfaces:**
+- Consumes: `Library`, `read_tags`, `ArtworkCache`, `find_folder_image`.
+- Produces:
+  - `pub const SUPPORTED_EXTENSIONS: &[&str]` = `mp3, flac, wav, m4a, aac, mp4, ogg, oga, opus, mka, aif, aiff, caf`.
+  - `pub struct ScanProgress { pub seen: u64, pub changed: u64 }`
+  - `pub struct ScanSummary { pub added: u64, pub updated: u64, pub removed: u64, pub skipped: u64, pub unavailable: Vec<FolderId>, pub cancelled: bool }`
+  - `impl Library { pub fn scan(&mut self, cancel: &AtomicBool, on_batch: &mut dyn FnMut(&mut Library, ScanProgress)) -> Result<ScanSummary, LibraryError>; pub fn snapshot(&self) -> Result<LibrarySnapshot, LibraryError>; pub fn clear_artwork(&mut self) -> Result<(), LibraryError>; }`
+  - `pub struct Album { pub title: Option<Arc<str>>, pub artist: Option<Arc<str>>, pub tracks: Vec<TrackId>, pub artwork: Option<ArtworkId>, pub year: Option<i32> }`; `pub struct Artist { pub name: Option<Arc<str>>, pub tracks: Vec<TrackId> }`
+  - `pub struct LibrarySnapshot { pub tracks: Vec<Track>, pub albums: Vec<Album>, pub artists: Vec<Artist>, pub folders: Vec<Folder> }`, deriving `PartialEq`. Tracks are sorted by id; `track(&self, id: TrackId) -> Option<&Track>` is a binary search.
+
+Rules from spec section 4.2, plus:
+- `on_batch` runs after each committed batch of `BATCH_SIZE = 500`, so the caller can do its own database work there. That keeps a single writer.
+- Rows update in place by path, so a changed file keeps its `TrackId`.
+- A file is deleted from the database only when its parent directory listed successfully and it was absent from that listing.
+- A cancelled scan commits what it has and deletes nothing.
+- Artwork for a folder is resolved once per directory per scan.
+- Strings are interned per snapshot, so repeated artists and albums share one `Arc<str>`.
+- Album key: `(album_artist or artist, album)` compared with Unicode lowercase. Tracks with no album group under the artist with `title: None`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `scans_a_tree`: nested folders with fixtures give the expected count, and the snapshot groups `tagged.mp3` under "Fixture Album".
+  - `rescan_reads_only_changed_files`: `updated` and `added` are 0 on a second scan; after rewriting one file with a new mtime, `updated` is 1 and its `TrackId` is unchanged (Review Focus 2).
+  - `deleted_file_is_removed`: `removed` is 1 and other ids are stable.
+  - `unreachable_root_keeps_tracks`: after renaming the root away, tracks remain, `available` is false and `unavailable` lists it; restoring the root sets `available` true.
+  - `lying_files_are_skipped` (Review Focus 5): a 0-byte `.mp3` and a text `.flac` are counted in `skipped`; the scan finishes.
+  - `unsupported_extensions_are_ignored`: `.txt`, `.jpg`, not counted.
+  - `unicode_tree_scans`.
+  - `cancel_keeps_finished_work_and_deletes_nothing`.
+  - `on_batch_can_write`: a `save_queue` inside `on_batch` succeeds.
+  - `symlinks_are_not_followed` (Unix only): a loop link terminates.
+  - `album_grouping_ignores_case`: "ALBUM" and "album" by one artist are one album.
+  - `synthetic_50k_library` (`#[ignore]`d in normal runs, run in Task 15): 50,000 inserted rows build a snapshot, and the test prints the time and asserts under 2 s in release.
+- [ ] **Step 2:** Run `cargo test -p aria-library --test scan`. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the interfaces and rules above.
+- [ ] **Step 4:** Run the tests. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(library): background scanner and snapshot`.
+
+### Task 8: Player model
+
+**Files:**
+- Create: `crates/aria-core/src/player/{mod.rs,queue.rs}`
+- Modify: `crates/aria-core/src/lib.rs`, `crates/aria-core/Cargo.toml`
+- Test: unit tests in `queue.rs`
+
+**Interfaces:**
+- Consumes: `TrackId`, `QueueRecord` from `aria-library`.
+- Produces:
+  - `pub enum RepeatMode { Off, All, One }` (serde lowercase, default `Off`).
+  - `pub enum PreviousAction { Restart, Play(TrackId), Nothing }`
+  - `pub struct UpNext { pub track: TrackId, pub from_user: bool }`
+  - `pub struct Queue`: `new(seed: u64) -> Self`; `play_context(&mut self, ids: Vec<TrackId>, start: usize) -> Option<TrackId>`; `play_next(&mut self, id: TrackId)`; `add_to_queue(&mut self, id: TrackId)`; `remove_user(&mut self, index: usize)`; `move_user(&mut self, from: usize, to: usize)`; `clear_user(&mut self)`; `current(&self) -> Option<TrackId>`; `peek_after_current(&self) -> Option<TrackId>`; `advance_manual(&mut self) -> Option<TrackId>`; `advance_finished(&mut self) -> Option<TrackId>`; `previous(&mut self, position_ms: u64) -> PreviousAction`; `set_shuffle(&mut self, on: bool)`; `set_repeat(&mut self, mode: RepeatMode)`; `upcoming(&self, limit: usize) -> Vec<UpNext>`; `retain(&mut self, exists: impl Fn(TrackId) -> bool)`; `to_record(&self, position_ms: u64) -> QueueRecord`; `from_record(record: QueueRecord, shuffle: bool, repeat: RepeatMode, exists: impl Fn(TrackId) -> bool) -> Self`.
+  - `pub const RESTART_THRESHOLD_MS: u64 = 3_000`, `HISTORY_LIMIT: usize = 100`.
+
+Rules from spec section 5, plus:
+- "Clear" empties the user queue only; context items are view-only.
+- `peek_after_current` is what `advance_finished` would return, so gapless matches natural advancing. With repeat one it returns the current track.
+- `advance_manual` ignores repeat one but honors repeat all.
+- Shuffle: a Fisher-Yates permutation from a small seeded generator written in this module (SplitMix64), of the context tracks not yet played in this pass. Repeat all with shuffle reshuffles each pass with a new seed derived from the old one.
+- `set_shuffle(false)` restores the original order and continues after the current track.
+- `previous` restarts past the threshold; otherwise it pops a bounded history. With an empty history it gives `Restart`, and with no current track, `Nothing`.
+- `retain` drops vanished tracks from the context, user queue and history. A vanished current track stays current until the caller moves on.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `context_plays_in_order_from_start`.
+  - `user_queue_plays_before_context_then_context_resumes`.
+  - `play_next_goes_first_add_goes_last`.
+  - `remove_and_move_user_items`, with out-of-range indexes ignored.
+  - `clear_keeps_context`.
+  - `repeat_off_ends_at_last`, `repeat_all_wraps`.
+  - `repeat_one_repeats_on_finish_but_next_advances`.
+  - `peek_matches_finished_advance`: for 200 random operation sequences, `peek_after_current` equals what `advance_finished` then returns.
+  - `shuffle_visits_each_track_once_per_pass`: 100 tracks, seed 7.
+  - `shuffle_off_restores_order_and_keeps_current`.
+  - `previous_restarts_after_three_seconds`: `previous(3_001)` gives `Restart`; `previous(2_999)` gives the prior track.
+  - `previous_walks_history_after_shuffle`.
+  - `record_round_trip`, `restore_drops_missing_tracks`.
+  - `retain_removes_gone_tracks_and_keeps_current` (Review Focus 2).
+  - `empty_context_is_safe`: every method on an empty queue returns without panic.
+- [ ] **Step 2:** Run `cargo test -p aria-core player`. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the rules above.
+- [ ] **Step 4:** Run the tests. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(core): queue model with shuffle and repeat`.
+
+### Task 9: Settings, notices and the library service
+
+**Files:**
+- Modify: `crates/aria-core/src/{settings/mod.rs,notice.rs,command.rs,event.rs,runtime.rs,lib.rs}`, all `Notice` construction sites, `crates/aria-app/src/main.rs`, `locales/*/main.ftl`
+- Create: `crates/aria-core/src/library_service.rs`
+- Test: unit tests in `settings/mod.rs`, `library_service.rs`, `runtime.rs`
+
+**Interfaces:**
+- Consumes: `Library`, `Opened`, `LibrarySnapshot`, `ScanSummary`, `RepeatMode`.
+- Produces:
+  - `Settings` gains: `volume: f32` (default 1.0, clamped to 0.0–1.0 in `sanitized`, NaN becomes 1.0), `muted: bool`, `shuffle: bool`, `repeat: RepeatMode`, `output_device: Option<DeviceId>`, `gapless: bool` (default `true`).
+  - `Notice` gains `args: Vec<(&'static str, String)>`. It stops being usable as a `const` with a non-empty list, so `Notice::new(level, key)` and `.with_arg(name, value)` are added. Existing constants become `const` values with `args: Vec::new()`.
+  - `Command` gains: `AddFolder(PathBuf)`, `RemoveFolder(FolderId)`, `Rescan`, `ClearArtwork`.
+  - `Event` gains: `LibraryUpdated(Arc<LibrarySnapshot>)`, `ScanProgress(Option<ScanProgress>)` (`None` when finished).
+  - `pub struct BackendServices { pub library: Option<LibraryPaths>, pub output: Box<dyn OutputFactory> }`, `pub struct LibraryPaths { pub db: PathBuf, pub artwork_dir: PathBuf }`. `Backend::start(sink, services, waker, cfg)`.
+  - `LibraryService`: a thread named `aria-library`, the only owner of `Library`. `start(paths, on_event: Box<dyn Fn(LibraryEvent) + Send>) -> io::Result<LibraryHandle>`; `LibraryHandle::send(LibraryRequest)`; `LibraryRequest::{AddFolder, RemoveFolder, Rescan, ClearArtwork, SaveQueue(QueueRecord), LoadQueue, SetDuration(TrackId, u64), Shutdown}`; `LibraryEvent::{Snapshot(Arc<LibrarySnapshot>), Progress(Option<ScanProgress>), Notice(Notice), QueueLoaded(Option<QueueRecord>)}`.
+
+Rules:
+- The thread opens the library, sends a snapshot, then a startup scan. Requests that arrive during a scan are drained in `on_batch`: `SaveQueue` is written at once; a second `Rescan` sets a flag for one more scan after this one; folder changes and `ClearArtwork` wait for the scan to finish.
+- Scan results become notices: `library-scan-skipped` with `count` when `skipped > 0`, `library-folder-unavailable` for an unavailable folder.
+- `recovered` gives `library-recovered`. `NewerSchema` gives `library-newer`, and all other open failures give `library-unavailable`; the service then reports an empty snapshot and ignores requests.
+- `Shutdown` cancels a running scan through the `AtomicBool`.
+- The worker gets one more `select!` arm for a tokio unbounded channel fed by `on_event`. Saves to `SettingsSink` are unchanged. The comment on `Worker.sink` stays accurate, since the new services run on their own threads and never touch the sink.
+- Add the new Fluent keys in all three languages. `app.rs` passes `Notice.args` to `tr_args`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `new_fields_default` and `old_settings_file_loads`: a Phase 1 TOML loads with defaults (`volume` 1.0, `gapless` true).
+  - `volume_is_sanitized`: 5.0 gives 1.0, -1.0 gives 0.0, NaN gives 1.0.
+  - `notice_args_reach_the_translation`: a toast for `library-scan-skipped` contains the count.
+  - `service_sends_snapshot_then_scans`: with a temp folder of fixtures, `AddFolder` leads to a `Snapshot` holding them.
+  - `save_queue_during_scan_is_not_delayed`: a `SaveQueue` sent during a scan of a large fixture tree is readable after the scan.
+  - `newer_database_disables_the_library`: `library-newer` arrives, and `Rescan` does nothing.
+  - `shutdown_cancels_a_scan`: the thread exits within 2 s.
+  - `backend_forwards_library_events`: `Command::AddFolder` produces `Event::LibraryUpdated`.
+- [ ] **Step 2:** Run `cargo test -p aria-core`. Expected: fails to compile.
+- [ ] **Step 3:** Implement. Update `main.rs` to pass `BackendServices` with `CpalFactory` and paths from `AppPaths`: `data_dir/library.db`, `cache_dir/artwork`. With no paths, `library` is `None`.
+- [ ] **Step 4:** Run `cargo test --workspace`. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(core): settings, notice arguments and the library service`.
+
+### Task 10: Playback in the backend
+
+**Files:**
+- Create: `crates/aria-core/src/playback_service.rs`
+- Modify: `crates/aria-core/src/{command.rs,event.rs,runtime.rs}`, `locales/*/main.ftl`
+- Test: unit tests in `playback_service.rs`, using `FakeFactory`
+
+**Interfaces:**
+- Consumes: `Engine`, `EngineHandle`, `EngineEvent`, `PlaybackClock`, `Queue`, `LibraryHandle`, `LibrarySnapshot`, `list_devices`.
+- Produces:
+  - `Command` gains: `PlayContext { ids: Vec<TrackId>, start: usize }`, `PlayNext(TrackId)`, `AddToQueue(TrackId)`, `RemoveFromQueue(usize)`, `MoveInQueue { from: usize, to: usize }`, `ClearQueue`, `TogglePlay`, `Next`, `Previous`, `Seek(u64)`, `ListDevices`.
+  - `Event` gains: `Player(PlayerView)`, `OutputDevices(Vec<DeviceInfo>)`.
+  - `pub struct PlayerView { pub current: Option<TrackId>, pub playing: bool, pub duration_ms: u64, pub upcoming: Vec<UpNext> }`, with `upcoming` limited to `UPCOMING_LIMIT = 200`.
+  - `BackendHandle::clock(&self) -> Arc<PlaybackClock>`.
+  - `pub struct PlaybackService`: synchronous state machine owned by the worker: `handle(&mut self, cmd)`, `on_engine(&mut self, event)`, `on_snapshot(&mut self, snapshot)`, `on_settings(&mut self, settings: &Settings)`, `tick(&mut self)`.
+  - `pub const SAVE_INTERVAL: Duration = Duration::from_secs(5)`, `MAX_CONSECUTIVE_FAILURES: u32 = 5`, `FAILURE_RESET_MS: u64 = 1_000`.
+
+Rules:
+- A token is `u64`, incremented per `Load` or `SetNext`. The service maps token to `TrackId`.
+- After every change to what follows the current track, it sends `SetNext` with `peek_after_current`.
+- `TrackStarted` for a pre-announced next track calls `advance_finished` and emits `PlayerView`. When it reports a duration and the stored one is 0, the service sends `SetDuration`, and the table shows it from the next snapshot.
+- `TrackFailed` shows `playback-track-failed` with the title and advances, unless 5 failures in a row, when it stops and shows `playback-stopped-after-failures`. The count resets once the clock passes 1,000 ms in a track.
+- `DeviceFellBack` shows `playback-device-fallback`. `NoDevice` shows `playback-no-device` and sets `playing` false.
+- Settings changes apply volume (`0.0` when muted), device, gapless, shuffle and repeat to the engine and queue.
+- Restore: after the first snapshot, request `LoadQueue`, build the queue with `from_record`, then `Load { play: false, start_ms }`. Nothing plays until the user presses play. A pressed play before restore finishes wins over the restore.
+- `tick` runs on a 1-second `tokio::time::interval`. It saves the queue through `SaveQueue` every `SAVE_INTERVAL` while it has changed, and checks the failure reset. Shutdown saves it once more before stopping the library thread.
+- `on_snapshot` calls `retain` with the new snapshot, then re-sends `SetNext` and emits `PlayerView`. The playing track is not interrupted even if its row is gone.
+- Stop at the end of the list: keep the last track current at position 0, `playing` false, loaded with `Load { play: false, start_ms: 0 }`.
+- `ListDevices` runs on the blocking pool, since enumeration can be slow.
+
+- [ ] **Step 1: Write the failing tests**, driving the service with a `FakeFactory` engine and a fixture snapshot:
+  - `play_context_starts_the_chosen_track`.
+  - `next_track_is_announced_for_gapless`: after `PlayContext` the engine has a next token.
+  - `natural_advance_updates_the_view`.
+  - `previous_past_threshold_seeks_to_zero`.
+  - `failed_track_is_skipped_with_a_notice`: a missing file in the middle of three plays the third, with the notice naming the title.
+  - `five_failures_stop_playback`: six missing files stop after five, with one `playback-stopped-after-failures`.
+  - `failure_count_resets_after_a_second_of_play`.
+  - `queue_is_saved_and_restored_paused`: restoring gives the same current track and position, `playing` false, and no output opened.
+  - `restore_drops_missing_tracks`.
+  - `snapshot_change_keeps_playing_and_drops_gone_tracks` (Review Focus 2).
+  - `muted_sends_zero_volume`.
+  - `end_of_list_stops_on_last_track`.
+- [ ] **Step 2:** Run `cargo test -p aria-core playback`. Expected: fails to compile.
+- [ ] **Step 3:** Implement, and wire the service into `Worker::run`.
+- [ ] **Step 4:** Run `cargo test --workspace`, 3 times. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(core): playback service with queue persistence`.
+
+### Task 11: Local Music page
+
+**Files:**
+- Create: `crates/aria-app/src/ui/pages/local_music/{mod.rs,view.rs,tracks.rs,groups.rs}`; delete `crates/aria-app/src/ui/pages/local_music.rs`
+- Modify: `crates/aria-app/src/ui/pages/mod.rs`, `crates/aria-app/src/{app.rs,nav.rs}`, `crates/aria-app/Cargo.toml`, `locales/*/main.ftl`
+- Test: unit tests in `view.rs`, `crates/aria-app/tests/ui_library.rs`
+
+**Interfaces:**
+- Consumes: `Event::LibraryUpdated`, `Event::ScanProgress`, `Command` from Tasks 9 and 10.
+- Produces:
+  - `PageAction` gains: `PlayContext { ids: Vec<TrackId>, start: usize }`, `PlayNext(TrackId)`, `AddToQueue(TrackId)`, `PickFolder`, `RemoveFolder(FolderId)`, `Rescan`, `ClearArtwork`.
+  - `PageCtx` gains `library: &'a LibraryView`, where `LibraryView` holds `snapshot: Arc<LibrarySnapshot>`, `scan: Option<ScanProgress>`, and `current: Option<TrackId>`.
+  - `pub struct TrackView`: `new() -> Self`; `set_query(&mut self, q: &str)`; `set_sort(&mut self, key: SortKey, ascending: bool)`; `set_scope(&mut self, scope: Scope)`; `rows(&mut self, snapshot: &Arc<LibrarySnapshot>) -> &[usize]` (cached indexes into `snapshot.tracks`).
+  - `pub enum SortKey { Title, Artist, Album, Duration, Added }`; `pub enum Scope { All, Album(usize), Artist(usize) }`; `pub enum Tab { Tracks, Albums, Artists }`.
+
+Rules:
+- `rows` recomputes only when the query, sort, scope or the snapshot's `Arc` pointer changes.
+- Search lowercases with `str::to_lowercase`, and matches title, artist and album. Lowercased strings are cached per snapshot.
+- Sort is stable; `None` values sort last in both directions.
+- The table uses `egui_extras::TableBuilder` with `body.rows`, so only visible rows draw. Columns: number, title, artist, album, duration. Headers click to sort. The playing row uses the accent color.
+- Double-click sends `PlayContext` with the visible ids. The context menu offers Play, Play next and Add to queue.
+- Albums and Artists are lists; clicking one sets the scope and shows a back button above the table. Album rows show the thumbnail once Task 12 provides it; until then they show the vinyl icon.
+- With no folders the empty state offers Add folder. With a search and no matches, it says so. A scan shows `library-scanning` with the count.
+- `Route::LocalMusic.phase()` becomes `None`. Home keeps `Some(2)`.
+- `PickFolder` runs `rfd::AsyncFileDialog::pick_folder` under `pollster::block_on` on a short-lived thread named `aria-pick-folder`, following the `folders.rs` pattern, and sends `Command::AddFolder`. A cancelled dialog does nothing. `rfd` moves to all platforms with the features its docs need for each OS.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `view.rs` tests: `search_matches_cyrillic_and_armenian_ignoring_case`; `sort_puts_missing_values_last`; `sort_is_stable`; `rows_are_cached_until_something_changes`, proved by an internal recompute counter; `scope_limits_rows`.
+  - `tests/ui_library.rs` (kittest): `empty_library_offers_add_folder`; `tracks_appear_from_a_snapshot`; `double_click_plays_the_visible_list`, with a filter on so `ids` holds filtered tracks; `context_menu_queues_a_track`; `no_results_message`; `large_snapshot_draws_only_visible_rows`, with 50,000 tracks and one frame under 500 ms, a bound loose enough for debug builds.
+- [ ] **Step 2:** Run `cargo test -p aria-app`. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the rules above.
+- [ ] **Step 4:** Run `cargo test --workspace`. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(app): Local Music page`.
+
+### Task 12: Artwork textures and the player bar
+
+**Files:**
+- Create: `crates/aria-app/src/artwork.rs`
+- Modify: `crates/aria-app/src/ui/layout/player_bar.rs`, `crates/aria-app/src/app.rs`, `crates/aria-app/src/ui/pages/local_music/groups.rs`, `locales/*/main.ftl`
+- Test: unit tests in `artwork.rs`, additions to `crates/aria-app/tests/ui_shell.rs`, new `crates/aria-app/tests/ui_player.rs`
+
+**Interfaces:**
+- Consumes: `PlayerView`, `PlaybackClock`, `ArtworkCache::path_of` (the snapshot carries `ArtworkId`; the directory is `AppPaths::cache_dir` joined with `artwork`).
+- Produces:
+  - `pub struct ArtworkTextures`: `new(dir: PathBuf, ctx: &Context) -> Self`; `get(&mut self, id: &ArtworkId) -> Option<&TextureHandle>` (starts a load and returns `None` until ready); `poll(&mut self)`.
+  - `pub const TEXTURE_CACHE_LIMIT: usize = 256`.
+  - `pub enum PlayerAction { TogglePlay, Next, Previous, Seek(u64), SetVolume(f32), ToggleMute, ToggleShuffle, CycleRepeat, ToggleQueue }`. `player_bar::show` returns `Vec<PlayerAction>`.
+
+Rules:
+- One worker thread named `aria-artwork` reads and decodes JPEG to RGBA, then wakes the UI. Textures upload on the UI thread in `poll`. Least recently used textures drop past the limit.
+- A missing or broken file is remembered, so it is not retried every frame.
+- The seek bar drags without seeking, and sends `Seek` on release. While dragging it shows the drag position.
+- Position comes from `clock.read()` when its token belongs to the current track; otherwise 0.
+- `show` calls `ctx.request_repaint_after(Duration::from_millis(250))` only while `playing`.
+- `duration_ms == 0` shows `--:--` and disables seeking.
+- Volume and mute changes go through `update_settings`, so they persist. Repeat cycles off, all, one.
+- Controls stay disabled while nothing is loaded, with no tooltip about phases. Device and lyrics buttons keep their phase tooltips.
+- Remove `PLAYBACK_PHASE`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `artwork.rs`: `loads_a_thumbnail_off_thread`; `broken_file_is_not_retried`; `cache_evicts_least_recently_used`.
+  - `tests/ui_player.rs` (kittest, with a test double for the clock via a shared `PlaybackClock`): `shows_title_and_artist`; `play_button_sends_toggle`; `transport_is_disabled_with_nothing_loaded`; `seek_sends_once_on_release`; `unknown_duration_disables_seek`; `volume_change_is_saved_in_settings`; `repeat_cycles_through_three_modes`.
+- [ ] **Step 2:** Run the tests. Expected: fails to compile.
+- [ ] **Step 3:** Implement, and update `ui_shell.rs` expectations for the disabled controls.
+- [ ] **Step 4:** Run `cargo test --workspace`. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(app): artwork textures and working player bar`.
+
+### Task 13: Queue panel and the Space key
+
+**Files:**
+- Modify: `crates/aria-app/src/ui/layout/right_panel.rs`, `crates/aria-app/src/{app.rs,shortcuts.rs}`, `locales/*/main.ftl`
+- Test: `crates/aria-app/tests/ui_player.rs`, unit tests in `shortcuts.rs`
+
+**Interfaces:**
+- Consumes: `PlayerView`, `Command::{RemoveFromQueue, MoveInQueue, ClearQueue}`.
+- Produces: `pub enum QueueAction { Remove(usize), Move { from: usize, to: usize }, Clear }`; `right_panel::show` returns `Vec<QueueAction>`. `Shortcuts` gains `toggle_play: bool`.
+
+Rules:
+- The panel shows Now playing, then "Next in queue" with the user items, then "Next from list" with the context items. User items have a remove button and a drag handle, using egui's `dnd_drag_source` and `dnd_drop_zone`. Context items have neither. Clear applies to user items.
+- Only the first 200 upcoming rows are shown, the limit `PlayerView` already applies. The list uses `ScrollArea::show_rows`.
+- With an empty queue the existing empty state stays.
+- Space sets `toggle_play` only when `ctx.egui_wants_keyboard_input()` is false, and when no modal is open.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `queue_lists_user_then_context`.
+  - `remove_sends_the_index`.
+  - `context_rows_have_no_remove_button`.
+  - `clear_is_offered_only_with_user_items`.
+  - `empty_queue_shows_empty_state`.
+  - `space_toggles_play`, `space_in_search_field_types_a_space`, `space_is_ignored_with_a_modal_open`.
+- [ ] **Step 2:** Run the tests. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the rules above.
+- [ ] **Step 4:** Run `cargo test --workspace`. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(app): queue panel and Space to play`.
+
+### Task 14: Playback and Library settings
+
+**Files:**
+- Modify: `crates/aria-app/src/ui/pages/settings.rs`, split into `settings/{mod.rs,playback.rs,library.rs}` if it passes 500 lines; `crates/aria-app/src/app.rs`, `locales/*/main.ftl`
+- Test: `crates/aria-app/tests/ui_settings.rs`
+
+**Interfaces:**
+- Consumes: `Event::OutputDevices`, `Command::ListDevices`, `PageAction::{PickFolder, RemoveFolder, Rescan, ClearArtwork, UpdateSettings}`.
+- Produces: `PageCtx` gains `devices: &'a [DeviceInfo]`.
+
+Rules:
+- Entering the Settings route sends `ListDevices` once.
+- The device combo lists "System default" first. A saved device missing from the list shows as "Unavailable device" and stays selected, so the setting is kept.
+- The gapless checkbox writes `settings.gapless`.
+- The folder list shows each path, a warning state for `available == false`, and Remove behind the existing modal confirm pattern. The confirmation says that files stay on disk.
+- Clear artwork cache also uses the confirm pattern.
+- Reset settings resets the new `Settings` fields only; folders live in the database and are unaffected.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `device_list_starts_with_system_default`.
+  - `choosing_a_device_updates_settings`.
+  - `missing_saved_device_stays_selected`.
+  - `gapless_toggle_updates_settings`.
+  - `folders_are_listed_with_status`.
+  - `remove_folder_asks_first`.
+  - `add_folder_requests_the_dialog`.
+  - `rescan_button_sends_rescan`.
+  - `reset_keeps_folders`.
+- [ ] **Step 2:** Run the tests. Expected: fails to compile.
+- [ ] **Step 3:** Implement to the rules above.
+- [ ] **Step 4:** Run `cargo test --workspace`. Expected: pass.
+- [ ] **Step 5:** Commit: `feat(app): Playback and Library settings`.
+
+### Task 15: Hand check, measurements and documentation
+
+**Files:**
+- Modify: `README.md`, `CHANGELOG.md`, `docs/PRIVACY.md`, `THIRD_PARTY_NOTICES.md`, `Cargo.toml` (version 0.2.0), `Cargo.lock`
+- Create: `docs/testing/phase2a-manual-check.md`
+
+- [ ] **Step 1:** Run the ignored 50,000-track test in release: `cargo test --release -p aria-library --test scan -- --ignored --nocapture`. Record the time.
+- [ ] **Step 2:** Write `docs/testing/phase2a-manual-check.md`, a checklist for the user covering spec section 11: a real folder scans; each format plays; seek; queue operations; gapless on an album; unplugging headphones mid-track; restart restores the queue paused. Audio cannot be judged by an agent, so the agent runs what it can (app launches, scan completes, logs clean, screenshots off-screen per `scripts/screenshot-window.ps1 -Background`) and the user confirms what they hear. Mark each line with who verified it. No synthetic keystrokes.
+- [ ] **Step 3:** Measure on this PC with a large generated library: cold start, working-set memory, CPU while playing and while idle. Use the `startup stage=` log lines and Windows performance counters.
+- [ ] **Step 4:** Update the docs. README: status, formats, measured numbers, Known limitations from spec section 12, and "Linux and macOS are built and tested in CI only". CHANGELOG: `## [0.2.0]` entry. PRIVACY: `library.db` and its `-wal`, `-shm`, `.bak` files, the artwork cache, that folder paths and tags are stored locally and nothing is sent anywhere. THIRD_PARTY_NOTICES: new crates, libopus (BSD-3-Clause) and SQLite (public domain). Leave `docs/ROADMAP.md` alone.
+- [ ] **Step 5:** Run fmt, clippy and tests. Expected: pass.
+- [ ] **Step 6:** Commit: `docs: Phase 2a measurements, manual check and changelog`.

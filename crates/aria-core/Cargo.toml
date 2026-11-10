@@ -10,6 +10,8 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+aria-audio = { workspace = true }
+aria-library = { workspace = true }
 crossbeam-channel = { workspace = true }
 directories = { workspace = true }
 fluent-bundle = { workspace = true }
@@ -25,4 +27,5 @@ tracing-subscriber = { workspace = true }
 unic-langid = { workspace = true }
 
 [dev-dependencies]
+aria-audio = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }

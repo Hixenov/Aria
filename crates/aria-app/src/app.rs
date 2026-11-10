@@ -3,31 +3,37 @@
 use std::{
     io, mem,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use aria_core::{
+    DeviceInfo, PlaybackClock,
     command::Command,
     event::Event,
     i18n::{Localizer, os_language},
     logging::LogLevelHandle,
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
+    playback_service::PlayerView,
+    player::queue::RepeatMode,
     runtime::BackendHandle,
     settings::{SIDEBAR_MAX, SIDEBAR_MIN, Settings},
 };
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
 use crate::{
-    folders::FolderOpener,
+    artwork::ArtworkTextures,
+    folders::{FolderOpener, FolderPicker},
     nav::{History, Route},
     shortcuts::read_shortcuts,
     ui::{
         layout::{
-            player_bar, right_panel,
+            player_bar::{self, NowPlaying, PlayerAction, PlayerBar},
+            right_panel::{self, QueueAction, QueuePanel},
             sidebar::{self, SidebarAction},
         },
-        pages::{self, PageAction, PageCtx},
+        pages::{self, LibraryView, PageAction, PageCtx},
         theme::{
             Palette, fonts,
             visuals::{self, SPACE},
@@ -39,10 +45,22 @@ use crate::{
 
 /// How long [`eframe::App::on_exit`] waits for the backend to save and stop.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long, in seconds, the app redraws often after a command that moves the position.
+const SETTLE_FOR: f64 = 1.0;
+/// How often it redraws then.
+const SETTLE_REPAINT: Duration = Duration::from_millis(50);
 /// Shown when a folder could not be opened in the file manager.
 const OPEN_FOLDER_FAILED: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-open-folder-failed",
+    args: Vec::new(),
+};
+
+/// Shown when the folder dialog could not be opened.
+const PICK_FOLDER_FAILED: Notice = Notice {
+    level: NoticeLevel::Warning,
+    key: "notice-pick-folder-failed",
+    args: Vec::new(),
 };
 
 /// The handles the shell drives. Each is optional, so tests, and a start-up that lost one,
@@ -56,6 +74,8 @@ pub struct AppDeps {
     pub logging: Option<LogLevelHandle>,
     /// Aria's directories, when they could be resolved.
     pub paths: Option<AppPaths>,
+    /// Where playback is. Taken from `backend` when left out.
+    pub clock: Option<Arc<PlaybackClock>>,
 }
 
 impl AppDeps {
@@ -86,12 +106,36 @@ pub struct AriaApp {
     toasts: Toasts,
     /// Folders being opened in the file manager.
     folders: FolderOpener,
+    /// The dialog for choosing a folder to add to the library.
+    picker: FolderPicker,
+    /// What the backend last reported of the library and the player. Starts empty, since a
+    /// disabled library sends nothing at all.
+    library: LibraryView,
+    /// What the backend last reported of the player.
+    player: PlayerView,
+    /// The output devices the backend last listed. Empty until it answers.
+    devices: Vec<DeviceInfo>,
+    /// Whether the Settings page was on screen last frame, so that entering it asks for the
+    /// devices once, not on every frame.
+    on_settings: bool,
+    /// Where playback is, read each frame by the player bar.
+    clock: Option<Arc<PlaybackClock>>,
+    /// Cover textures. Made on the first frame, once there is a context and a cache folder.
+    artwork: Option<ArtworkTextures>,
+    /// Until when, in egui's time, the app redraws often so that a seek or a skip shows its
+    /// new position. The clock changes without any event to say so.
+    settle_until: f64,
+    /// Whether making `artwork` has been tried.
+    artwork_started: bool,
     /// Whether the Settings page's reset dialog is open. Navigation and panel shortcuts
     /// wait while it is.
     modal_open: bool,
     /// Resets sent to the backend that it has not answered yet. Each answer brings the
     /// defaults, which are applied already, and changes made since are newer: it is ignored.
     outstanding_resets: u32,
+    /// Every command sent, for tests to read.
+    #[cfg(test)]
+    sent: std::cell::RefCell<Vec<Command>>,
     /// When `main` began, until the first frame logs how long it took to arrive.
     startup: Option<Instant>,
 }
@@ -108,6 +152,10 @@ impl AriaApp {
         deps: AppDeps,
         startup_notices: Vec<Notice>,
     ) -> AriaApp {
+        let clock = deps
+            .clock
+            .clone()
+            .or_else(|| deps.backend.as_ref().map(BackendHandle::clock));
         AriaApp {
             settings: settings.sanitized(),
             localizer,
@@ -120,6 +168,17 @@ impl AriaApp {
             sidebar_squeezed: false,
             toasts: Toasts::new(player_bar::HEIGHT),
             folders: FolderOpener::default(),
+            picker: FolderPicker::default(),
+            library: LibraryView::default(),
+            player: PlayerView::default(),
+            devices: Vec::new(),
+            on_settings: false,
+            clock,
+            artwork: None,
+            artwork_started: false,
+            settle_until: 0.0,
+            #[cfg(test)]
+            sent: std::cell::RefCell::default(),
             modal_open: false,
             outstanding_resets: 0,
             startup: None,
@@ -163,27 +222,121 @@ impl AriaApp {
             self.notify(&ctx, notice);
         }
         self.collect_folder_failures(&ctx);
+        self.collect_picked_folder();
         self.handle_shortcuts(&ctx);
+
+        self.poll_artwork(&ctx);
 
         let palette = Palette::for_theme(ctx.theme(), &self.settings);
         // The player bar goes first so it spans the full width of the window.
-        if player_bar::show(
-            ui,
-            &self.localizer,
-            &palette,
-            self.settings.right_panel_open,
-        ) {
-            self.toggle_right_panel(&ctx);
-        }
+        self.show_player_bar(ui, &ctx, &palette);
         self.show_sidebar(ui, &ctx, &palette);
-        right_panel::show(
-            ui,
-            &self.localizer,
-            &palette,
-            self.settings.right_panel_open,
-        );
+        self.show_right_panel(ui, &palette);
         self.show_page(ui, &ctx, &palette);
         self.toasts.show(&ctx, &self.localizer, &palette);
+    }
+
+    fn show_right_panel(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        let mut queue = QueuePanel {
+            view: &self.player,
+            snapshot: &self.library.snapshot,
+            artwork: self.artwork.as_mut(),
+        };
+        let actions = right_panel::show(
+            ui,
+            &self.localizer,
+            palette,
+            self.settings.right_panel_open,
+            &mut queue,
+        );
+        for action in actions {
+            self.send(match action {
+                QueueAction::Remove(index) => Command::RemoveFromQueue(index),
+                QueueAction::Move { from, to } => Command::MoveInQueue { from, to },
+                QueueAction::Clear => Command::ClearQueue,
+            });
+        }
+    }
+
+    /// Starts the cover textures once, if there is a cache folder, and uploads what the worker
+    /// has decoded.
+    fn poll_artwork(&mut self, ctx: &egui::Context) {
+        if !self.artwork_started {
+            self.artwork_started = true;
+            self.artwork = self
+                .deps
+                .paths
+                .as_ref()
+                .map(|paths| ArtworkTextures::new(paths.cache_dir.join("artwork"), ctx));
+        }
+        if let Some(artwork) = &mut self.artwork {
+            artwork.poll();
+        }
+    }
+
+    fn show_player_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, palette: &Palette) {
+        let now = NowPlaying::of(&self.player, &self.library.snapshot, &self.localizer);
+        let position_ms = self.clock.as_ref().map_or(0, |clock| {
+            player_bar::position_ms(clock.read(), &self.player)
+        });
+        let mut bar = PlayerBar {
+            tr: &self.localizer,
+            palette,
+            view: &self.player,
+            now: now.as_ref(),
+            position_ms,
+            settings: &self.settings,
+            queue_open: self.settings.right_panel_open,
+            artwork: self.artwork.as_mut(),
+        };
+        let actions = player_bar::show(ui, &mut bar);
+        let now = ctx.input(|input| input.time);
+        let moves_position = |action: &PlayerAction| {
+            matches!(
+                action,
+                PlayerAction::Seek(_)
+                    | PlayerAction::Previous
+                    | PlayerAction::Next
+                    | PlayerAction::TogglePlay
+            )
+        };
+        if actions.iter().any(moves_position) {
+            self.settle_until = now + SETTLE_FOR;
+        }
+        for action in actions {
+            self.handle_player_action(ctx, action);
+        }
+        if now < self.settle_until {
+            ctx.request_repaint_after(SETTLE_REPAINT);
+        }
+    }
+
+    fn handle_player_action(&mut self, ctx: &egui::Context, action: PlayerAction) {
+        let mut settings = self.settings.clone();
+        match action {
+            PlayerAction::TogglePlay => return self.send(Command::TogglePlay),
+            PlayerAction::Next => return self.send(Command::Next),
+            PlayerAction::Previous => return self.send(Command::Previous),
+            PlayerAction::Seek(position_ms) => return self.send(Command::Seek(position_ms)),
+            PlayerAction::ToggleQueue => return self.toggle_right_panel(ctx),
+            PlayerAction::SetVolume(volume) => {
+                settings.volume = volume;
+                // Raising the volume is asking to hear it.
+                if volume > 0.0 {
+                    settings.muted = false;
+                }
+            }
+            PlayerAction::ToggleMute => settings.muted = !settings.muted,
+            PlayerAction::ToggleShuffle => settings.shuffle = !settings.shuffle,
+            PlayerAction::CycleRepeat => {
+                settings.repeat = match settings.repeat {
+                    RepeatMode::Off => RepeatMode::All,
+                    RepeatMode::All => RepeatMode::One,
+                    RepeatMode::One => RepeatMode::Off,
+                };
+            }
+        }
+        self.update_settings(ctx, settings);
     }
 
     /// Installs the fonts on the first frame and applies the visuals when they changed.
@@ -211,7 +364,9 @@ impl AriaApp {
         }
     }
 
-    fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
+    /// Applies one event from the backend. [`Self::show`] does this for each event the backend
+    /// has sent; tests call it to play the backend's part.
+    pub fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
         match event {
             Event::Notice(notice) => self.notify(ctx, notice),
             Event::SettingsReplaced(settings) => {
@@ -223,6 +378,23 @@ impl AriaApp {
                 }
             }
             Event::SettingsSaved => tracing::trace!("settings saved"),
+            Event::LibraryUpdated(snapshot) => {
+                self.library.snapshot = snapshot;
+            }
+            Event::ScanProgress(scan) => {
+                // Covers that were missing may have been written by the scan that just ended;
+                // between snapshots, a missing cover stays missing.
+                let finished = self.library.scan.is_some() && scan.is_none();
+                self.library.scan = scan;
+                if finished && let Some(artwork) = &mut self.artwork {
+                    artwork.retry_failed();
+                }
+            }
+            Event::Player(player) => {
+                self.library.current = player.current;
+                self.player = player;
+            }
+            Event::OutputDevices(devices) => self.devices = devices,
         }
     }
 
@@ -238,12 +410,24 @@ impl AriaApp {
         }
     }
 
+    /// Adds the folder the user chose in the dialog, if one was chosen since the last frame.
+    fn collect_picked_folder(&mut self) {
+        if let Some(folder) = self.picker.picked() {
+            self.send(Command::AddFolder(folder));
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         if self.modal_open {
             // The dialog is modal: nothing behind it changes until it is closed.
             return;
         }
-        let shortcuts = ctx.input_mut(read_shortcuts);
+        let typing = ctx.egui_wants_keyboard_input();
+        let shortcuts = ctx.input_mut(|input| read_shortcuts(input, typing));
+        if shortcuts.toggle_play {
+            self.settle_until = ctx.input(|input| input.time) + SETTLE_FOR;
+            self.send(Command::TogglePlay);
+        }
         if shortcuts.toggle_right_panel {
             self.toggle_right_panel(ctx);
         }
@@ -311,6 +495,9 @@ impl AriaApp {
             paths_available: self.deps.paths.is_some(),
             modal_open: &mut self.modal_open,
             out: &mut actions,
+            library: &self.library,
+            devices: &self.devices,
+            artwork: self.artwork.as_mut(),
         };
         let route = self.history.current();
         let frame = Frame::new()
@@ -323,6 +510,17 @@ impl AriaApp {
         for action in actions {
             self.handle_page_action(ctx, action);
         }
+        self.list_devices_on_entering_settings(route);
+    }
+
+    /// Asks the backend for the output devices once per entry into the Settings route, so
+    /// the list is as fresh as the user's last visit and no frame waits for it.
+    fn list_devices_on_entering_settings(&mut self, route: Route) {
+        let on_settings = route == Route::Settings;
+        if on_settings && !self.on_settings {
+            self.send(Command::ListDevices);
+        }
+        self.on_settings = on_settings;
     }
 
     fn handle_page_action(&mut self, ctx: &egui::Context, action: PageAction) {
@@ -335,6 +533,15 @@ impl AriaApp {
             }
             PageAction::OpenConfigDir => self.open_folder(ctx, |paths| &paths.config_dir),
             PageAction::OpenLogDir => self.open_folder(ctx, |paths| &paths.log_dir),
+            PageAction::PlayContext { ids, start } => {
+                self.send(Command::PlayContext { ids, start });
+            }
+            PageAction::PlayNext(id) => self.send(Command::PlayNext(id)),
+            PageAction::AddToQueue(id) => self.send(Command::AddToQueue(id)),
+            PageAction::PickFolder => self.pick_folder(ctx),
+            PageAction::RemoveFolder(id) => self.send(Command::RemoveFolder(id)),
+            PageAction::Rescan => self.send(Command::Rescan),
+            PageAction::ClearArtwork => self.send(Command::ClearArtwork),
         }
     }
 
@@ -348,6 +555,14 @@ impl AriaApp {
         if let Err(err) = started {
             tracing::warn!(%err, "could not open the folder");
             self.notify(ctx, OPEN_FOLDER_FAILED);
+        }
+    }
+
+    /// Opens the folder dialog, unless one is open already.
+    fn pick_folder(&mut self, ctx: &egui::Context) {
+        if let Err(err) = self.picker.start(ctx) {
+            tracing::warn!(%err, "could not open the folder dialog");
+            self.notify(ctx, PICK_FOLDER_FAILED);
         }
     }
 
@@ -395,6 +610,8 @@ impl AriaApp {
     }
 
     fn send(&self, command: Command) {
+        #[cfg(test)]
+        self.sent.borrow_mut().push(command.clone());
         if let Some(backend) = &self.deps.backend {
             backend.send(command);
         }
@@ -432,8 +649,9 @@ mod tests {
     };
 
     use aria_core::{
+        FakeFactory, OutputFormat,
         notice::NoticeLevel,
-        runtime::{Backend, BackendConfig, Waker},
+        runtime::{Backend, BackendConfig, BackendServices, Waker},
         settings::{Language, Theme},
     };
     use egui_kittest::Harness;
@@ -486,7 +704,15 @@ mod tests {
         let flag = Arc::clone(&woke);
         let waker: Waker = Arc::new(move || flag.store(true, Ordering::SeqCst));
         // Read-only: nothing is written, and a reset is still answered.
-        let backend = Backend::start(None, waker, BackendConfig::default()).unwrap();
+        let services = BackendServices {
+            library: None,
+            output: Box::new(FakeFactory::new(OutputFormat {
+                sample_rate: 48_000,
+                channels: 2,
+            })),
+            settings: Settings::default(),
+        };
+        let backend = Backend::start(None, services, waker, BackendConfig::default()).unwrap();
         let settings = Settings {
             language: Some(Language::En),
             theme: Theme::Light,
@@ -524,6 +750,7 @@ mod tests {
         let failed = Notice {
             level: NoticeLevel::Error,
             key: "notice-settings-save-failed",
+            args: Vec::new(),
         };
         app.handle_event(&ctx, Event::Notice(failed.clone()));
         assert_eq!(app.toasts.notices().collect::<Vec<_>>(), [&failed]);
@@ -569,6 +796,38 @@ mod tests {
     }
 
     #[test]
+    fn failed_covers_are_retried_when_a_scan_ends_not_with_every_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = app(vec![]);
+        let id = aria_library::ArtworkId("gone".into());
+        let mut textures = ArtworkTextures::new(dir.path().to_path_buf(), &ctx);
+        assert!(textures.get(&id).is_none());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !textures.has_failed(&id) {
+            assert!(Instant::now() < deadline, "the cover was not tried");
+            thread::sleep(Duration::from_millis(2));
+            textures.poll();
+        }
+        app.artwork = Some(textures);
+
+        // A snapshot, even during a scan, leaves the failure alone.
+        let scan = aria_library::ScanProgress::default();
+        app.handle_event(&ctx, Event::ScanProgress(Some(scan)));
+        app.handle_event(&ctx, Event::LibraryUpdated(Arc::default()));
+        assert!(app.artwork.as_ref().is_some_and(|a| a.has_failed(&id)));
+
+        // The end of the scan forgets it, so the next draw asks again.
+        app.handle_event(&ctx, Event::ScanProgress(None));
+        let Some(artwork) = app.artwork.as_mut() else {
+            panic!("the textures are there");
+        };
+        assert!(!artwork.has_failed(&id));
+        assert!(artwork.get(&id).is_none());
+        assert!(artwork.is_pending(&id));
+    }
+
+    #[test]
     fn no_startup_instant_by_default() {
         assert!(app(vec![]).startup.is_none());
     }
@@ -591,6 +850,7 @@ mod tests {
         let notice = Notice {
             level: NoticeLevel::Warning,
             key: "notice-settings-recovered",
+            args: Vec::new(),
         };
         assert_eq!(app(vec![notice.clone()]).pending_notices(), [notice]);
     }
@@ -633,5 +893,126 @@ mod tests {
         settings.accent_dark = Some(aria_core::settings::Rgb { r: 1, g: 2, b: 3 });
         app.update_settings(&ctx, settings);
         assert!(app.style_dirty);
+    }
+
+    fn toggles_sent(harness: &Harness<'_, AriaApp>) -> usize {
+        harness
+            .state()
+            .sent
+            .borrow()
+            .iter()
+            .filter(|command| matches!(command, Command::TogglePlay))
+            .count()
+    }
+
+    fn list_devices_sent(harness: &Harness<'_, AriaApp>) -> usize {
+        harness
+            .state()
+            .sent
+            .borrow()
+            .iter()
+            .filter(|command| matches!(command, Command::ListDevices))
+            .count()
+    }
+
+    #[test]
+    fn entering_settings_lists_the_devices_once_per_entry() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 780.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app(vec![]));
+        harness.run();
+        assert_eq!(list_devices_sent(&harness), 0, "listed away from Settings");
+        harness.state_mut().history.navigate(Route::Settings);
+        // Several frames on the page: still one request.
+        harness.run();
+        harness.run();
+        assert_eq!(list_devices_sent(&harness), 1);
+        harness.state_mut().history.navigate(Route::Home);
+        harness.run();
+        harness.state_mut().history.navigate(Route::Settings);
+        harness.run();
+        assert_eq!(list_devices_sent(&harness), 2, "a second visit asks again");
+    }
+
+    #[test]
+    fn the_device_list_is_kept() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let device = DeviceInfo {
+            id: aria_core::DeviceId("a".into()),
+            name: "Speakers".into(),
+            is_default: true,
+        };
+        app.handle_event(&ctx, Event::OutputDevices(vec![device.clone()]));
+        assert_eq!(app.devices, [device]);
+    }
+
+    fn space_harness() -> Harness<'static, AriaApp> {
+        let mut app = app(vec![]);
+        let track = aria_library::Track {
+            id: aria_library::TrackId(1),
+            folder: aria_library::FolderId(1),
+            path: "music/1.flac".into(),
+            title: "Song".to_owned(),
+            artist: None,
+            album: None,
+            album_artist: None,
+            track_no: None,
+            disc_no: None,
+            year: None,
+            genre: None,
+            duration_ms: 1000,
+            sample_rate: 44_100,
+            channels: 2,
+            codec: Arc::from("flac"),
+            artwork: None,
+            added_at: 1,
+        };
+        app.library.snapshot = Arc::new(aria_library::LibrarySnapshot {
+            tracks: vec![track],
+            folders: vec![aria_library::Folder {
+                id: aria_library::FolderId(1),
+                path: "music".into(),
+                available: true,
+            }],
+            ..aria_library::LibrarySnapshot::default()
+        });
+        app.history.navigate(Route::LocalMusic);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 780.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn space_toggles_play() {
+        let mut harness = space_harness();
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert_eq!(toggles_sent(&harness), 1);
+    }
+
+    #[test]
+    fn space_in_search_field_types_a_space() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut harness = space_harness();
+        let english = Localizer::new(Language::En).unwrap();
+        let label = english.tr("local-search");
+        let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, &label);
+        field.focus();
+        harness.run();
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert_eq!(toggles_sent(&harness), 0, "Space played while typing");
+    }
+
+    #[test]
+    fn space_is_ignored_with_a_modal_open() {
+        let mut harness = space_harness();
+        harness.state_mut().modal_open = true;
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert_eq!(toggles_sent(&harness), 0, "Space played behind a dialog");
     }
 }

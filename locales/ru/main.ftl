@@ -31,8 +31,26 @@ player-volume = Громкость
 player-devices = Устройства
 player-queue = Очередь
 player-lyrics = Текст песни
+player-pause = Пауза
+player-shuffle = Перемешать
+player-repeat-off = Повтор: выкл.
+player-repeat-all = Повтор: все треки
+player-repeat-one = Повтор: один трек
+player-mute = Выключить звук
+player-unmute = Включить звук
+player-seek = Перемотка
+player-unknown-title = Неизвестное название
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Появится на этапе { $phase }
+
+## Queue panel
+
+queue-now-playing = Сейчас играет
+queue-next-user = Далее в очереди
+queue-next-list = Далее из списка
+queue-clear = Очистить очередь
+# $title - the track's title
+queue-remove = Убрать из очереди: { $title }
 
 ## Settings page
 
@@ -48,6 +66,21 @@ settings-accent-light = Акцентный цвет светлой темы
 settings-accent-reset = Сбросить
 settings-minimize-to-tray = Сворачивать в трей
 settings-minimize-to-tray-hint = Окно будет сворачиваться в системный трей, а не на панель задач. Заработает на этапе 4.
+settings-playback = Воспроизведение
+settings-output-device = Устройство вывода
+settings-device-system-default = Системное по умолчанию
+settings-device-unavailable = Недоступное устройство
+settings-gapless = Непрерывное воспроизведение
+settings-library = Библиотека
+settings-folders-empty = Папок пока нет. Добавьте папку с вашей музыкой.
+settings-folder-unavailable = Недоступна
+settings-remove = Удалить
+settings-remove-named = Удалить { $folder }
+settings-remove-folder-title = Убрать эту папку?
+settings-remove-folder-body = Папка будет убрана из библиотеки. Её файлы останутся на диске.
+settings-clear-artwork = Очистить кэш обложек
+settings-clear-artwork-title = Очистить кэш обложек?
+settings-clear-artwork-body = Сохранённые обложки будут удалены. Они создадутся заново при следующем сканировании библиотеки.
 settings-advanced = Дополнительно
 settings-log-level = Уровень журналирования
 settings-log-level-error = Ошибки
@@ -73,7 +106,67 @@ notice-settings-recovered = Не удалось прочитать файл на
 notice-settings-readonly = Нет доступа к файлу настроек, поэтому используются значения по умолчанию. Изменения могут не сохраниться.
 notice-settings-save-failed = Не удалось сохранить настройки. Aria попробует снова при следующем изменении.
 notice-open-folder-failed = Не удалось открыть папку.
+notice-pick-folder-failed = Не удалось открыть выбор папки.
 notice-dismiss = Закрыть
+
+## Library notices (toasts)
+
+# $count (Number) - how many files and folders the scan could not read
+library-scan-skipped = { $count ->
+    [one] Не удалось прочитать { $count } файл или папку, при сканировании они пропущены.
+    [few] Не удалось прочитать { $count } файла или папки, при сканировании они пропущены.
+   *[other] Не удалось прочитать { $count } файлов или папок, при сканировании они пропущены.
+}
+# $folder (String) - the last part of the folder's path, e.g. Music
+library-folder-unavailable = Папка { $folder } недоступна, или все её файлы перемещены либо удалены. Треки сохранены, а папку можно удалить в настройках.
+library-folder-nested = Эта папка находится внутри папки, которая уже есть в библиотеке.
+library-folder-duplicate = Эта папка уже есть в библиотеке.
+library-recovered = База данных библиотеки была повреждена, поэтому создана новая. Старый файл сохранён как резервная копия.
+library-newer = Библиотека сохранена более новой версией Aria, поэтому она отключена. Обновите Aria, чтобы пользоваться ею.
+library-unavailable = Не удалось открыть библиотеку, поэтому она пока отключена. Остальные функции Aria продолжают работать.
+library-action-failed = В библиотеке произошла ошибка, и действие не завершено. Ваши музыкальные файлы не изменены.
+
+## Playback notices (toasts)
+
+# $title (String) - the track's title, e.g. Blue in Green
+playback-track-failed = Не удалось воспроизвести «{ $title }», трек пропущен.
+playback-stopped-after-failures = Воспроизведение остановлено: несколько треков подряд воспроизвести не удалось.
+playback-device-fallback = Аудиоустройство недоступно, поэтому Aria переключилась на другое.
+playback-no-device = Нет доступного аудиоустройства, поэтому воспроизведение приостановлено.
+
+## Local Music page
+
+local-add-folder = Добавить папку
+local-rescan = Пересканировать
+local-tab-tracks = Треки
+local-tab-albums = Альбомы
+local-tab-artists = Исполнители
+local-search = Поиск по музыке
+local-col-number = #
+local-col-title = Название
+local-col-artist = Исполнитель
+local-col-album = Альбом
+local-col-duration = Длительность
+local-play = Воспроизвести
+local-play-next = Играть следующим
+local-add-to-queue = Добавить в очередь
+local-back = Все треки
+local-empty-title = Музыки пока нет
+local-empty-body = Добавьте папку с музыкой, и Aria найдёт её.
+local-no-tracks-title = Треки не найдены
+local-no-tracks-body = Треки появятся здесь, когда Aria прочитает ваши папки.
+local-no-results = По вашему запросу ничего не найдено.
+# $count (Number) - how many tracks an album or an artist has
+local-track-count = { $count ->
+    [one] { $count } трек
+    [few] { $count } трека
+    [many] { $count } треков
+   *[other] { $count } трека
+}
+# $count (Number) - how many audio files the running scan has looked at so far
+library-scanning = Идёт сканирование папок, просмотрено файлов: { $count }
+library-unknown-artist = Неизвестный исполнитель
+library-unknown-album = Неизвестный альбом
 
 ## Fatal startup errors (a message box shown before Aria quits)
 

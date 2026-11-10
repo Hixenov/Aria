@@ -1,10 +1,14 @@
-//! The Settings page: General, Advanced and About, each a card of rows, and the dialog that
-//! confirms a reset to the defaults.
+//! The Settings page: General, Playback, Library, Advanced and About, each a card of rows, and
+//! the dialog that confirms a reset, a folder's removal or clearing the artwork cache.
+
+mod library;
+mod playback;
 
 use aria_core::{
     i18n::Localizer,
     settings::{Language, LogLevel, Rgb, Settings, Theme},
 };
+use aria_library::FolderId;
 use eframe::egui::{
     Align, Button, Checkbox, Color32, ComboBox, Direction, Frame, Id, Label, Layout, Margin, Modal,
     Rect, RichText, ScrollArea, Separator, Shape, Sides, Stroke, StrokeKind, TextStyle, Ui,
@@ -46,8 +50,27 @@ const COMBO_WIDTH: f32 = 180.0;
 const DIALOG_WIDTH: f32 = 360.0;
 /// Least width of the reset dialog's buttons.
 const DIALOG_BUTTON_WIDTH: f32 = 88.0;
-/// Id of the reset dialog.
+/// Id of the confirmation dialog.
 const DIALOG_ID: &str = "aria_reset_dialog";
+/// Where the open dialog's kind is kept between frames.
+const DIALOG_KIND_ID: &str = "aria_settings_dialog_kind";
+
+/// What the confirmation dialog asks about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dialog {
+    /// Restore the default settings.
+    Reset,
+    /// Take a folder out of the library.
+    RemoveFolder(FolderId),
+    /// Delete the saved artwork thumbnails.
+    ClearArtwork,
+}
+
+/// Opens the confirmation dialog for `dialog`.
+fn open_dialog(ui: &Ui, modal_open: &mut bool, dialog: Dialog) {
+    ui.data_mut(|data| data.insert_temp(Id::unique(DIALOG_KIND_ID), dialog));
+    *modal_open = true;
+}
 
 /// The theme choices, in the order shown.
 const THEMES: [Theme; 3] = [Theme::Dark, Theme::Light, Theme::System];
@@ -80,6 +103,8 @@ pub fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
             // `set_max_width` can also widen a `Ui`: never past the page.
             ui.set_max_width(ui.available_width().min(MAX_WIDTH));
             general(ui, ctx.tr, &ctx.palette, &mut settings);
+            playback::show(ui, ctx, &mut settings);
+            library::show(ui, ctx);
             advanced(ui, ctx, &mut settings.log_level);
             about(ui, ctx.tr, &ctx.palette);
         });
@@ -88,7 +113,7 @@ pub fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
     }
 
     if *ctx.modal_open {
-        reset_dialog(ui, ctx);
+        confirm_dialog(ui, ctx);
     }
 }
 
@@ -154,7 +179,7 @@ fn advanced(ui: &mut Ui, ctx: &mut PageCtx<'_>, log_level: &mut LogLevel) {
         divider(ui);
         buttons_row(ui, |ui| {
             if ui.button(tr.tr("settings-reset")).clicked() {
-                *ctx.modal_open = true;
+                open_dialog(ui, ctx.modal_open, Dialog::Reset);
             }
         });
     });
@@ -369,25 +394,65 @@ fn title(ui: &mut Ui, p: &Palette, text: &str) {
     response.widget_info(|| WidgetInfo::labeled(Role::Heading, true, text));
 }
 
-/// Asks before restoring the defaults. Cancel, Escape and a click outside close it; Confirm
-/// closes it and resets.
-fn reset_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
+/// The title and body keys of the dialog asking about `dialog`.
+fn dialog_text(dialog: Dialog) -> (&'static str, &'static str) {
+    match dialog {
+        Dialog::Reset => (
+            "settings-reset-confirm-title",
+            "settings-reset-confirm-body",
+        ),
+        Dialog::RemoveFolder(_) => (
+            "settings-remove-folder-title",
+            "settings-remove-folder-body",
+        ),
+        Dialog::ClearArtwork => (
+            "settings-clear-artwork-title",
+            "settings-clear-artwork-body",
+        ),
+    }
+}
+
+/// Asks before a change that cannot be taken back. Cancel, Escape and a click outside close
+/// it; Confirm closes it and makes the request.
+fn confirm_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
     let tr = ctx.tr;
     let p = ctx.palette;
+    // Without a kind there is nothing to confirm, and guessing could do the wrong thing: close.
+    let Some(dialog) = ui.data(|data| data.get_temp::<Dialog>(Id::unique(DIALOG_KIND_ID))) else {
+        *ctx.modal_open = false;
+        return;
+    };
+    // A folder that has left the library since the dialog opened has nothing to remove.
+    if let Dialog::RemoveFolder(id) = dialog
+        && !ctx.library.snapshot.folders.iter().any(|f| f.id == id)
+    {
+        *ctx.modal_open = false;
+        ui.data_mut(|data| data.remove::<Dialog>(Id::unique(DIALOG_KIND_ID)));
+        return;
+    }
+    let (title_key, body_key) = dialog_text(dialog);
     let frame = Frame::new()
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CARD_RADIUS)
         .inner_margin(Margin::same(SPACE[4] as i8))
         .shadow(ui.visuals().window_shadow);
-    let dialog = Modal::new(Id::unique(DIALOG_ID))
+    let result = Modal::new(Id::unique(DIALOG_ID))
         .frame(frame)
         .show(ui.ctx(), |ui| {
             ui.set_width(DIALOG_WIDTH);
-            title(ui, &p, &tr.tr("settings-reset-confirm-title"));
+            title(ui, &p, &tr.tr(title_key));
             ui.add_space(SPACE[1]);
-            let body = RichText::new(tr.tr("settings-reset-confirm-body")).color(p.text_muted);
+            let body = RichText::new(tr.tr(body_key)).color(p.text_muted);
             ui.add(Label::new(body).selectable(false).wrap());
+            if let Dialog::RemoveFolder(id) = dialog
+                && let Some(folder) = ctx.library.snapshot.folders.iter().find(|f| f.id == id)
+            {
+                // The user's own folder list, where paths are shown.
+                let path = RichText::new(folder.path.display().to_string()).color(p.text);
+                ui.add_space(SPACE[2]);
+                ui.add(Label::new(path).selectable(false).wrap());
+            }
             ui.add_space(SPACE[4]);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let min_size = vec2(DIALOG_BUTTON_WIDTH, 0.0);
@@ -401,11 +466,16 @@ fn reset_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
             })
             .inner
         });
-    let confirmed = dialog.inner;
-    if confirmed.is_some() || dialog.should_close() {
+    let confirmed = result.inner;
+    if confirmed.is_some() || result.should_close() {
         *ctx.modal_open = false;
+        ui.data_mut(|data| data.remove::<Dialog>(Id::unique(DIALOG_KIND_ID)));
     }
     if confirmed == Some(true) {
-        ctx.out.push(PageAction::ResetSettings);
+        ctx.out.push(match dialog {
+            Dialog::Reset => PageAction::ResetSettings,
+            Dialog::RemoveFolder(id) => PageAction::RemoveFolder(id),
+            Dialog::ClearArtwork => PageAction::ClearArtwork,
+        });
     }
 }

@@ -33,8 +33,26 @@ player-volume = Ձայնի ուժգնություն
 player-devices = Սարքեր
 player-queue = Հերթ
 player-lyrics = Երգի բառեր
+player-pause = Դադար
+player-shuffle = Խառնել
+player-repeat-off = Կրկնություն՝ անջատված
+player-repeat-all = Կրկնություն՝ բոլորը
+player-repeat-one = Կրկնություն՝ մեկ երգ
+player-mute = Անջատել ձայնը
+player-unmute = Միացնել ձայնը
+player-seek = Հետ կամ առաջ տալ
+player-unknown-title = Անհայտ վերնագիր
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Կհայտնվի { $phase }-րդ փուլում
+
+## Queue panel
+
+queue-now-playing = Հիմա նվագում է
+queue-next-user = Հերթում հաջորդը
+queue-next-list = Հաջորդը ցանկից
+queue-clear = Մաքրել հերթը
+# $title - the track's title
+queue-remove = Հեռացնել հերթից՝ { $title }
 
 ## Settings page
 
@@ -50,6 +68,21 @@ settings-accent-light = Բաց թեմայի շեշտադրման գույն
 settings-accent-reset = Վերակայել
 settings-minimize-to-tray = Ծալել համակարգային սկուտեղում
 settings-minimize-to-tray-hint = Պատուհանը կծալվի համակարգային սկուտեղում, այլ ոչ թե առաջադրանքների վահանակում։ Կգործի 4-րդ փուլից սկսած։
+settings-playback = Նվագարկում
+settings-output-device = Ելքային սարք
+settings-device-system-default = Համակարգի լռելյայն
+settings-device-unavailable = Անհասանելի սարք
+settings-gapless = Անընդմեջ նվագարկում
+settings-library = Գրադարան
+settings-folders-empty = Պանակներ դեռ չկան։ Ավելացրեք ձեր երաժշտության պանակը։
+settings-folder-unavailable = Անհասանելի է
+settings-remove = Հեռացնել
+settings-remove-named = Հեռացնել { $folder }
+settings-remove-folder-title = Հեռացնե՞լ այս պանակը
+settings-remove-folder-body = Պանակը կհեռացվի գրադարանից։ Դրա ֆայլերը կմնան սկավառակի վրա։
+settings-clear-artwork = Մաքրել շապիկների քեշը
+settings-clear-artwork-title = Մաքրե՞լ շապիկների քեշը
+settings-clear-artwork-body = Պահված շապիկները կջնջվեն։ Դրանք կստեղծվեն նորից գրադարանի հաջորդ սկանավորման ժամանակ։
 settings-advanced = Լրացուցիչ
 settings-log-level = Մատյանավորման մակարդակ
 settings-log-level-error = Սխալներ
@@ -75,7 +108,64 @@ notice-settings-recovered = Չհաջողվեց կարդալ կարգավորու
 notice-settings-readonly = Կարգավորումների ֆայլը հասանելի չէ, ուստի օգտագործվում են լռելյայն արժեքները։ Փոփոխությունները կարող են չպահպանվել։
 notice-settings-save-failed = Չհաջողվեց պահպանել կարգավորումները։ Նոր փորձ կկատարվի հաջորդ փոփոխության ժամանակ։
 notice-open-folder-failed = Չհաջողվեց բացել պանակը։
+notice-pick-folder-failed = Չհաջողվեց բացել պանակի ընտրությունը։
 notice-dismiss = Փակել
+
+## Library notices (toasts)
+
+# $count (Number) - how many files and folders the scan could not read
+library-scan-skipped = { $count ->
+    [one] Չհաջողվեց կարդալ { $count } ֆայլ կամ պանակ, և այն բաց է թողնվել։
+   *[other] Չհաջողվեց կարդալ { $count } ֆայլ կամ պանակ, և դրանք բաց են թողնվել։
+}
+# $folder (String) - the last part of the folder's path, e.g. Music
+library-folder-unavailable = { $folder } պանակը հասանելի չէ, կամ դրա բոլոր ֆայլերը տեղափոխվել կամ ջնջվել են։ Երգերը պահպանված են, իսկ պանակը կարող եք հեռացնել Կարգավորումներում։
+library-folder-nested = Այս պանակը գտնվում է մի պանակի մեջ, որն արդեն գրադարանում է։
+library-folder-duplicate = Այս պանակն արդեն գրադարանում է։
+library-recovered = Գրադարանի տվյալների բազան վնասված էր, ուստի ստեղծվել է նորը։ Հին ֆայլը պահպանվել է որպես պահուստային պատճեն։
+library-newer = Գրադարանը պահպանվել է Aria-ի ավելի նոր տարբերակով, ուստի այն անջատված է։ Թարմացրեք Aria-ն՝ այն օգտագործելու համար։
+library-unavailable = Չհաջողվեց բացել գրադարանը, ուստի այն առայժմ անջատված է։ Aria-ի մնացած գործառույթները շարունակում են աշխատել։
+library-action-failed = Գրադարանում սխալ տեղի ունեցավ, և գործողությունը չավարտվեց։ Ձեր երաժշտական ֆայլերը չեն փոխվել։
+
+## Playback notices (toasts)
+
+# $title (String) - the track's title, e.g. Blue in Green
+playback-track-failed = Չհաջողվեց նվագարկել «{ $title }» երգը, և այն բաց է թողնվել։
+playback-stopped-after-failures = Նվագարկումը դադարեցվել է, քանի որ մի քանի երգ անընդմեջ չհաջողվեց նվագարկել։
+playback-device-fallback = Աուդիոսարքը հասանելի չէ, ուստի Aria-ն անցել է մեկ այլ սարքի։
+playback-no-device = Հասանելի աուդիոսարք չկա, ուստի նվագարկումը դադարեցված է։
+
+## Local Music page
+
+local-add-folder = Ավելացնել պանակ
+local-rescan = Նորից սկանավորել
+local-tab-tracks = Երգեր
+local-tab-albums = Ալբոմներ
+local-tab-artists = Կատարողներ
+local-search = Որոնել երաժշտություն
+local-col-number = #
+local-col-title = Վերնագիր
+local-col-artist = Կատարող
+local-col-album = Ալբոմ
+local-col-duration = Տևողություն
+local-play = Նվագարկել
+local-play-next = Նվագարկել հաջորդը
+local-add-to-queue = Ավելացնել հերթին
+local-back = Բոլոր երգերը
+local-empty-title = Երաժշտություն դեռ չկա
+local-empty-body = Ավելացրեք պանակ ձեր երաժշտությամբ, և Aria-ն այն կգտնի։
+local-no-tracks-title = Երգեր չեն գտնվել
+local-no-tracks-body = Երգերն այստեղ կհայտնվեն, երբ Aria-ն կարդա ձեր պանակները։
+local-no-results = Ձեր որոնմանը համապատասխանող երգ չկա։
+# $count (Number) - how many tracks an album or an artist has
+local-track-count = { $count ->
+    [one] { $count } երգ
+   *[other] { $count } երգ
+}
+# $count (Number) - how many audio files the running scan has looked at so far
+library-scanning = Պանակները սկանավորվում են, դիտարկվել է { $count } ֆայլ
+library-unknown-artist = Անհայտ կատարող
+library-unknown-album = Անհայտ ալբոմ
 
 ## Fatal startup errors (a message box shown before Aria quits)
 

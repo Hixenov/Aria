@@ -9,25 +9,28 @@ use aria_app::{
     app::{AppDeps, AriaApp},
     nav::Route,
     ui::{
+        pages::{self, LibraryView, PageAction, PageCtx},
         theme::{Palette, fonts},
         widgets::Toasts,
     },
 };
 use aria_core::{
+    DeviceId, DeviceInfo, FakeFactory, OutputFormat,
     i18n::{Localizer, os_language},
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
-    runtime::{Backend, BackendConfig, Waker},
+    runtime::{Backend, BackendConfig, BackendServices, Waker},
     settings::{Language, LogLevel, Rgb, Settings, Theme, store::SettingsStore},
 };
+use aria_library::{Folder, FolderId, LibrarySnapshot};
 use eframe::egui::{self, Key, Modifiers, PointerButton, ViewportId, accesskit::Role};
 use egui_kittest::{
     Harness,
     kittest::{NodeT as _, Queryable as _},
 };
 
-/// The default window size.
-const SIZE: egui::Vec2 = egui::vec2(1200.0, 780.0);
+/// The default window size, tall enough that every card of the Settings page is on screen.
+const SIZE: egui::Vec2 = egui::vec2(1200.0, 1400.0);
 /// AltGr as Windows reports it: Ctrl and Alt together.
 const ALTGR: Modifiers = Modifiers {
     alt: true,
@@ -141,7 +144,7 @@ fn toast_harness(toasts: Toasts) -> Harness<'static, Toasts> {
 }
 
 fn notice(level: NoticeLevel, key: &'static str) -> Notice {
-    Notice { level, key }
+    Notice::new(level, key)
 }
 
 // Theme and language.
@@ -369,8 +372,21 @@ fn narrow_page_keeps_every_control_beside_the_right_panel() {
 fn persisting_settings_page(file: &Path) -> Harness<'static, AriaApp> {
     let waker: Waker = Arc::new(|| {});
     let store = SettingsStore::new(file.to_path_buf());
-    let backend = Backend::start(Some(Box::new(store)), waker, BackendConfig::default())
-        .unwrap_or_else(|err| panic!("the backend did not start: {err}"));
+    let services = BackendServices {
+        library: None,
+        output: Box::new(FakeFactory::new(OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        })),
+        settings: Settings::default(),
+    };
+    let backend = Backend::start(
+        Some(Box::new(store)),
+        services,
+        waker,
+        BackendConfig::default(),
+    )
+    .unwrap_or_else(|err| panic!("the backend did not start: {err}"));
     let deps = AppDeps {
         backend: Some(backend),
         ..AppDeps::none()
@@ -543,6 +559,17 @@ fn startup_notice_shows_toast() {
 }
 
 #[test]
+fn notice_args_reach_the_translation() {
+    let skipped = notice(NoticeLevel::Warning, "library-scan-skipped").with_arg("count", "42");
+    let harness = app_harness(english(), AppDeps::none(), vec![skipped]);
+    assert!(
+        harness
+            .query_by_label("42 files or folders couldn't be read and were skipped.")
+            .is_some()
+    );
+}
+
+#[test]
 fn error_toast_persists_until_dismissed() {
     let mut toasts = Toasts::default();
     toasts.push(
@@ -662,4 +689,330 @@ fn narrowest_russian_theme_switch_stays_on_the_page() {
             );
         }
     }
+}
+
+// Playback and Library sections, drawn on their own with the devices and library handed in:
+// what the page asks of the app is read from the actions it leaves behind.
+
+/// Tall enough that no card needs scrolling to.
+const TALL: egui::Vec2 = egui::vec2(1000.0, 1600.0);
+
+/// What the page is given, and what it left behind.
+struct Page {
+    tr: Localizer,
+    settings: Settings,
+    modal_open: bool,
+    devices: Vec<DeviceInfo>,
+    library: LibraryView,
+    actions: Vec<PageAction>,
+}
+
+fn device(id: &str, name: &str) -> DeviceInfo {
+    DeviceInfo {
+        id: DeviceId(id.into()),
+        name: name.into(),
+        is_default: false,
+    }
+}
+
+fn folder(id: i64, path: &str, available: bool) -> Folder {
+    Folder {
+        id: FolderId(id),
+        path: path.into(),
+        available,
+    }
+}
+
+fn settings_only(
+    settings: Settings,
+    devices: Vec<DeviceInfo>,
+    folders: Vec<Folder>,
+) -> Harness<'static, Page> {
+    let page = Page {
+        tr: localizer(Language::En),
+        settings,
+        modal_open: false,
+        devices,
+        library: LibraryView {
+            snapshot: Arc::new(LibrarySnapshot {
+                folders,
+                ..LibrarySnapshot::default()
+            }),
+            ..LibraryView::default()
+        },
+        actions: Vec::new(),
+    };
+    Harness::builder()
+        .with_size(TALL)
+        .with_context_setup(fonts::install)
+        .build_ui_state(
+            |ui, page: &mut Page| {
+                let mut ctx = PageCtx {
+                    tr: &page.tr,
+                    palette: Palette::dark(),
+                    settings: &page.settings,
+                    paths_available: true,
+                    modal_open: &mut page.modal_open,
+                    out: &mut page.actions,
+                    library: &page.library,
+                    devices: &page.devices,
+                    artwork: None,
+                };
+                pages::show(Route::Settings, ui, &mut ctx);
+            },
+            page,
+        )
+}
+
+/// The settings the page asked to save last, if it asked.
+fn saved(harness: &Harness<'_, Page>) -> Option<Settings> {
+    harness
+        .state()
+        .actions
+        .iter()
+        .rev()
+        .find_map(|action| match action {
+            PageAction::UpdateSettings(settings) => Some(settings.clone()),
+            _ => None,
+        })
+}
+
+/// Opens the combo box `combo` and picks `option`, in a page-only harness.
+fn choose_in(harness: &mut Harness<'_, Page>, combo: &str, option: &str) {
+    harness.get_by_role_and_label(Role::ComboBox, combo).click();
+    harness.run();
+    harness
+        .get_by_role(Role::ListBox)
+        .get_by_role_and_label(Role::Button, option)
+        .click();
+    harness.run();
+}
+
+#[test]
+fn device_list_starts_with_system_default() {
+    let devices = vec![device("a", "Speakers"), device("b", "Headphones")];
+    let mut harness = settings_only(english(), devices, vec![]);
+    let label = en("settings-output-device");
+    harness
+        .get_by_role_and_label(Role::ComboBox, &label)
+        .click();
+    harness.run();
+    let options: Vec<String> = harness
+        .get_by_role(Role::ListBox)
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .collect();
+    let first = en("settings-device-system-default");
+    assert_eq!(options, [first.as_str(), "Speakers", "Headphones"]);
+}
+
+#[test]
+fn choosing_a_device_updates_settings() {
+    let devices = vec![device("a", "Speakers"), device("b", "Headphones")];
+    let mut harness = settings_only(english(), devices, vec![]);
+    choose_in(&mut harness, &en("settings-output-device"), "Headphones");
+    let settings = saved(&harness).unwrap_or_else(|| panic!("no settings update"));
+    assert_eq!(settings.output_device, Some(DeviceId("b".into())));
+    // And back to the system default.
+    harness.state_mut().settings = settings;
+    harness.state_mut().actions.clear();
+    choose_in(
+        &mut harness,
+        &en("settings-output-device"),
+        &en("settings-device-system-default"),
+    );
+    let settings = saved(&harness).unwrap_or_else(|| panic!("no settings update"));
+    assert_eq!(settings.output_device, None);
+}
+
+#[test]
+fn missing_saved_device_stays_selected() {
+    let settings = Settings {
+        output_device: Some(DeviceId("gone-private-id".into())),
+        ..english()
+    };
+    let mut harness = settings_only(settings, vec![device("a", "Speakers")], vec![]);
+    let unavailable = en("settings-device-unavailable");
+    // Shown as unavailable, never by its id, and drawing it changes nothing.
+    let name = en("settings-output-device");
+    let combo = harness.get_by_role_and_label(Role::ComboBox, &name);
+    assert_eq!(combo.accesskit_node().value(), Some(unavailable.clone()));
+    assert!(harness.query_by_label_contains("gone-private-id").is_none());
+    assert_eq!(saved(&harness), None);
+    // The entry is in the list, and picking it keeps the setting.
+    choose_in(&mut harness, &en("settings-output-device"), &unavailable);
+    assert_eq!(
+        saved(&harness),
+        None,
+        "keeping the entry changed the setting"
+    );
+    assert!(harness.query_by_label_contains("gone-private-id").is_none());
+}
+
+#[test]
+fn gapless_toggle_updates_settings() {
+    let mut harness = settings_only(english(), vec![], vec![]);
+    let label = en("settings-gapless");
+    harness
+        .get_by_role_and_label(Role::CheckBox, &label)
+        .click();
+    harness.run();
+    let settings = saved(&harness).unwrap_or_else(|| panic!("no settings update"));
+    assert!(!settings.gapless);
+}
+
+#[test]
+fn folders_are_listed_with_status() {
+    let folders = vec![folder(1, "music-a", true), folder(2, "music-b", false)];
+    let harness = settings_only(english(), vec![], folders);
+    assert!(harness.query_by_label("music-a").is_some());
+    assert!(harness.query_by_label("music-b").is_some());
+    // Only the folder that cannot be reached carries the warning.
+    let warning = en("settings-folder-unavailable");
+    assert_eq!(harness.query_all_by_label(&warning).count(), 1);
+}
+
+#[test]
+fn an_empty_library_still_shows_the_section() {
+    let harness = settings_only(english(), vec![], vec![]);
+    assert!(
+        harness
+            .query_by_label(&en("settings-folders-empty"))
+            .is_some()
+    );
+    for key in ["local-add-folder", "local-rescan", "settings-clear-artwork"] {
+        assert!(harness.query_by_label(&en(key)).is_some(), "{key}");
+    }
+}
+
+#[test]
+fn remove_folder_asks_first() {
+    let mut harness = settings_only(english(), vec![], vec![folder(7, "music-a", true)]);
+    click_button(&mut harness, "Remove music-a");
+    assert!(harness.state().actions.is_empty(), "removed without asking");
+    assert!(harness.state().modal_open);
+    // The dialog says the files stay on disk.
+    let body = en("settings-remove-folder-body");
+    assert!(body.contains("stay on disk"));
+    assert!(harness.query_by_label(&body).is_some());
+    // Cancel keeps the folder.
+    click_button(&mut harness, &en("settings-cancel"));
+    assert!(harness.state().actions.is_empty());
+    assert!(!harness.state().modal_open);
+    // Confirm removes it.
+    click_button(&mut harness, "Remove music-a");
+    click_button(&mut harness, &en("settings-confirm"));
+    assert_eq!(
+        harness.state().actions,
+        [PageAction::RemoveFolder(FolderId(7))]
+    );
+    assert!(!harness.state().modal_open);
+}
+
+#[test]
+fn clear_artwork_asks_first() {
+    let mut harness = settings_only(english(), vec![], vec![]);
+    click_button(&mut harness, &en("settings-clear-artwork"));
+    assert!(harness.state().actions.is_empty(), "cleared without asking");
+    let body = en("settings-clear-artwork-body");
+    assert!(harness.query_by_label(&body).is_some());
+    click_button(&mut harness, &en("settings-confirm"));
+    assert_eq!(harness.state().actions, [PageAction::ClearArtwork]);
+}
+
+#[test]
+fn add_folder_requests_the_dialog() {
+    let mut harness = settings_only(english(), vec![], vec![]);
+    click_button(&mut harness, &en("local-add-folder"));
+    assert_eq!(harness.state().actions, [PageAction::PickFolder]);
+}
+
+#[test]
+fn rescan_button_sends_rescan() {
+    let mut harness = settings_only(english(), vec![], vec![folder(1, "music-a", true)]);
+    click_button(&mut harness, &en("local-rescan"));
+    assert_eq!(harness.state().actions, [PageAction::Rescan]);
+}
+
+#[test]
+fn reset_keeps_folders() {
+    let mut harness = settings_only(english(), vec![], vec![folder(1, "music-a", true)]);
+    click_button(&mut harness, &en("settings-reset"));
+    click_button(&mut harness, &en("settings-confirm"));
+    // Only the settings are reset: nothing asks for a folder to go, and the list stays.
+    assert_eq!(harness.state().actions, [PageAction::ResetSettings]);
+    assert!(harness.query_by_label("music-a").is_some());
+}
+
+#[test]
+fn each_remove_button_names_its_folder() {
+    let folders = vec![folder(1, "music-a", true), folder(2, "music-b", true)];
+    let harness = settings_only(english(), vec![], folders);
+    for name in ["Remove music-a", "Remove music-b"] {
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Button, name)
+                .is_some(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn removal_follows_the_folder_when_the_list_changes_under_the_dialog() {
+    let folders = vec![folder(1, "music-a", true), folder(2, "music-b", true)];
+    let mut harness = settings_only(english(), vec![], folders);
+    click_button(&mut harness, "Remove music-b");
+    // A new snapshot arrives with the folders the other way round.
+    let swapped = vec![folder(2, "music-b", true), folder(1, "music-a", true)];
+    harness.state_mut().library.snapshot = Arc::new(LibrarySnapshot {
+        folders: swapped,
+        ..LibrarySnapshot::default()
+    });
+    harness.run();
+    click_button(&mut harness, &en("settings-confirm"));
+    assert_eq!(
+        harness.state().actions,
+        [PageAction::RemoveFolder(FolderId(2))]
+    );
+}
+
+#[test]
+fn the_dialog_closes_when_its_folder_is_gone() {
+    let mut harness = settings_only(english(), vec![], vec![folder(1, "music-a", true)]);
+    click_button(&mut harness, "Remove music-a");
+    assert!(harness.state().modal_open);
+    harness.state_mut().library.snapshot = Arc::new(LibrarySnapshot::default());
+    harness.run();
+    assert!(!harness.state().modal_open, "the dialog stayed open");
+    assert!(harness.state().actions.is_empty(), "sent a removal");
+    assert!(harness.query_by_label(&en("settings-confirm")).is_none());
+}
+
+#[test]
+fn a_dialog_of_no_known_kind_closes_instead_of_resetting() {
+    let mut harness = settings_only(english(), vec![], vec![]);
+    harness.state_mut().modal_open = true;
+    harness.run();
+    assert!(!harness.state().modal_open);
+    assert!(harness.query_by_label(&en("settings-confirm")).is_none());
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn the_page_scrolls_to_reset_at_a_normal_height() {
+    let app = AriaApp::new(english(), localizer(Language::En), AppDeps::none(), vec![]);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1200.0, 780.0))
+        .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Num9);
+    harness.run();
+    let reset = en("settings-reset");
+    harness
+        .get_by_role_and_label(Role::Button, &reset)
+        .scroll_to_me();
+    harness.run();
+    click_button(&mut harness, &reset);
+    let tr = localizer(Language::En);
+    assert!(dialog_open(&harness, &tr), "Reset was not reachable");
 }

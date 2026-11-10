@@ -11,6 +11,9 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "transitive via eframe accesskit_unix; fixed by a future eframe" },
     { id = "RUSTSEC-2026-0371", reason = "transitive via eframe accesskit_unix; fixed by a future eframe" },
     { id = "RUSTSEC-2026-0372", reason = "transitive via eframe accesskit_unix; fixed by a future eframe" },
+    # paste: a compile-time proc-macro pulled in by lofty (tag reading). Nothing of it ships in
+    # the binary. The latest lofty (0.25.5) still depends on it.
+    { id = "RUSTSEC-2024-0436", reason = "build-time proc-macro via lofty; no lofty release without it yet" },
 ]
 
 [licenses]
