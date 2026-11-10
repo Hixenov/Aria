@@ -60,6 +60,8 @@ enum Dialog {
     RemoveFolder(FolderId),
     /// Delete the saved artwork thumbnails.
     ClearArtwork,
+    /// Forget every recorded play.
+    ClearHistory,
 }
 
 /// Opens the confirmation dialog for `dialog`.
@@ -405,6 +407,10 @@ fn dialog_text(dialog: Dialog) -> (&'static str, &'static str) {
             "settings-clear-artwork-title",
             "settings-clear-artwork-body",
         ),
+        Dialog::ClearHistory => (
+            "settings-history-clear-confirm",
+            "settings-history-clear-body",
+        ),
     }
 }
 
@@ -452,6 +458,72 @@ fn settings_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
             Dialog::Reset => PageAction::ResetSettings,
             Dialog::RemoveFolder(id) => PageAction::RemoveFolder(id),
             Dialog::ClearArtwork => PageAction::ClearArtwork,
+            Dialog::ClearHistory => PageAction::ClearHistory,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aria_library::Collections;
+    use eframe::egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+
+    use super::{
+        super::{
+            LibraryView,
+            test_support::{World, harness},
+        },
+        *,
+    };
+
+    fn page() -> egui_kittest::Harness<'static, World> {
+        let world = World::new(Collections::default(), LibraryView::default());
+        harness(world, |ui, world| world.page(ui, show))
+    }
+
+    #[test]
+    fn the_history_switch_updates_settings() {
+        let mut harness = page();
+        let label = harness.state().english("settings-history");
+        harness
+            .get_by_role_and_label(Role::CheckBox, &label)
+            .click();
+        harness.run();
+        let [PageAction::UpdateSettings(settings)] = harness.state().out.as_slice() else {
+            panic!("expected one UpdateSettings, got {:?}", harness.state().out);
+        };
+        assert!(!settings.history_enabled);
+    }
+
+    #[test]
+    fn clear_history_asks_first() {
+        let mut harness = page();
+        let clear = harness.state().english("settings-history-clear");
+        harness.get_by_role_and_label(Role::Button, &clear).click();
+        harness.run();
+        assert!(harness.state().out.is_empty(), "cleared without asking");
+        assert!(harness.state().modal_open);
+
+        let confirm = harness.state().english("settings-confirm");
+        harness
+            .get_by_role_and_label(Role::Button, &confirm)
+            .click();
+        harness.run();
+        assert_eq!(harness.state().out, [PageAction::ClearHistory]);
+        assert!(!harness.state().modal_open);
+    }
+
+    #[test]
+    fn cancelling_clear_history_sends_nothing() {
+        let mut harness = page();
+        let clear = harness.state().english("settings-history-clear");
+        harness.get_by_role_and_label(Role::Button, &clear).click();
+        harness.run();
+        let cancel = harness.state().english("settings-cancel");
+        harness.get_by_role_and_label(Role::Button, &cancel).click();
+        harness.run();
+        assert!(harness.state().out.is_empty());
+        assert!(!harness.state().modal_open);
     }
 }

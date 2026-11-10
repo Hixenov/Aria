@@ -1,15 +1,15 @@
 //! The Playback card: the output device and gapless playback.
 
 use aria_core::{DeviceId, DeviceInfo, i18n::Localizer, settings::Settings};
-use eframe::egui::{Button, Checkbox, ComboBox, Ui};
+use eframe::egui::{Button, Checkbox, ComboBox, TextStyle, Ui};
 
-use super::{PageCtx, divider, group, row};
+use super::{Dialog, PageCtx, buttons_row, caption, divider, group, open_dialog, row};
 
 /// Width of the device combo box, wider than the others since device names are long.
 const DEVICE_COMBO_WIDTH: f32 = 260.0;
 
-/// The output device and gapless playback.
-pub(super) fn show(ui: &mut Ui, ctx: &PageCtx<'_>, s: &mut Settings) {
+/// The output device, gapless playback and the playback history.
+pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
     let tr = ctx.tr;
     let p = ctx.palette;
     group(ui, &p, &tr.tr("settings-playback"), |ui| {
@@ -22,6 +22,22 @@ pub(super) fn show(ui: &mut Ui, ctx: &PageCtx<'_>, s: &mut Settings) {
         row(ui, &p, &gapless, |ui| {
             let checkbox = Checkbox::without_text(&mut s.gapless);
             ui.add(checkbox).accessible_name(&*gapless);
+        });
+        divider(ui);
+        let history = tr.tr("settings-history");
+        let hint = tr.tr("settings-history-hint");
+        row(ui, &p, &history, |ui| {
+            let checkbox = Checkbox::without_text(&mut s.history_enabled);
+            let response = ui.add(checkbox).accessible_name(&*history);
+            ui.ctx()
+                .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
+        });
+        caption(ui, &p, &hint, TextStyle::Small);
+        divider(ui);
+        buttons_row(ui, |ui| {
+            if ui.button(tr.tr("settings-history-clear")).clicked() {
+                open_dialog(ui, ctx.modal_open, Dialog::ClearHistory);
+            }
         });
     });
 }

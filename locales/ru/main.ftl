@@ -71,6 +71,8 @@ settings-output-device = Устройство вывода
 settings-device-system-default = Системное по умолчанию
 settings-device-unavailable = Недоступное устройство
 settings-gapless = Непрерывное воспроизведение
+settings-history = Вести историю прослушиваний
+settings-history-hint = История хранится только на этом компьютере.
 settings-library = Библиотека
 settings-folders-empty = Папок пока нет. Добавьте папку с вашей музыкой.
 settings-folder-unavailable = Недоступна
@@ -81,6 +83,9 @@ settings-remove-folder-body = Папка будет убрана из библи
 settings-clear-artwork = Очистить кэш обложек
 settings-clear-artwork-title = Очистить кэш обложек?
 settings-clear-artwork-body = Сохранённые обложки будут удалены. Они создадутся заново при следующем сканировании библиотеки.
+settings-history-clear = Очистить историю прослушиваний
+settings-history-clear-confirm = Очистить историю прослушиваний?
+settings-history-clear-body = Список «Недавно играло» будет очищен. Избранное и плейлисты останутся. Это нельзя отменить.
 settings-advanced = Дополнительно
 settings-log-level = Уровень журналирования
 settings-log-level-error = Ошибки
@@ -186,6 +191,13 @@ error-startup-window = Aria не удалось открыть окно.
 lang-en = English
 lang-ru = Русский
 lang-hy = Հայերեն
+
+# Home page
+home-recent = Недавно играло
+home-added = Недавно добавлено
+home-empty = Библиотека пуста
+home-empty-hint = Добавьте папку с музыкой в разделе «Настройки», «Библиотека».
+home-recent-empty = Пока ничего не играло.
 
 # Liked Songs page
 liked-empty = Пока нет избранного

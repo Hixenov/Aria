@@ -71,6 +71,8 @@ settings-output-device = Output device
 settings-device-system-default = System default
 settings-device-unavailable = Unavailable device
 settings-gapless = Gapless playback
+settings-history = Keep playback history
+settings-history-hint = History stays on this computer.
 settings-library = Library
 settings-folders-empty = No folders yet. Add a folder with your music.
 settings-folder-unavailable = Can't be reached
@@ -81,6 +83,9 @@ settings-remove-folder-body = The folder is taken out of your library. Its files
 settings-clear-artwork = Clear artwork cache
 settings-clear-artwork-title = Clear the artwork cache?
 settings-clear-artwork-body = Saved covers are deleted. They are rebuilt the next time your library is scanned.
+settings-history-clear = Clear playback history
+settings-history-clear-confirm = Clear your playback history?
+settings-history-clear-body = Recently played is emptied. Favorites and playlists stay. This can't be undone.
 settings-advanced = Advanced
 settings-log-level = Log level
 settings-log-level-error = Error
@@ -186,6 +191,13 @@ error-startup-window = Aria couldn't open its window.
 lang-en = English
 lang-ru = Русский
 lang-hy = Հայերեն
+
+# Home page
+home-recent = Recently played
+home-added = Recently added
+home-empty = Your library is empty
+home-empty-hint = Add a folder with your music in Settings, Library.
+home-recent-empty = Nothing played yet.
 
 # Liked Songs page
 liked-empty = No favorites yet

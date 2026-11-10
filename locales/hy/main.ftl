@@ -73,6 +73,8 @@ settings-output-device = Ելքային սարք
 settings-device-system-default = Համակարգի լռելյայն
 settings-device-unavailable = Անհասանելի սարք
 settings-gapless = Անընդմեջ նվագարկում
+settings-history = Պահել նվագարկման պատմությունը
+settings-history-hint = Պատմությունը մնում է միայն այս համակարգչում։
 settings-library = Գրադարան
 settings-folders-empty = Պանակներ դեռ չկան։ Ավելացրեք ձեր երաժշտության պանակը։
 settings-folder-unavailable = Անհասանելի է
@@ -83,6 +85,9 @@ settings-remove-folder-body = Պանակը կհեռացվի գրադարանից
 settings-clear-artwork = Մաքրել շապիկների քեշը
 settings-clear-artwork-title = Մաքրե՞լ շապիկների քեշը
 settings-clear-artwork-body = Պահված շապիկները կջնջվեն։ Դրանք կստեղծվեն նորից գրադարանի հաջորդ սկանավորման ժամանակ։
+settings-history-clear = Մաքրել նվագարկման պատմությունը
+settings-history-clear-confirm = Մաքրե՞լ նվագարկման պատմությունը
+settings-history-clear-body = «Վերջերս նվագարկված» ցանկը կդատարկվի։ Ընտրանին և նվագացանկերը կմնան։ Սա հնարավոր չէ չեղարկել։
 settings-advanced = Լրացուցիչ
 settings-log-level = Մատյանավորման մակարդակ
 settings-log-level-error = Սխալներ
@@ -185,6 +190,13 @@ error-startup-window = Aria-ին չհաջողվեց բացել իր պատուհ
 lang-en = English
 lang-ru = Русский
 lang-hy = Հայերեն
+
+# Home page
+home-recent = Վերջերս նվագարկված
+home-added = Վերջերս ավելացված
+home-empty = Գրադարանը դատարկ է
+home-empty-hint = Ավելացրեք երաժշտության պանակ «Կարգավորումներ», «Գրադարան» բաժնում։
+home-recent-empty = Դեռ ոչինչ չի նվագարկվել։
 
 # Liked Songs page
 liked-empty = Դեռ ընտրանի չկա
