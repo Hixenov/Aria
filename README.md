@@ -62,7 +62,7 @@ git config --global --add safe.directory /path/to/aria
 
 ```
 cargo build --release --locked -p aria-app
-ISCC.exe /DAppVersion=0.2.0 packaging\windowsria.iss
+ISCC.exe /DAppVersion=0.2.0 packagingwindowsria.iss
 ```
 
 It writes `target\installer\Aria-0.2.0-setup.exe`. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
