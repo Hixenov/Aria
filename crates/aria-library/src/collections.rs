@@ -163,7 +163,7 @@ impl Library {
     }
 
     /// Renames a playlist. Returns whether the name changed; an unknown playlist changes
-    /// nothing.
+    /// nothing. `false` is also the answer for the name the playlist already has.
     pub fn rename_playlist(&mut self, id: PlaylistId, name: &str) -> Result<bool, LibraryError> {
         let name = playlist_name(name).ok_or(LibraryError::InvalidPlaylistName)?;
         let changed = self.conn.execute(

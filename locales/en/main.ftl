@@ -124,6 +124,7 @@ library-recovered = The library database was damaged, so a new one was started. 
 library-newer = The library was saved by a newer version of Aria, so it's turned off. Update Aria to use it.
 library-unavailable = The library couldn't be opened, so it's turned off for now. The rest of Aria keeps working.
 library-action-failed = Something went wrong in the library, and that action didn't finish. Your music files weren't changed.
+playlist-name-invalid = A playlist name needs 1 to 100 characters.
 
 ## Playback notices (toasts)
 

@@ -25,12 +25,12 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use aria_library::{
-    Folder, FolderId, Library, LibraryError, LibrarySnapshot, Opened, QueueRecord, ScanProgress,
-    ScanSummary, TrackId,
+    Collections, Folder, FolderId, Library, LibraryError, LibrarySnapshot, Opened, PlaylistId,
+    QueueRecord, ScanProgress, ScanSummary, TrackId,
 };
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
@@ -74,6 +74,12 @@ const FOLDER_DUPLICATE: Notice = Notice {
     key: "library-folder-duplicate",
     args: Vec::new(),
 };
+/// A playlist name was empty or too long.
+const PLAYLIST_NAME_INVALID: Notice = Notice {
+    level: NoticeLevel::Warning,
+    key: "playlist-name-invalid",
+    args: Vec::new(),
+};
 /// A scan or a change the user asked for failed.
 const ACTION_FAILED: Notice = Notice {
     level: NoticeLevel::Error,
@@ -113,6 +119,34 @@ pub enum LibraryRequest {
     LoadQueue,
     /// Store a duration learned during playback, in milliseconds. It shows in the next snapshot.
     SetDuration(TrackId, u64),
+    /// Mark or unmark a favorite.
+    SetFavorite { track: TrackId, favorite: bool },
+    /// Make a playlist, with one track in it if given. A bad name gives a notice.
+    CreatePlaylist {
+        name: String,
+        first: Option<TrackId>,
+    },
+    /// Rename a playlist. A bad name gives a notice.
+    RenamePlaylist { id: PlaylistId, name: String },
+    /// Delete a playlist and its entries.
+    DeletePlaylist(PlaylistId),
+    /// Append a track to a playlist.
+    AddToPlaylist {
+        playlist: PlaylistId,
+        track: TrackId,
+    },
+    /// Remove the entry at a stored position.
+    RemoveFromPlaylist { playlist: PlaylistId, position: u32 },
+    /// Move the entry at stored position `from` so that it ends up at `to`.
+    MoveInPlaylist {
+        playlist: PlaylistId,
+        from: u32,
+        to: u32,
+    },
+    /// Delete every recorded play.
+    ClearHistory,
+    /// Record that a track was played now.
+    RecordPlay(TrackId),
     /// Cancel any scan and stop the thread.
     Shutdown,
 }
@@ -122,6 +156,9 @@ pub enum LibraryRequest {
 pub enum LibraryEvent {
     /// The library as it now is.
     Snapshot(Arc<LibrarySnapshot>),
+    /// Favorites, playlists and recent plays as they now are. Sent after every snapshot and after
+    /// every change to them, but not while the library is disabled.
+    Collections(Arc<Collections>),
     /// A scan is running, or `None` when it has ended, however it ended. Scans report at most 4
     /// times a second.
     Progress(Option<ScanProgress>),
@@ -242,6 +279,15 @@ fn serve_disabled(requests: &Receiver<LibraryRequest>, on_event: &OnEvent) {
         match request {
             LibraryRequest::LoadQueue => on_event(LibraryEvent::QueueLoaded(None)),
             LibraryRequest::Shutdown => break,
+            // A click on a collection is answered, so it is never lost without a word.
+            LibraryRequest::SetFavorite { .. }
+            | LibraryRequest::CreatePlaylist { .. }
+            | LibraryRequest::RenamePlaylist { .. }
+            | LibraryRequest::DeletePlaylist(_)
+            | LibraryRequest::AddToPlaylist { .. }
+            | LibraryRequest::RemoveFromPlaylist { .. }
+            | LibraryRequest::MoveInPlaylist { .. }
+            | LibraryRequest::ClearHistory => on_event(LibraryEvent::Notice(UNAVAILABLE)),
             _ => {}
         }
     }
@@ -375,6 +421,47 @@ impl Service {
                     tracing::warn!(%error, "a track's duration could not be stored");
                 }
             }
+            LibraryRequest::SetFavorite { track, favorite } => {
+                let result = library.set_favorite(track, favorite, now_secs());
+                self.finish_collection_change(library, result);
+            }
+            LibraryRequest::CreatePlaylist { name, first } => {
+                let result = library
+                    .create_playlist(&name, first, now_secs())
+                    .map(|_| true);
+                self.finish_collection_change(library, result);
+            }
+            LibraryRequest::RenamePlaylist { id, name } => {
+                // `false` is an unknown playlist or the name it already has: nothing changed.
+                let result = library.rename_playlist(id, &name);
+                self.finish_collection_change(library, result);
+            }
+            LibraryRequest::DeletePlaylist(id) => {
+                let result = library.delete_playlist(id);
+                self.finish_collection_change(library, result);
+            }
+            LibraryRequest::AddToPlaylist { playlist, track } => {
+                let result = library.add_to_playlist(playlist, track);
+                self.finish_collection_change(library, result);
+            }
+            LibraryRequest::RemoveFromPlaylist { playlist, position } => {
+                let result = library.remove_from_playlist(playlist, position);
+                self.finish_collection_change(library, result);
+            }
+            LibraryRequest::MoveInPlaylist { playlist, from, to } => {
+                let result = library.move_in_playlist(playlist, from, to);
+                self.finish_collection_change(library, result);
+            }
+            LibraryRequest::ClearHistory => {
+                let result = library.clear_history().map(|()| true);
+                self.finish_collection_change(library, result);
+            }
+            LibraryRequest::RecordPlay(track) => match library.record_play(track, now_secs()) {
+                Ok(true) => self.send_collections(library),
+                Ok(false) => tracing::debug!("a play of an unknown track was not recorded"),
+                // A play that cannot be recorded is not worth a notice; playback goes on.
+                Err(error) => tracing::warn!(%error, "a play could not be recorded"),
+            },
             LibraryRequest::Rescan => self.want_scan = true,
             LibraryRequest::Shutdown => self.stop(),
             LibraryRequest::AddFolder(path) => return Some(Change::AddFolder(path)),
@@ -382,6 +469,19 @@ impl Service {
             LibraryRequest::ClearArtwork => return Some(Change::ClearArtwork),
         }
         None
+    }
+
+    /// Reports what a collection change did: new collections if something changed, a notice if
+    /// the name was refused, nothing if it changed nothing.
+    fn finish_collection_change(&self, library: &Library, result: Result<bool, LibraryError>) {
+        match result {
+            Ok(true) => self.send_collections(library),
+            Ok(false) => tracing::debug!("a collection command changed nothing"),
+            Err(LibraryError::InvalidPlaylistName) => {
+                self.emit(LibraryEvent::Notice(PLAYLIST_NAME_INVALID));
+            }
+            Err(error) => self.report_failure(&error),
+        }
     }
 
     fn apply(&mut self, library: &mut Library, change: Change) {
@@ -514,7 +614,22 @@ impl Service {
             return;
         }
         match library.snapshot() {
-            Ok(snapshot) => self.emit(LibraryEvent::Snapshot(Arc::new(snapshot))),
+            Ok(snapshot) => {
+                self.emit(LibraryEvent::Snapshot(Arc::new(snapshot)));
+                // Availability may have changed with the snapshot.
+                self.send_collections(library);
+            }
+            Err(error) => self.report_failure(&error),
+        }
+    }
+
+    /// Reads favorites, playlists and recent plays and sends them, unless the thread is stopping.
+    fn send_collections(&self, library: &Library) {
+        if self.stopping {
+            return;
+        }
+        match library.collections() {
+            Ok(collections) => self.emit(LibraryEvent::Collections(Arc::new(collections))),
             Err(error) => self.report_failure(&error),
         }
     }
@@ -523,6 +638,15 @@ impl Service {
         tracing::warn!(%error, "a library action failed");
         self.emit(LibraryEvent::Notice(ACTION_FAILED));
     }
+}
+
+/// The time now, in Unix seconds.
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// Whether a finished scan left the library different: its tracks, or a folder's availability.
@@ -984,6 +1108,26 @@ mod tests {
     }
 
     #[test]
+    fn a_collection_command_with_the_library_disabled_gives_the_unavailable_notice() {
+        let env = Env::new();
+        let paths = env.paths();
+        fs::create_dir(&paths.db).unwrap();
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(paths, on_event).unwrap();
+        log.wait_for(|e| snapshot_with(e, 0));
+
+        handle.send(LibraryRequest::ClearHistory);
+        handle.send(LibraryRequest::RecordPlay(TrackId(1)));
+        handle.send(LibraryRequest::LoadQueue);
+        log.wait_for(is_queue);
+        assert!(handle.shutdown(WAIT));
+        log.finish();
+        let notices = log.notices("library-unavailable");
+        assert_eq!(notices.len(), 2, "one for the open, one for the click");
+        assert_eq!(count_collections(&log), 0);
+    }
+
+    #[test]
     fn recovered_database_is_reported() {
         let env = Env::new();
         let paths = env.paths();
@@ -1223,6 +1367,174 @@ mod tests {
             matches!(e, LibraryEvent::Snapshot(s) if s.tracks.len() == 1
                 && s.tracks[0].artwork.is_none())
         });
+        assert!(handle.shutdown(WAIT));
+    }
+
+    fn is_collections(event: &LibraryEvent) -> bool {
+        matches!(event, LibraryEvent::Collections(_))
+    }
+
+    fn is_collections_with_recent(event: &LibraryEvent) -> bool {
+        matches!(event, LibraryEvent::Collections(c) if !c.recent.is_empty())
+    }
+
+    fn collections_of(event: LibraryEvent) -> Arc<Collections> {
+        match event {
+            LibraryEvent::Collections(collections) => collections,
+            other => panic!("not collections: {other:?}"),
+        }
+    }
+
+    /// A service over a library with one scanned track, past its startup. The track's id is
+    /// returned.
+    fn started_with_a_track(env: &Env) -> (LibraryHandle, Log, TrackId) {
+        let music = env.folder("music", 1);
+        env.seed(&music);
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        let LibraryEvent::Snapshot(snapshot) = log.wait_for(|e| snapshot_with(e, 1)) else {
+            panic!("not a snapshot");
+        };
+        let track = snapshot.tracks[0].id;
+        // The collections that follow the snapshot, so the scan has nothing more to send.
+        log.wait_for(is_collections);
+        (handle, log, track)
+    }
+
+    fn count_collections(log: &Log) -> usize {
+        log.seen.iter().filter(|e| is_collections(e)).count()
+    }
+
+    #[test]
+    fn collections_follow_every_snapshot() {
+        let env = Env::new();
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        log.wait_for(is_collections);
+        assert!(handle.shutdown(WAIT));
+        let kinds: Vec<bool> = log
+            .seen
+            .iter()
+            .filter(|e| is_snapshot(e) || is_collections(e))
+            .map(is_snapshot)
+            .collect();
+        assert_eq!(kinds, [true, false], "a snapshot, then collections");
+    }
+
+    #[test]
+    fn a_favorite_is_reported_without_a_new_snapshot() {
+        let env = Env::new();
+        let (handle, mut log, track) = started_with_a_track(&env);
+        let before = log.seen.len();
+
+        handle.send(LibraryRequest::SetFavorite {
+            track,
+            favorite: true,
+        });
+        let event =
+            log.wait_for(|e| matches!(e, LibraryEvent::Collections(c) if c.is_favorite(track)));
+        assert_eq!(collections_of(event).favorites, [track]);
+        assert!(handle.shutdown(WAIT));
+        log.finish();
+        assert!(
+            log.seen[before..].iter().all(|e| !is_snapshot(e)),
+            "seen: {:?}",
+            &log.seen[before..]
+        );
+    }
+
+    #[test]
+    fn an_invalid_playlist_name_gives_a_notice_and_no_collections() {
+        let env = Env::new();
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        log.wait_for(is_collections);
+        let before = count_collections(&log);
+
+        handle.send(LibraryRequest::CreatePlaylist {
+            name: "   ".into(),
+            first: None,
+        });
+        log.wait_for(|e| notice_is(e, "playlist-name-invalid"));
+        handle.send(LibraryRequest::CreatePlaylist {
+            name: "Road".into(),
+            first: None,
+        });
+        handle.send(LibraryRequest::RenamePlaylist {
+            id: PlaylistId(1),
+            name: String::new(),
+        });
+        let event = log.wait_for(is_collections);
+        assert_eq!(collections_of(event).playlists[0].name, "Road");
+        handle.send(LibraryRequest::LoadQueue);
+        log.wait_for(is_queue);
+        assert!(handle.shutdown(WAIT));
+        log.finish();
+        assert_eq!(count_collections(&log), before + 1);
+        let notices = log.notices("playlist-name-invalid");
+        assert_eq!(notices.len(), 2);
+        assert_eq!(notices[0].level, NoticeLevel::Warning);
+        assert!(log.notices("library-action-failed").is_empty());
+    }
+
+    #[test]
+    fn a_command_that_changes_nothing_sends_nothing() {
+        let env = Env::new();
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        log.wait_for(is_collections);
+        let before = count_collections(&log);
+
+        handle.send(LibraryRequest::DeletePlaylist(PlaylistId(99)));
+        handle.send(LibraryRequest::RenamePlaylist {
+            id: PlaylistId(99),
+            name: "Nope".into(),
+        });
+        handle.send(LibraryRequest::LoadQueue);
+        log.wait_for(is_queue);
+        assert!(handle.shutdown(WAIT));
+        log.finish();
+        assert_eq!(count_collections(&log), before);
+        assert!(log.notices("library-action-failed").is_empty());
+        assert!(log.notices("playlist-name-invalid").is_empty());
+    }
+
+    #[test]
+    fn collection_changes_are_served_during_a_scan() {
+        let env = Env::new();
+        let music = env.folder("music", TREE);
+        env.seed(&music);
+        let (on_event, mut log, release) = pausing(&[is_progress]);
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        log.wait_for(is_progress);
+
+        handle.send(LibraryRequest::SetFavorite {
+            track: TrackId(1),
+            favorite: true,
+        });
+        release.send(()).unwrap();
+
+        let event = log
+            .wait_for(|e| matches!(e, LibraryEvent::Collections(c) if c.is_favorite(TrackId(1))));
+        assert_eq!(collections_of(event).favorites, [TrackId(1)]);
+        assert_eq!(log.scan_ends(), 0, "it was served during the scan");
+        log.wait_for(|e| snapshot_with(e, TREE));
+        assert_eq!(log.scan_ends(), 1, "the scan went on to its end");
+        assert!(handle.shutdown(WAIT));
+    }
+
+    #[test]
+    fn record_play_then_clear_history() {
+        let env = Env::new();
+        let (handle, mut log, track) = started_with_a_track(&env);
+
+        handle.send(LibraryRequest::RecordPlay(track));
+        let event = log.wait_for(is_collections_with_recent);
+        assert_eq!(collections_of(event).recent, [track]);
+        handle.send(LibraryRequest::ClearHistory);
+        let event =
+            log.wait_for(|e| matches!(e, LibraryEvent::Collections(c) if c.recent.is_empty()));
+        assert!(collections_of(event).recent.is_empty());
         assert!(handle.shutdown(WAIT));
     }
 

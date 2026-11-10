@@ -381,6 +381,9 @@ impl AriaApp {
             Event::LibraryUpdated(snapshot) => {
                 self.library.snapshot = snapshot;
             }
+            // No page shows favorites, playlists or recent plays yet; the UI tasks that follow
+            // keep this and read it.
+            Event::Collections(_) => tracing::trace!("collections received"),
             Event::ScanProgress(scan) => {
                 // Covers that were missing may have been written by the scan that just ended;
                 // between snapshots, a missing cover stays missing.

@@ -301,6 +301,7 @@ mod tests {
         "library-newer",
         "library-unavailable",
         "library-action-failed",
+        "playlist-name-invalid",
         "library-scanning",
         "library-unknown-artist",
         "library-unknown-album",

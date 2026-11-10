@@ -243,6 +243,14 @@ impl PlaybackService {
             | Command::RemoveFolder(_)
             | Command::Rescan
             | Command::ClearArtwork
+            | Command::SetFavorite { .. }
+            | Command::CreatePlaylist { .. }
+            | Command::RenamePlaylist { .. }
+            | Command::DeletePlaylist(_)
+            | Command::AddToPlaylist { .. }
+            | Command::RemoveFromPlaylist { .. }
+            | Command::MoveInPlaylist { .. }
+            | Command::ClearHistory
             | Command::ListDevices
             | Command::Shutdown => {}
         }
