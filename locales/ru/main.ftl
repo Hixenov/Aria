@@ -190,3 +190,26 @@ lang-hy = Հայերեն
 # Liked Songs page
 liked-empty = Пока нет избранного
 liked-empty-hint = Нажмите на сердечко рядом с треком.
+
+# Playlists page
+playlists-empty = Плейлистов пока нет
+playlists-empty-hint = Создайте плейлист здесь или выберите «Добавить в плейлист» в меню трека.
+playlist-empty = Этот плейлист пуст
+playlist-delete = Удалить плейлист
+# $name (String) - the playlist's name
+playlist-delete-confirm = Удалить плейлист «{ $name }»? Его треки останутся в вашей библиотеке.
+playlist-remove-entry = Убрать из плейлиста
+# $count (Number) - how many entries of the playlist can't be shown because their files are gone or their folder was removed
+playlist-unavailable = { $count ->
+    [one] { $count } трек недоступен
+    [few] { $count } трека недоступны
+    [many] { $count } треков недоступны
+   *[other] { $count } трека недоступны
+}
+# $count (Number) - how many tracks a playlist has
+playlist-track-count = { $count ->
+    [one] { $count } трек
+    [few] { $count } трека
+    [many] { $count } треков
+   *[other] { $count } трека
+}

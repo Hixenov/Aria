@@ -69,10 +69,8 @@ impl Route {
     pub fn phase(self) -> Option<u8> {
         match self {
             Route::Home => Some(2),
-            Route::Search | Route::Library | Route::Playlists | Route::Albums | Route::Artists => {
-                Some(3)
-            }
-            Route::Liked | Route::LocalMusic | Route::Settings => None,
+            Route::Search | Route::Library | Route::Albums | Route::Artists => Some(3),
+            Route::Liked | Route::Playlists | Route::LocalMusic | Route::Settings => None,
         }
     }
 }

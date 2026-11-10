@@ -16,7 +16,7 @@ use aria_library::{LibrarySnapshot, ScanProgress, TrackId};
 use eframe::egui::{Align, Button, Id, Label, Layout, RichText, TextEdit, Ui, accesskit::Role};
 
 pub use self::{
-    tracks::show as show_tracks,
+    tracks::{format_duration, show as show_tracks},
     view::{Scope, SortKey, Tab, TrackView},
 };
 use super::{PageAction, PageCtx};
@@ -364,7 +364,11 @@ fn no_tracks(ui: &mut Ui, ctx: &PageCtx<'_>) {
 }
 
 /// `value`, or the localized `unknown` message when the tag is missing.
-fn or_unknown<'a>(tr: &'a Localizer, value: Option<&'a str>, unknown: &str) -> Cow<'a, str> {
+pub(super) fn or_unknown<'a>(
+    tr: &'a Localizer,
+    value: Option<&'a str>,
+    unknown: &str,
+) -> Cow<'a, str> {
     value.map_or_else(|| tr.tr(unknown), Cow::Borrowed)
 }
 

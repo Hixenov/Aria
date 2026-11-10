@@ -1,7 +1,7 @@
 //! What page tests share: a world to draw a page in, and a harness that does it.
 
 use aria_core::{
-    i18n::Localizer,
+    i18n::{FluentArgs, Localizer},
     settings::{Language, Settings},
 };
 use aria_library::Collections;
@@ -54,6 +54,11 @@ impl World {
     /// The English text of `key`.
     pub fn english(&self, key: &str) -> String {
         self.tr.tr(key).into_owned()
+    }
+
+    /// The English text of `key` with `args`.
+    pub fn english_with(&self, key: &str, args: &FluentArgs) -> String {
+        self.tr.tr_args(key, args).into_owned()
     }
 }
 

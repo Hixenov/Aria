@@ -190,3 +190,22 @@ lang-hy = Հայերեն
 # Liked Songs page
 liked-empty = No favorites yet
 liked-empty-hint = Click the heart next to a track.
+
+# Playlists page
+playlists-empty = No playlists yet
+playlists-empty-hint = Make one here, or choose Add to playlist in a track's menu.
+playlist-empty = This playlist is empty
+playlist-delete = Delete playlist
+# $name (String) - the playlist's name
+playlist-delete-confirm = Delete the playlist { $name }? Its tracks stay in your library.
+playlist-remove-entry = Remove from playlist
+# $count (Number) - how many entries of the playlist can't be shown because their files are gone or their folder was removed
+playlist-unavailable = { $count ->
+    [one] { $count } track unavailable
+   *[other] { $count } tracks unavailable
+}
+# $count (Number) - how many tracks a playlist has
+playlist-track-count = { $count ->
+    [one] { $count } track
+   *[other] { $count } tracks
+}

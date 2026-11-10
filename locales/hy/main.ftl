@@ -189,3 +189,22 @@ lang-hy = Հայերեն
 # Liked Songs page
 liked-empty = Դեռ ընտրանի չկա
 liked-empty-hint = Սեղմեք սրտիկը երգի կողքին։
+
+# Playlists page
+playlists-empty = Երգացանկեր դեռ չկան
+playlists-empty-hint = Ստեղծեք երգացանկ այստեղ կամ երգի ընտրացանկում ընտրեք «Ավելացնել երգացանկին»։
+playlist-empty = Այս երգացանկը դատարկ է
+playlist-delete = Ջնջել երգացանկը
+# $name (String) - the playlist's name
+playlist-delete-confirm = Ջնջե՞լ «{ $name }» երգացանկը։ Նրա երգերը կմնան ձեր գրադարանում։
+playlist-remove-entry = Հեռացնել երգացանկից
+# $count (Number) - how many entries of the playlist can't be shown because their files are gone or their folder was removed
+playlist-unavailable = { $count ->
+    [one] { $count } երգ հասանելի չէ
+   *[other] { $count } երգ հասանելի չէ
+}
+# $count (Number) - how many tracks a playlist has
+playlist-track-count = { $count ->
+    [one] { $count } երգ
+   *[other] { $count } երգ
+}

@@ -132,7 +132,8 @@ pub struct AriaApp {
     settle_until: f64,
     /// Whether making `artwork` has been tried.
     artwork_started: bool,
-    /// Whether the Settings page's confirmation dialog is open. The page sets and clears it;
+    /// Whether a page's confirmation dialog is open: the Settings page's, or the Playlists
+    /// page's delete question. The page sets and clears it;
     /// [`App::modal_open`] combines it with the name dialog.
     settings_dialog_open: bool,
     /// Resets sent to the backend that it has not answered yet. Each answer brings the
@@ -589,8 +590,8 @@ impl AriaApp {
         self.name_dialog = Some((purpose, text));
     }
 
-    /// Whether a modal dialog is open: the Settings page's confirmation or the playlist name
-    /// dialog. Navigation and panel shortcuts wait while one is. Each dialog owns its own
+    /// Whether a modal dialog is open: a page's confirmation (Settings or Playlists) or the
+    /// playlist name dialog. Navigation and panel shortcuts wait while one is. Each dialog owns its own
     /// state, so closing one cannot close the other's hold on the app.
     fn modal_open(&self) -> bool {
         self.settings_dialog_open || self.name_dialog.is_some()
