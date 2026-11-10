@@ -38,6 +38,8 @@ fn every_format_decodes() {
         ("tone.ogg", 44_100.0),
         ("tone.opus", 48_000.0),
         ("tone-alac.m4a", 44_100.0),
+        ("tone.aiff", 44_100.0),
+        ("tone.caf", 44_100.0),
     ];
     for (name, expected) in cases {
         let (samples, channels) = decode_all(&fixture(name)).unwrap();
@@ -87,7 +89,7 @@ fn delay_and_padding_are_trimmed_exactly_once() {
 
 #[test]
 fn seek_is_accurate() {
-    let exact = ["tone.flac", "tone.wav"];
+    let exact = ["tone.flac", "tone.wav", "tone.aiff", "tone.caf"];
     let loose = [
         "tone.mp3",
         "tone.m4a",

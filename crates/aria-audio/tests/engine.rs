@@ -15,7 +15,8 @@ use aria_audio::fake::{FakeControl, FakeFactory};
 use aria_audio::testing::{write_gapless_pair, write_tone_wav};
 use aria_audio::{
     AudioError, AudioOutput, ClockReading, DeviceId, DeviceLister, Engine, EngineCommand,
-    EngineEvent, EngineHandle, OutputFactory, OutputFormat, PlaybackClock, TrackRequest,
+    EngineEvent, EngineHandle, IDLE_GRACE, OutputFactory, OutputFormat, PlaybackClock,
+    TrackRequest,
 };
 use tempfile::TempDir;
 
@@ -125,12 +126,20 @@ struct Rig {
 
 impl Rig {
     fn new(format: OutputFormat) -> Self {
+        Self::with_idle_grace(format, IDLE_GRACE)
+    }
+
+    fn with_idle_grace(format: OutputFormat, grace: Duration) -> Self {
         let factory = FakeFactory::new(format);
         let (sender, events) = mpsc::channel();
         let on_event = move |event| {
             let _ = sender.send(event);
         };
-        let engine = match Engine::start(Box::new(factory.clone()), Box::new(on_event)) {
+        let engine = match Engine::start_with_idle_grace(
+            Box::new(factory.clone()),
+            Box::new(on_event),
+            grace,
+        ) {
             Ok(engine) => engine,
             Err(error) => panic!("the engine did not start: {error}"),
         };
@@ -292,6 +301,78 @@ fn plays_a_track_to_the_end() {
     assert_eq!(events, [length, TrackEnded { token: 1 }, Stopped]);
     assert_near(audible_frames(&audio), SECOND);
     assert!(!rig.read().playing);
+    assert!(rig.engine.shutdown(DEADLINE));
+}
+
+#[test]
+fn plays_aiff_and_caf_to_the_end() {
+    for name in ["tone.aiff", "tone.caf"] {
+        let rig = Rig::new(STEREO_44K);
+
+        rig.send(load(track(1, name)));
+        let (audio, events) = rig.pull_to_stop(&rig.output(0));
+
+        assert_eq!(events.last(), Some(&Stopped), "{name}: {events:?}");
+        assert!(
+            events.contains(&TrackEnded { token: 1 }),
+            "{name}: {events:?}"
+        );
+        assert_near(audible_frames(&audio), SECOND);
+        assert!(rig.engine.shutdown(DEADLINE));
+    }
+}
+
+/// Long enough for a pause to settle, short enough to wait for.
+const SHORT_GRACE: Duration = Duration::from_millis(300);
+
+#[test]
+fn a_paused_output_closes_after_the_grace_and_play_reopens_it_in_place() {
+    let rig = Rig::with_idle_grace(STEREO_44K, SHORT_GRACE);
+    rig.start(track(1, "tone.flac"));
+    let first = rig.output(0);
+    rig.pull_heard(&first, 22_050, 400);
+    rig.hold(1);
+    let paused_at = rig.read().position_ms;
+
+    wait_until("the output to close", || first.is_closed());
+    assert!(
+        rig.read().position_ms.abs_diff(paused_at) <= 2,
+        "closing moved the clock"
+    );
+    assert!(!rig.read().playing);
+    assert_eq!(rig.factory.outputs().len(), 1, "nothing reopened by itself");
+
+    rig.resume();
+    let second = rig.output(1);
+    assert!(!second.is_closed());
+    assert!(rig.read().position_ms.abs_diff(paused_at) <= 5);
+    rig.pull_heard(&second, 4_410, paused_at + 90);
+    assert!(rig.read().position_ms >= paused_at + 90);
+    assert!(rig.engine.shutdown(DEADLINE));
+}
+
+#[test]
+fn a_pause_shorter_than_the_grace_keeps_the_output() {
+    let rig = Rig::with_idle_grace(STEREO_44K, Duration::from_secs(60));
+    rig.start(track(1, "tone.flac"));
+    let first = rig.output(0);
+    rig.hold(1);
+    thread::sleep(Duration::from_millis(300));
+    rig.resume();
+
+    assert!(!first.is_closed());
+    assert_eq!(rig.factory.outputs().len(), 1);
+    assert!(rig.engine.shutdown(DEADLINE));
+}
+
+#[test]
+fn an_output_with_nothing_loaded_closes_after_the_grace() {
+    let rig = Rig::with_idle_grace(STEREO_44K, SHORT_GRACE);
+    rig.start(track(1, "tone.flac"));
+    let first = rig.output(0);
+    rig.send(Stop);
+
+    wait_until("the output to close", || first.is_closed());
     assert!(rig.engine.shutdown(DEADLINE));
 }
 

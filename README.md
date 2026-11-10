@@ -20,7 +20,7 @@ Phase 2a turns it into an offline music player for local files:
 - Play queue (play next, add to queue, remove, drag to reorder, clear), kept between runs and restored paused
 - Playback and Library sections in Settings; English, Russian and Armenian
 
-Formats with automated test coverage: MP3, FLAC, WAV, AAC and ALAC in `.m4a`, Ogg Vorbis, and Opus (through the bundled libopus). The scanner also picks up `.aac`, `.mp4`, `.oga`, `.mka`, `.aif`, `.aiff` and `.caf` files, but those were not tested with real audio, so they may not play. Playing each format by ear is on the manual check list and has not been done yet.
+Formats with automated test coverage: MP3, FLAC, WAV, AIFF, CAF, AAC and ALAC in `.m4a`, Ogg Vorbis, and Opus (through the bundled libopus). The scanner also picks up `.aac`, `.mp4`, `.oga`, `.mka` and `.aif` files, but those were not tested with real audio, so they may not play. Playing each format by ear is on the manual check list and has not been done yet.
 
 Not yet: favorites, playlists and playback history (Phase 2b), the soundboard (2c), Spotify (Phase 3), tray and media keys (Phase 4), lyrics and equalizer (Phase 5). See the [roadmap](docs/ROADMAP.md).
 
@@ -76,7 +76,7 @@ Library used: 4,000 generated files (about 485 MB), 40 artists, 200 albums, 3-se
 | Working set after the scan, first launch | 143.5 MB (private bytes 71 MB) |
 | Working set when idle, later launches | 127-129 MB (private bytes 64-66 MB) |
 | Working set when idle, no folders added | 122.5-123.2 MB |
-| CPU when idle (window open, nothing playing) | 0.08-0.47 % of one core, in four 20-second windows |
+| CPU when idle (window open, nothing playing; measured before any audio output had been opened) | 0.08-0.47 % of one core, in four 20-second windows |
 | `PRAGMA quick_check` on the 4,000-track database | 82 ms on the first run in a fresh process, 3-4 ms afterwards |
 | Library snapshot of a synthetic 50,000-track database | 93 ms |
 
@@ -93,7 +93,7 @@ Phase 2a:
 
 - Files changed while Aria runs appear after a rescan or the next start.
 - Gapless trimming depends on data in the file. Formats without it may keep a small gap.
-- Real audio output is verified on Windows only.
+- Real audio output is to be verified on Windows only (by hand, pending).
 - Aria cannot edit tags.
 - The audio thread runs at normal priority, so heavy system load can cause glitches.
 - The Russian and Armenian texts for the new features have not been read by a native speaker.

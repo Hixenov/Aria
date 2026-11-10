@@ -20,6 +20,8 @@ ff -f lavfi -i "$tone" -ac 2 -c:a libvorbis tone.ogg
 ff -f lavfi -i "$tone" -ac 2 -c:a libopus -ar 48000 tone.opus
 ff -f lavfi -i "sine=frequency=440:duration=1:sample_rate=48000" -ac 2 -c:a flac tone-48k.flac
 ff -f lavfi -i "$tone" -ac 1 -c:a pcm_s16le tone-mono.wav
+ff -f lavfi -i "$tone" -ac 2 -c:a pcm_s16be tone.aiff
+ff -f lavfi -i "$tone" -ac 2 -c:a pcm_s16le tone.caf
 
 ff -f lavfi -i "$tone" -ac 2 -c:a libmp3lame -b:a 128k \
     -metadata title="Fixture Title" -metadata artist="Fixture Artist" \
