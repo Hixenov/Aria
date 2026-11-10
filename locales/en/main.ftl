@@ -186,3 +186,7 @@ error-startup-window = Aria couldn't open its window.
 lang-en = English
 lang-ru = Русский
 lang-hy = Հայերեն
+
+# Liked Songs page
+liked-empty = No favorites yet
+liked-empty-hint = Click the heart next to a track.

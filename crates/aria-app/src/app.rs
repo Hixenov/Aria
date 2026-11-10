@@ -132,10 +132,9 @@ pub struct AriaApp {
     settle_until: f64,
     /// Whether making `artwork` has been tried.
     artwork_started: bool,
-    /// Whether a modal dialog is open: the Settings page's confirmation or the playlist name
-    /// dialog. Navigation and panel shortcuts
-    /// wait while it is.
-    modal_open: bool,
+    /// Whether the Settings page's confirmation dialog is open. The page sets and clears it;
+    /// [`App::modal_open`] combines it with the name dialog.
+    settings_dialog_open: bool,
     /// Resets sent to the backend that it has not answered yet. Each answer brings the
     /// defaults, which are applied already, and changes made since are newer: it is ignored.
     outstanding_resets: u32,
@@ -187,7 +186,7 @@ impl AriaApp {
             settle_until: 0.0,
             #[cfg(test)]
             sent: std::cell::RefCell::default(),
-            modal_open: false,
+            settings_dialog_open: false,
             outstanding_resets: 0,
             startup: None,
         }
@@ -432,7 +431,7 @@ impl AriaApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.modal_open {
+        if self.modal_open() {
             // The dialog is modal: nothing behind it changes until it is closed.
             return;
         }
@@ -507,7 +506,7 @@ impl AriaApp {
             palette: *palette,
             settings: &self.settings,
             paths_available: self.deps.paths.is_some(),
-            modal_open: &mut self.modal_open,
+            modal_open: &mut self.settings_dialog_open,
             out: &mut actions,
             library: &self.library,
             collections: &self.collections,
@@ -588,7 +587,13 @@ impl AriaApp {
             },
         };
         self.name_dialog = Some((purpose, text));
-        self.modal_open = true;
+    }
+
+    /// Whether a modal dialog is open: the Settings page's confirmation or the playlist name
+    /// dialog. Navigation and panel shortcuts wait while one is. Each dialog owns its own
+    /// state, so closing one cannot close the other's hold on the app.
+    fn modal_open(&self) -> bool {
+        self.settings_dialog_open || self.name_dialog.is_some()
     }
 
     /// The name of playlist `id`, if the collections know it.
@@ -607,7 +612,6 @@ impl AriaApp {
         if let NameFor::Rename(id) = purpose
             && self.playlist_name(id).is_none()
         {
-            self.modal_open = false;
             return;
         }
         let (title, confirm) = match purpose {
@@ -622,11 +626,9 @@ impl AriaApp {
         match dialog.show(ctx, &self.localizer, palette, &mut text) {
             NameAnswer::Open => {
                 self.name_dialog = Some((purpose, text));
-                self.modal_open = true;
             }
-            NameAnswer::Cancelled => self.modal_open = false,
+            NameAnswer::Cancelled => {}
             NameAnswer::Confirmed(name) => {
-                self.modal_open = false;
                 self.send(match purpose {
                     NameFor::New { first } => Command::CreatePlaylist { name, first },
                     NameFor::Rename(id) => Command::RenamePlaylist { id, name },
@@ -1234,7 +1236,7 @@ mod tests {
         );
         harness.run();
         assert!(
-            harness.state().modal_open,
+            harness.state().modal_open(),
             "the dialog does not hold the app"
         );
 
@@ -1270,7 +1272,7 @@ mod tests {
             harness.state().name_dialog.is_none(),
             "the dialog stayed open"
         );
-        assert!(!harness.state().modal_open);
+        assert!(!harness.state().modal_open());
     }
 
     #[test]
@@ -1285,7 +1287,7 @@ mod tests {
         harness.key_press(egui::Key::Escape);
         harness.run();
         assert!(harness.state().name_dialog.is_none());
-        assert!(!harness.state().modal_open);
+        assert!(!harness.state().modal_open());
         assert!(
             harness.state().sent.borrow().is_empty(),
             "Escape sent something"
@@ -1323,15 +1325,36 @@ mod tests {
         };
         assert_eq!(sent_like(harness.state(), &command), 1);
         assert!(harness.state().name_dialog.is_none());
-        assert!(!harness.state().modal_open);
+        assert!(!harness.state().modal_open());
     }
 
     #[test]
     fn space_is_ignored_with_a_modal_open() {
         let mut harness = space_harness();
-        harness.state_mut().modal_open = true;
+        harness.state_mut().settings_dialog_open = true;
         harness.key_press(egui::Key::Space);
         harness.run();
         assert_eq!(toggles_sent(&harness), 0, "Space played behind a dialog");
+    }
+
+    #[test]
+    fn the_two_dialogs_hold_the_app_independently() {
+        let mut harness = dialog_harness(aria_library::Collections::default());
+        assert!(!harness.state().modal_open());
+        let ctx = harness.ctx.clone();
+        harness.state_mut().settings_dialog_open = true;
+        harness.state_mut().handle_page_action(
+            &ctx,
+            PageAction::AskPlaylistName(NameFor::New { first: None }),
+        );
+        harness.run();
+        harness.state_mut().settings_dialog_open = false;
+        assert!(
+            harness.state().modal_open(),
+            "closing the Settings dialog released the name dialog's hold"
+        );
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(!harness.state().modal_open());
     }
 }

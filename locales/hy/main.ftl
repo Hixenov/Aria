@@ -185,3 +185,7 @@ error-startup-window = Aria-ին չհաջողվեց բացել իր պատուհ
 lang-en = English
 lang-ru = Русский
 lang-hy = Հայերեն
+
+# Liked Songs page
+liked-empty = Դեռ ընտրանի չկա
+liked-empty-hint = Սեղմեք սրտիկը երգի կողքին։
