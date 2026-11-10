@@ -36,9 +36,11 @@ const MIN_TEXT_WIDTH: f32 = 100.0;
 const ARROW_SIZE: f32 = 12.0;
 
 /// Draws the table of `rows` (indexes into `snapshot.tracks`) and queues what the user does
-/// with it. Returns the column whose header was clicked, if any.
+/// with it. Returns the column whose header was clicked, if any. `salt` names the table for
+/// egui, so each page keeps its own scroll offset and column widths.
 pub fn show(
     ui: &mut Ui,
+    salt: &str,
     ctx: &mut PageCtx<'_>,
     snapshot: &Arc<LibrarySnapshot>,
     view: &mut TrackView,
@@ -59,7 +61,7 @@ pub fn show(
     };
 
     TableBuilder::new(ui)
-        .id_salt("aria_local_tracks")
+        .id_salt(salt)
         .striped(true)
         .sense(Sense::click())
         .column(Column::exact(HEART_WIDTH))

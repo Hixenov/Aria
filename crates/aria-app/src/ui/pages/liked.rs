@@ -79,6 +79,11 @@ fn draw(ui: &mut Ui, ctx: &mut PageCtx<'_>, state: &mut State) {
             ui.add(field).accessible_name(&*hint);
         });
     });
+    // With no favorites the search field is hidden, so a query left over from before the last
+    // one was removed could never be cleared: drop it.
+    if state.favorites.is_empty() {
+        state.query.clear();
+    }
     state.view.set_query(&state.query);
     ui.add_space(SPACE[1]);
 
@@ -94,14 +99,21 @@ fn draw(ui: &mut Ui, ctx: &mut PageCtx<'_>, state: &mut State) {
         }
         return;
     }
-    if let Some(key) = show_tracks(ui, ctx, &snapshot, &mut state.view) {
+    if let Some(key) = show_tracks(ui, "aria_liked_tracks", ctx, &snapshot, &mut state.view) {
         state.view.sort_by_header(key);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use aria_library::{Collections, LibrarySnapshot, Track};
+    use egui_kittest::kittest::Queryable as _;
+
+    use super::{
+        super::test_support::{World, harness},
+        *,
+    };
+    use crate::ui::pages::LibraryView;
 
     #[test]
     fn a_new_favorites_list_moves_the_scope_and_keeps_the_sort() {
@@ -117,5 +129,52 @@ mod tests {
             state.view.sort(),
             Some((super::super::SortKey::Artist, false))
         );
+    }
+
+    #[test]
+    fn removing_the_last_favorite_with_a_query_typed_shows_the_empty_state() {
+        let track = Track {
+            id: TrackId(1),
+            folder: aria_library::FolderId(1),
+            path: "1.flac".into(),
+            title: "Blue".to_owned(),
+            artist: None,
+            album: None,
+            album_artist: None,
+            track_no: None,
+            disc_no: None,
+            year: None,
+            genre: None,
+            duration_ms: 1000,
+            sample_rate: 44_100,
+            channels: 2,
+            codec: Arc::from("flac"),
+            artwork: None,
+            added_at: 1,
+        };
+        let library = LibraryView {
+            snapshot: Arc::new(LibrarySnapshot {
+                tracks: vec![track],
+                ..LibrarySnapshot::default()
+            }),
+            ..LibraryView::default()
+        };
+        let world = World::new(Collections::new(vec![TrackId(1)], vec![], vec![]), library);
+        let state = State {
+            query: "nothing matches this".to_owned(),
+            ..State::default()
+        };
+        let mut harness = harness((world, state), |ui, (world, state)| {
+            world.page(ui, |ui, ctx| draw(ui, ctx, state));
+        });
+        let no_results = harness.state().0.english("local-no-results");
+        harness.get_by_label(&no_results);
+
+        // The last favorite goes while the query is still typed.
+        harness.state_mut().0.collections = Collections::default();
+        harness.run();
+        let empty = harness.state().0.english("liked-empty");
+        harness.get_by_label(&empty);
+        assert!(harness.state().1.query.is_empty(), "the stale query stays");
     }
 }

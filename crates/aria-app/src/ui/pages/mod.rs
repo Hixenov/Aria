@@ -9,6 +9,8 @@ mod local_music;
 mod playlists;
 mod search;
 mod settings;
+#[cfg(test)]
+mod test_support;
 
 use aria_core::{
     DeviceInfo,

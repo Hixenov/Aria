@@ -316,7 +316,7 @@ fn tracks_tab(
         }
         return;
     }
-    if let Some(key) = tracks::show(ui, ctx, snapshot, &mut state.view) {
+    if let Some(key) = tracks::show(ui, "aria_local_tracks", ctx, snapshot, &mut state.view) {
         state.view.sort_by_header(key);
     }
 }
