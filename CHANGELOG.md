@@ -17,6 +17,7 @@ All notable changes to this project are documented here. The format is based on
 - English, Russian and Armenian texts for all of the above. The Russian and Armenian texts have not been read by a native speaker.
 - Space toggles play and pause.
 - Documentation: measurements on one Windows PC in the README, and a manual check list in `docs/testing/phase2a-manual-check.md`.
+- Windows installer (`Aria-<version>-setup.exe`, Inno Setup script in `packaging/windows/aria.iss`): per-user, no administrator rights, Start-menu shortcut and uninstaller. Uninstalling keeps settings and the library. The portable `aria.exe` is still offered.
 
 ### Changed
 

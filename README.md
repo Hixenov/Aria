@@ -56,6 +56,17 @@ On drives without ownership information (for example exFAT), git may refuse to w
 git config --global --add safe.directory /path/to/aria
 ```
 
+## Windows installer
+
+[Inno Setup](https://jrsoftware.org/isinfo.php) 6 builds the installer from `packaging/windows/aria.iss`:
+
+```
+cargo build --release --locked -p aria-app
+ISCC.exe /DAppVersion=0.2.0 packaging\windowsria.iss
+```
+
+It writes `target\installer\Aria-0.2.0-setup.exe`. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
+
 ## Configuration and data
 
 `ARIA_CONFIG_DIR` overrides the config directory only. See [docs/PRIVACY.md](docs/PRIVACY.md) for the exact paths of everything Aria stores.
