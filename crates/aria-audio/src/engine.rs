@@ -841,6 +841,10 @@ impl Worker {
         let Some(sink) = &mut self.sink else {
             return false;
         };
+        // Audio after a clear waits until the ring is empty, and then goes in all at once.
+        if sink.input.clearing() {
+            return false;
+        }
         self.pending_from += sink.input.write(&self.pending[self.pending_from..]);
         if self.pending_from < self.pending.len() {
             return false;

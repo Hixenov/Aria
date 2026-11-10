@@ -23,6 +23,18 @@ Run the release build (`cargo build --release --locked`, then `target\release\ar
 | `cargo deny` | pending | Not installed on the agent's PC. It runs in CI. |
 | Linux and macOS | pending | Built and tested in CI only. Nobody has run the app on them. |
 
+## What the agent measured from the sound card (2026-11-10)
+
+A scratch program (not in the repository) played files through Aria's real engine and CPAL output on the default device (Realtek headphones, 48 kHz, stereo) while recording that device through WASAPI loopback. It then measured the recording: whether sound came out, its pitch, silent stretches inside it, and sudden jumps in the waveform (clicks). The material was 440 Hz sine tones. Nobody listened, so this says nothing about how real music sounds.
+
+| Check | Result |
+|-------|--------|
+| MP3, FLAC, WAV, AAC and ALAC (`.m4a`), Ogg Vorbis, Opus, AIFF and CAF play | Yes: 1 s of 440 Hz for each, no silence or jumps inside it |
+| Gapless join, two halves of one tone (FLAC, WAV, MP3, M4A, Ogg, Opus) | No silence at any join. FLAC and WAV joins are as smooth as the tone itself. MP3, M4A, Ogg and Opus show a small bump at the join, and ffmpeg decodes the same two files with the same bump, so it comes from encoding the halves separately |
+| 44.1 kHz track followed by a 48 kHz track | No silence. One sample at the join is off by about 5 % of the level (about 20 µs) |
+| Seek while playing | **Found a bug, fixed.** In 4 of 8 seeks the sound faded out and back in, then broke off with no fade for about 4 ms: a click. The engine wrote a sliver of new audio while the old audio still filled the buffer. It now waits until the old audio is dropped. After the fix, 9 of 9 seeks faded out and in cleanly, and the clock was at the right position. A regression test covers it |
+| Volume, mute (volume 0) and pause | Half the volume gave half the level; volume 0 and pause were silent; play resumed from the paused position |
+
 ## What you need to check by hand
 
 Use a folder of your own music that has a few formats, at least one full album, and tracks at different sample rates.

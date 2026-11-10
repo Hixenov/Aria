@@ -15,7 +15,7 @@ use aria_audio::fake::{FakeControl, FakeFactory};
 use aria_audio::testing::{write_gapless_pair, write_tone_wav};
 use aria_audio::{
     AudioError, AudioOutput, ClockReading, DeviceId, DeviceLister, Engine, EngineCommand,
-    EngineEvent, EngineHandle, IDLE_GRACE, OutputFactory, OutputFormat, PlaybackClock,
+    EngineEvent, EngineHandle, FADE_MS, IDLE_GRACE, OutputFactory, OutputFormat, PlaybackClock,
     TrackRequest,
 };
 use tempfile::TempDir;
@@ -797,6 +797,36 @@ fn seek_reaches_back_past_the_track_in_the_ring() {
         ]
     );
     assert_near(audible_frames(&audio), SECOND * 9 / 10);
+}
+
+#[test]
+fn a_seek_while_playing_does_not_break_off_once_the_new_audio_starts() {
+    let rig = Rig::new(STEREO_44K);
+    let (_dir, path) = match tone_file(SECOND as u64 * 4) {
+        Ok(file) => file,
+        Err(error) => panic!("no tone file: {error}"),
+    };
+    rig.start(TrackRequest { token: 1, path });
+    let output = rig.output(0);
+    // While playing, the ring has room when a seek comes.
+    output.pull(CHUNK_FRAMES);
+    rig.send(Seek(2_000));
+    wait_until("the seek", || rig.read().position_ms >= 1_900);
+
+    let mut audio = output.pull(CHUNK_FRAMES * 2);
+    thread::sleep(Duration::from_millis(50));
+    audio.extend(output.pull(CHUNK_FRAMES * 4));
+
+    // The old audio fades out first. The new audio may then wait, but once it starts it must not
+    // stop: a stop is a cut to silence with no fade, and it is heard as a click.
+    let fade = SECOND * FADE_MS as usize / 1_000;
+    let after_fade = &audio[fade * 2..];
+    let start = after_fade.iter().position(|sample| *sample != 0.0);
+    let Some(start) = start else {
+        panic!("the new audio never came");
+    };
+    let gap = longest_zero_run(&after_fade[start..]);
+    assert!(gap <= 2, "the new audio broke off for {} frames", gap / 2);
 }
 
 #[test]

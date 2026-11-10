@@ -65,6 +65,13 @@ impl InputHandle {
         self.shared.clear_to.store(self.written, Ordering::Release);
     }
 
+    /// Whether the mixer has yet to act on the last [`clear`](Self::clear). Until it does, the
+    /// cleared audio still fills the ring, so only a sliver of new audio fits. Written now, that
+    /// sliver would play out before more could follow, and the sound would break off.
+    pub fn clearing(&self) -> bool {
+        self.consumed() < self.shared.clear_to.load(Ordering::Acquire)
+    }
+
     /// Set the gain, which ramps there within one buffer. Anything but a finite gain mutes.
     pub fn set_gain(&self, gain: f32) {
         let gain = if gain.is_finite() { gain.max(0.0) } else { 0.0 };
