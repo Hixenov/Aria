@@ -5,7 +5,8 @@ use rusqlite::Connection;
 use crate::error::LibraryError;
 
 /// Migration `i` upgrades a database from `user_version == i` to `i + 1`.
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
 CREATE TABLE folders (
     id        INTEGER PRIMARY KEY,
     path      BLOB NOT NULL UNIQUE,
@@ -48,7 +49,31 @@ CREATE TABLE queue_state (
     shuffle_seed  INTEGER NOT NULL,
     context_index INTEGER
 );
-"];
+",
+    "
+CREATE TABLE favorites (
+    path     BLOB PRIMARY KEY,
+    added_at INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE playlists (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE playlist_items (
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL,
+    path        BLOB NOT NULL,
+    PRIMARY KEY (playlist_id, position)
+);
+CREATE TABLE plays (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    path      BLOB NOT NULL,
+    played_at INTEGER NOT NULL
+);
+CREATE INDEX plays_played_at ON plays(played_at);
+",
+];
 
 /// Highest schema version this build understands.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

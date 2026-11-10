@@ -1,6 +1,7 @@
 //! Local music library: scanning, tags and storage.
 
 mod artwork;
+mod collections;
 mod db;
 mod error;
 mod migrations;
@@ -13,6 +14,7 @@ mod tags;
 pub use artwork::{
     ArtworkCache, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE, THUMB_QUALITY, THUMB_SIZE, find_folder_image,
 };
+pub use collections::{Collections, PLAYS_KEPT, Playlist, PlaylistId, PlaylistItem, RECENT_LIMIT};
 pub use db::{Library, Opened};
 pub use error::LibraryError;
 pub use migrations::SCHEMA_VERSION;
