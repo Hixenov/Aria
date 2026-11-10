@@ -18,6 +18,7 @@ pub const SIDEBAR_MAX: f32 = 320.0;
 const SIDEBAR_DEFAULT: f32 = 220.0;
 const VOLUME_DEFAULT: f32 = 1.0;
 const GAPLESS_DEFAULT: bool = true;
+const HISTORY_ENABLED_DEFAULT: bool = true;
 
 /// UI language.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -216,6 +217,11 @@ fn lenient_gapless<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     lenient(d, GAPLESS_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::history_enabled`].
+fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, HISTORY_ENABLED_DEFAULT)
+}
+
 /// Persisted user settings.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -258,6 +264,9 @@ pub struct Settings {
     /// Whether tracks join without a gap.
     #[serde(deserialize_with = "lenient_gapless")]
     pub gapless: bool,
+    /// Whether plays are recorded. Plays already stored stay when it is switched off.
+    #[serde(deserialize_with = "lenient_history_enabled")]
+    pub history_enabled: bool,
 }
 
 impl Default for Settings {
@@ -278,6 +287,7 @@ impl Default for Settings {
             repeat: RepeatMode::Off,
             output_device: None,
             gapless: GAPLESS_DEFAULT,
+            history_enabled: HISTORY_ENABLED_DEFAULT,
         }
     }
 }
@@ -407,6 +417,43 @@ mod tests {
         assert!(s.gapless);
         assert_eq!(s.repeat, RepeatMode::Off);
         assert_eq!(s.output_device, None);
+    }
+    #[test]
+    fn history_enabled_defaults_to_true_and_survives_a_bad_value() {
+        assert!(Settings::default().history_enabled);
+        let s: Settings = toml::from_str("history_enabled = \"x\"\ntheme = \"dark\"").unwrap();
+        assert!(s.history_enabled);
+        assert_eq!(s.theme, Theme::Dark, "the rest of the file still counts");
+        let s: Settings = toml::from_str("history_enabled = false").unwrap();
+        assert!(!s.history_enabled);
+    }
+    #[test]
+    fn a_0_2_0_settings_file_loads() {
+        // A complete file as 0.2.0 wrote it, before the history setting.
+        let v020 = "schema_version = 1\n\
+                    language = \"hy\"\n\
+                    theme = \"light\"\n\
+                    minimize_to_tray = false\n\
+                    log_level = \"info\"\n\
+                    right_panel_open = false\n\
+                    sidebar_width = 220.0\n\
+                    volume = 0.5\n\
+                    muted = false\n\
+                    shuffle = true\n\
+                    repeat = \"all\"\n\
+                    gapless = false\n";
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        std::fs::write(&path, v020).unwrap();
+        let loaded = store::SettingsStore::new(path).load();
+        assert_eq!(loaded.notice, None);
+        assert!(loaded.writable);
+        let s = loaded.settings;
+        assert_eq!(s.language, Some(Language::Hy));
+        assert_eq!(s.volume, 0.5);
+        assert!(s.shuffle && !s.gapless);
+        assert_eq!(s.repeat, RepeatMode::All);
+        assert!(s.history_enabled);
     }
     #[test]
     fn new_fields_roundtrip() {

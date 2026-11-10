@@ -43,6 +43,8 @@ pub const SAVE_INTERVAL: Duration = Duration::from_secs(5);
 pub const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 /// How long a track must play to end a run of failures.
 pub const FAILURE_RESET_MS: u64 = 1_000;
+/// How long a track must play for a play to be recorded. A shorter track counts when it ends.
+pub const PLAY_COUNTS_AFTER_MS: u64 = 30_000;
 /// How many upcoming tracks a [`PlayerView`] holds.
 pub const UPCOMING_LIMIT: usize = 200;
 /// How many replaced announcements are kept.
@@ -131,6 +133,15 @@ pub struct PlaybackService {
     reported_ms: u64,
     /// Failures in a row.
     failures: u32,
+    /// How long `current` must play to count as played: [`PLAY_COUNTS_AFTER_MS`], which the tests
+    /// lower.
+    play_counts_after_ms: u64,
+    /// How long `current` played before `played_from`, when a seek moved it.
+    heard_ms: u64,
+    /// A play of `current` has been recorded.
+    play_recorded: bool,
+    /// Whether plays are recorded, as the settings last said.
+    history: bool,
     restore: Restore,
     /// The track `restore_queue` loaded paused, while no user action has loaded anything since.
     restored: Option<Restored>,
@@ -177,6 +188,10 @@ impl PlaybackService {
             played_from: 0,
             reported_ms: 0,
             failures: 0,
+            play_counts_after_ms: PLAY_COUNTS_AFTER_MS,
+            heard_ms: 0,
+            play_recorded: false,
+            history: true,
             restored: None,
             unplayable_restore: None,
             restore: Restore::AwaitingSnapshot,
@@ -267,6 +282,8 @@ impl PlaybackService {
                     if self.duration_ms().saturating_sub(self.played_from) >= FAILURE_RESET_MS {
                         self.failures = 0;
                     }
+                    // A track shorter than the threshold counts once it has played in full.
+                    self.record_play();
                     // While paused the engine would hold the next track without starting it.
                     if !self.playing {
                         self.move_on();
@@ -332,6 +349,7 @@ impl PlaybackService {
     /// Applies the settings that concern playback. Only what changed goes on, because setting a
     /// device, even the same one, rebuilds the output.
     pub fn on_settings(&mut self, settings: &Settings) {
+        self.history = settings.history_enabled;
         let volume = if settings.muted { 0.0 } else { settings.volume };
         if volume != self.volume {
             self.volume = volume;
@@ -364,8 +382,9 @@ impl PlaybackService {
         self.publish();
     }
 
-    /// The worker's regular call: ends a run of failures once a track has played long enough, and
-    /// saves what changed in the queue if a save is due.
+    /// The worker's regular call: ends a run of failures once a track has played long enough,
+    /// records a play once it has played for the threshold, and saves what changed in the queue if
+    /// a save is due.
     pub fn tick(&mut self) {
         self.tick_at(Instant::now());
     }
@@ -379,6 +398,9 @@ impl PlaybackService {
             && reading.position_ms.saturating_sub(self.played_from) >= FAILURE_RESET_MS
         {
             self.failures = 0;
+        }
+        if self.played_ms() >= self.play_counts_after_ms {
+            self.record_play();
         }
         let due = self
             .last_save
@@ -453,6 +475,38 @@ impl PlaybackService {
                 .filter(|restored| Some(restored.track) == self.queue.current())
                 .map_or(0, |restored| restored.position_ms),
         }
+    }
+
+    /// How long the current track has played: pauses add nothing, and a seek adds nothing by
+    /// itself. Until the clock names the track, it has played only what it did before a seek.
+    fn played_ms(&self) -> u64 {
+        let reading = self.clock.read();
+        let since_seek = match &self.current {
+            Some(current) if current.token == reading.token => {
+                reading.position_ms.saturating_sub(self.played_from)
+            }
+            _ => 0,
+        };
+        self.heard_ms + since_seek
+    }
+
+    /// Records a play of the current track, once, if history is on.
+    fn record_play(&mut self) {
+        if !self.history || self.play_recorded {
+            return;
+        }
+        if let Some(current) = &self.current {
+            self.requests
+                .push(LibraryRequest::RecordPlay(current.track));
+            self.play_recorded = true;
+        }
+    }
+
+    /// `current` has just become a track that starts at `start_ms`, with nothing played yet.
+    fn start_counting(&mut self, start_ms: u64) {
+        self.played_from = start_ms;
+        self.heard_ms = 0;
+        self.play_recorded = false;
     }
 
     /// Saves what changed since the last save: the whole queue if its lists did, else the position
@@ -531,7 +585,7 @@ impl PlaybackService {
             play,
         });
         self.current = Some(given);
-        self.played_from = start_ms;
+        self.start_counting(start_ms);
         self.playing = play && !self.engine_gone;
         self.sync_next();
     }
@@ -596,7 +650,7 @@ impl PlaybackService {
             Some(track) if track == given.track => {
                 self.current = Some(given);
                 self.ended = false;
-                self.played_from = 0;
+                self.start_counting(0);
                 self.learned_duration(duration_ms);
                 self.sync_next();
             }
@@ -783,6 +837,7 @@ impl PlaybackService {
 
     fn seek(&mut self, position_ms: u64) {
         if self.current.is_some() {
+            self.heard_ms += self.position().saturating_sub(self.played_from);
             self.played_from = position_ms;
             self.engine.send(EngineCommand::Seek(position_ms));
         }
@@ -823,6 +878,11 @@ mod tests {
     const PULL_SPACING: Duration =
         Duration::from_micros(CHUNK_FRAMES as u64 * 1_000_000 / FORMAT.sample_rate as u64 / 4);
     const SEED: u64 = 7;
+    /// The play threshold in the tests of recording plays, which would each take some eight
+    /// seconds at the real one. Their times are those of the rule scaled by the same factor: here
+    /// 30 s is 1 000 ms, so a second is about 33 ms. A point "just under" the threshold is kept
+    /// a few chunks under it, because the clock may run that far behind the test's pulls.
+    const TEST_PLAY_MS: u64 = 1_000;
 
     fn t(n: i64) -> TrackId {
         TrackId(n)
@@ -1126,6 +1186,36 @@ mod tests {
                 .collect()
         }
 
+        /// Counts a play after [`TEST_PLAY_MS`] instead of half a minute.
+        fn counting_soon(mut self) -> Self {
+            self.service.play_counts_after_ms = TEST_PLAY_MS;
+            self
+        }
+
+        fn tick(&mut self) {
+            self.service.tick();
+            self.collect();
+        }
+
+        /// Play, pump and tick, as the worker would, until `done` holds.
+        fn run_ticking_until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
+            let deadline = Instant::now() + DEADLINE;
+            loop {
+                self.pull();
+                self.pump();
+                self.tick();
+                if done(self) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                thread::sleep(Duration::from_micros(200));
+            }
+        }
+
+        fn position(&self) -> u64 {
+            self.reading().position_ms
+        }
+
         fn saved_records(&self) -> Vec<&QueueRecord> {
             self.requests
                 .iter()
@@ -1159,6 +1249,17 @@ mod tests {
 
     fn heard(token: u64) -> impl Fn(&Rig) -> bool {
         move |rig| rig.reading().token == token && rig.reading().position_ms > 0
+    }
+
+    /// The tracks recorded as played, in order.
+    fn plays(rig: &Rig) -> Vec<TrackId> {
+        rig.requests
+            .iter()
+            .filter_map(|request| match request {
+                LibraryRequest::RecordPlay(track) => Some(*track),
+                _ => None,
+            })
+            .collect()
     }
 
     /// A saved queue of `context`, with its first track current.
@@ -2102,7 +2203,14 @@ mod tests {
         });
         assert_eq!(rig.view().current, Some(t(1)));
         assert_eq!(rig.view().duration_ms, 210);
-        assert_eq!(rig.requests, [LibraryRequest::SetDuration(t(1), 210)]);
+        let durations = |rig: &Rig| -> Vec<LibraryRequest> {
+            rig.requests
+                .iter()
+                .filter(|request| matches!(request, LibraryRequest::SetDuration(..)))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(durations(&rig), [LibraryRequest::SetDuration(t(1), 210)]);
 
         rig.ended(first);
         rig.engine(EngineEvent::TrackStarted {
@@ -2111,7 +2219,7 @@ mod tests {
         });
         assert_eq!(rig.view().current, Some(t(2)));
         assert_eq!(rig.view().duration_ms, 220);
-        assert_eq!(rig.requests[1], LibraryRequest::SetDuration(t(2), 220));
+        assert_eq!(durations(&rig)[1], LibraryRequest::SetDuration(t(2), 220));
 
         // The library knows this one.
         let third = rig.announced_token();
@@ -2122,7 +2230,7 @@ mod tests {
         });
         assert_eq!(rig.view().current, Some(t(3)));
         assert_eq!(rig.view().duration_ms, 200);
-        assert_eq!(rig.requests.len(), 2, "{:?}", rig.requests);
+        assert_eq!(durations(&rig).len(), 2, "{:?}", rig.requests);
     }
 
     #[test]
@@ -2232,6 +2340,208 @@ mod tests {
         });
         assert_eq!(rig.output().unwrap().device(), Some(device));
         assert!(rig.pull().iter().all(|sample| *sample == 0.0));
+    }
+
+    // Recording plays.
+
+    #[test]
+    fn the_threshold_is_thirty_seconds() {
+        assert_eq!(PLAY_COUNTS_AFTER_MS, 30_000);
+        let rig = Rig::with(&Music::new());
+        assert_eq!(rig.service.play_counts_after_ms, PLAY_COUNTS_AFTER_MS);
+        assert!(
+            rig.service.history,
+            "history is on until the settings say otherwise"
+        );
+    }
+
+    #[test]
+    fn a_play_counts_after_thirty_seconds() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1], 0);
+
+        rig.run_until("most of the threshold", |rig| rig.position() >= 600);
+        rig.tick();
+        assert!(rig.position() < TEST_PLAY_MS, "{}", rig.position());
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+
+        rig.run_until("the threshold", |rig| rig.position() >= TEST_PLAY_MS);
+        assert!(plays(&rig).is_empty(), "a tick records it");
+        rig.tick();
+        assert_eq!(plays(&rig), [t(1)]);
+
+        rig.run_until("twice the threshold", |rig| {
+            rig.position() >= 2 * TEST_PLAY_MS
+        });
+        rig.tick();
+        assert_eq!(plays(&rig), [t(1)], "a play is recorded once");
+    }
+
+    #[test]
+    fn a_short_track_counts_when_it_ends() {
+        let music = Music::new().tone(333).tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1, 2], 0);
+
+        // No tick at all: the track ends between two of them.
+        rig.run_until("the track after it", |rig| {
+            rig.service.queue.current() == Some(t(2))
+        });
+
+        assert_eq!(plays(&rig), [t(1)]);
+    }
+
+    #[test]
+    fn a_skip_before_thirty_seconds_does_not_count() {
+        let music = Music::new().tone(3_000).tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1, 2], 0);
+        rig.run_until("most of the threshold", |rig| rig.position() >= 600);
+        rig.tick();
+        assert!(rig.position() < TEST_PLAY_MS, "{}", rig.position());
+
+        rig.send(Command::Next);
+        rig.run_ticking_until("a play", |rig| !plays(rig).is_empty());
+
+        assert_eq!(plays(&rig), [t(2)], "only the next track counts");
+        assert!(
+            rig.position() >= TEST_PLAY_MS,
+            "the next track starts from nothing: {}",
+            rig.position()
+        );
+    }
+
+    #[test]
+    fn a_pause_adds_nothing() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1], 0);
+        rig.run_until("some play", |rig| rig.position() >= 333);
+        rig.send(Command::TogglePlay);
+        let token = rig.current_token();
+        rig.wait_until("the pause", |rig| {
+            rig.reading().token == token && !rig.reading().playing
+        });
+        let paused_at = rig.position();
+
+        // Twice the threshold in pulls, all of them paused.
+        for _ in 0..44 {
+            rig.pull();
+            rig.pump();
+            rig.tick();
+        }
+
+        // The pause fades out over a few milliseconds of audio, and then nothing moves.
+        assert!(
+            rig.position() < paused_at + 50,
+            "{paused_at} -> {}",
+            rig.position()
+        );
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+    }
+
+    #[test]
+    fn a_seek_adds_nothing_by_itself() {
+        let music = Music::new().tone(10_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1], 0);
+        rig.run_until("some play", |rig| rig.position() >= 167);
+
+        rig.send(Command::Seek(6_667));
+        // While playing, the clock shows the seek once the device takes audio from there.
+        rig.run_until("the seek", |rig| rig.position() >= 6_667);
+        rig.tick();
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+
+        rig.run_until("more play", |rig| rig.position() >= 6_667 + 333);
+        rig.tick();
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+
+        rig.run_ticking_until("a play", |rig| !plays(rig).is_empty());
+        assert_eq!(plays(&rig), [t(1)]);
+    }
+
+    #[test]
+    fn time_before_a_seek_still_counts() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1], 0);
+        rig.run_until("most of the threshold", |rig| rig.position() >= 667);
+        let before = rig.position();
+
+        rig.send(Command::Seek(0));
+        rig.run_until("the seek", |rig| rig.position() < before);
+        rig.tick();
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+
+        rig.run_ticking_until("a play", |rig| !plays(rig).is_empty());
+        assert_eq!(plays(&rig), [t(1)]);
+        assert!(
+            rig.position() < 700,
+            "the time before the seek counts: {}",
+            rig.position()
+        );
+    }
+
+    #[test]
+    fn repeat_one_counts_each_time_round() {
+        let music = Music::new().tone(1_500);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.settings(&Settings {
+            repeat: RepeatMode::One,
+            ..Settings::default()
+        });
+        rig.play(&[1], 0);
+        let rounds = |rig: &Rig| {
+            let mut tokens: Vec<u64> = rig
+                .views
+                .iter()
+                .filter(|view| view.current == Some(t(1)) && view.token != 0)
+                .map(|view| view.token)
+                .collect();
+            tokens.dedup();
+            tokens.len()
+        };
+
+        rig.run_ticking_until("the fourth time round", |rig| rounds(rig) >= 4);
+
+        assert_eq!(plays(&rig), [t(1), t(1), t(1)]);
+    }
+
+    #[test]
+    fn nothing_is_recorded_with_history_off() {
+        let music = Music::new().tone(333).tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.settings(&Settings {
+            history_enabled: false,
+            ..Settings::default()
+        });
+        rig.play(&[1, 2], 0);
+
+        rig.run_ticking_until("a full play", |rig| {
+            rig.service.queue.current() == Some(t(2)) && rig.position() >= TEST_PLAY_MS
+        });
+
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+    }
+
+    #[test]
+    fn switching_history_off_mid_track_stops_the_record() {
+        let music = Music::new().tone(1_500).tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1, 2], 0);
+        rig.run_until("some play", |rig| rig.position() >= 333);
+
+        rig.settings(&Settings {
+            history_enabled: false,
+            ..Settings::default()
+        });
+        rig.run_ticking_until("the track after it", |rig| {
+            rig.service.queue.current() == Some(t(2))
+        });
+
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
     }
 
     // Saving and restoring.
