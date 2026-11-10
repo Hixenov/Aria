@@ -29,7 +29,7 @@ impl World {
             library,
             out: Vec::new(),
             modal_open: false,
-            tr: Localizer::new(Language::En).unwrap(),
+            tr: Localizer::new(Language::En).expect("the English locale loads"),
             settings: Settings::default(),
         }
     }

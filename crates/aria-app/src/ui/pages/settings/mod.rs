@@ -10,9 +10,9 @@ use aria_core::{
 };
 use aria_library::FolderId;
 use eframe::egui::{
-    Align, Button, Checkbox, Color32, ComboBox, Direction, Frame, Id, Label, Layout, Margin, Modal,
-    Rect, RichText, ScrollArea, Separator, Shape, Sides, Stroke, StrokeKind, TextStyle, Ui,
-    WidgetInfo, accesskit::Role, epaint::RectShape, vec2,
+    Align, Button, Checkbox, Color32, ComboBox, Direction, Frame, Id, Label, Layout, Margin, Rect,
+    RichText, ScrollArea, Separator, Shape, Sides, Stroke, StrokeKind, TextStyle, Ui, WidgetInfo,
+    accesskit::Role, epaint::RectShape, vec2,
 };
 
 use super::{PageAction, PageCtx};
@@ -23,7 +23,7 @@ use crate::{
             Palette, fonts,
             visuals::{SPACE, TITLE_SIZE},
         },
-        widgets::section_header,
+        widgets::{Confirm, confirm_dialog, section_header},
     },
 };
 
@@ -46,10 +46,6 @@ const SEGMENT_GAP: i8 = 2;
 const TRACK_STROKE: f32 = 1.0;
 /// Width of a combo box.
 const COMBO_WIDTH: f32 = 180.0;
-/// Width of the reset dialog's text.
-const DIALOG_WIDTH: f32 = 360.0;
-/// Least width of the reset dialog's buttons.
-const DIALOG_BUTTON_WIDTH: f32 = 88.0;
 /// Id of the confirmation dialog.
 const DIALOG_ID: &str = "aria_reset_dialog";
 /// Where the open dialog's kind is kept between frames.
@@ -113,7 +109,7 @@ pub fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
     }
 
     if *ctx.modal_open {
-        confirm_dialog(ui, ctx);
+        settings_dialog(ui, ctx);
     }
 }
 
@@ -414,7 +410,7 @@ fn dialog_text(dialog: Dialog) -> (&'static str, &'static str) {
 
 /// Asks before a change that cannot be taken back. Cancel, Escape and a click outside close
 /// it; Confirm closes it and makes the request.
-fn confirm_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
+fn settings_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
     let tr = ctx.tr;
     let p = ctx.palette;
     // Without a kind there is nothing to confirm, and guessing could do the wrong thing: close.
@@ -431,43 +427,23 @@ fn confirm_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
         return;
     }
     let (title_key, body_key) = dialog_text(dialog);
-    let frame = Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CARD_RADIUS)
-        .inner_margin(Margin::same(SPACE[4] as i8))
-        .shadow(ui.visuals().window_shadow);
-    let result = Modal::new(Id::unique(DIALOG_ID))
-        .frame(frame)
-        .show(ui.ctx(), |ui| {
-            ui.set_width(DIALOG_WIDTH);
-            title(ui, &p, &tr.tr(title_key));
-            ui.add_space(SPACE[1]);
-            let body = RichText::new(tr.tr(body_key)).color(p.text_muted);
-            ui.add(Label::new(body).selectable(false).wrap());
-            if let Dialog::RemoveFolder(id) = dialog
-                && let Some(folder) = ctx.library.snapshot.folders.iter().find(|f| f.id == id)
-            {
-                // The user's own folder list, where paths are shown.
-                let path = RichText::new(folder.path.display().to_string()).color(p.text);
-                ui.add_space(SPACE[2]);
-                ui.add(Label::new(path).selectable(false).wrap());
-            }
-            ui.add_space(SPACE[4]);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let min_size = vec2(DIALOG_BUTTON_WIDTH, 0.0);
-                let confirm = RichText::new(tr.tr("settings-confirm")).color(p.on_accent());
-                let confirm = Button::new(confirm).fill(p.accent).min_size(min_size);
-                if ui.add(confirm).clicked() {
-                    return Some(true);
-                }
-                let cancel = Button::new(tr.tr("settings-cancel")).min_size(min_size);
-                ui.add(cancel).clicked().then_some(false)
-            })
-            .inner
-        });
-    let confirmed = result.inner;
-    if confirmed.is_some() || result.should_close() {
+    let text = Confirm {
+        title: &tr.tr(title_key),
+        body: &tr.tr(body_key),
+        confirm: &tr.tr("settings-confirm"),
+        cancel: &tr.tr("settings-cancel"),
+    };
+    let confirmed = confirm_dialog(ui, &p, Id::unique(DIALOG_ID), &text, |ui| {
+        if let Dialog::RemoveFolder(id) = dialog
+            && let Some(folder) = ctx.library.snapshot.folders.iter().find(|f| f.id == id)
+        {
+            // The user's own folder list, where paths are shown.
+            let path = RichText::new(folder.path.display().to_string()).color(p.text);
+            ui.add_space(SPACE[2]);
+            ui.add(Label::new(path).selectable(false).wrap());
+        }
+    });
+    if confirmed.is_some() {
         *ctx.modal_open = false;
         ui.data_mut(|data| data.remove::<Dialog>(Id::unique(DIALOG_KIND_ID)));
     }

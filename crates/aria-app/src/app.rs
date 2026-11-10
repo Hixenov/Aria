@@ -135,7 +135,7 @@ pub struct AriaApp {
     /// Whether a page's confirmation dialog is open: the Settings page's, or the Playlists
     /// page's delete question. The page sets and clears it;
     /// [`App::modal_open`] combines it with the name dialog.
-    settings_dialog_open: bool,
+    page_dialog_open: bool,
     /// Resets sent to the backend that it has not answered yet. Each answer brings the
     /// defaults, which are applied already, and changes made since are newer: it is ignored.
     outstanding_resets: u32,
@@ -187,7 +187,7 @@ impl AriaApp {
             settle_until: 0.0,
             #[cfg(test)]
             sent: std::cell::RefCell::default(),
-            settings_dialog_open: false,
+            page_dialog_open: false,
             outstanding_resets: 0,
             startup: None,
         }
@@ -507,7 +507,7 @@ impl AriaApp {
             palette: *palette,
             settings: &self.settings,
             paths_available: self.deps.paths.is_some(),
-            modal_open: &mut self.settings_dialog_open,
+            modal_open: &mut self.page_dialog_open,
             out: &mut actions,
             library: &self.library,
             collections: &self.collections,
@@ -594,7 +594,7 @@ impl AriaApp {
     /// playlist name dialog. Navigation and panel shortcuts wait while one is. Each dialog owns its own
     /// state, so closing one cannot close the other's hold on the app.
     fn modal_open(&self) -> bool {
-        self.settings_dialog_open || self.name_dialog.is_some()
+        self.page_dialog_open || self.name_dialog.is_some()
     }
 
     /// The name of playlist `id`, if the collections know it.
@@ -1332,7 +1332,7 @@ mod tests {
     #[test]
     fn space_is_ignored_with_a_modal_open() {
         let mut harness = space_harness();
-        harness.state_mut().settings_dialog_open = true;
+        harness.state_mut().page_dialog_open = true;
         harness.key_press(egui::Key::Space);
         harness.run();
         assert_eq!(toggles_sent(&harness), 0, "Space played behind a dialog");
@@ -1343,13 +1343,13 @@ mod tests {
         let mut harness = dialog_harness(aria_library::Collections::default());
         assert!(!harness.state().modal_open());
         let ctx = harness.ctx.clone();
-        harness.state_mut().settings_dialog_open = true;
+        harness.state_mut().page_dialog_open = true;
         harness.state_mut().handle_page_action(
             &ctx,
             PageAction::AskPlaylistName(NameFor::New { first: None }),
         );
         harness.run();
-        harness.state_mut().settings_dialog_open = false;
+        harness.state_mut().page_dialog_open = false;
         assert!(
             harness.state().modal_open(),
             "closing the Settings dialog released the name dialog's hold"

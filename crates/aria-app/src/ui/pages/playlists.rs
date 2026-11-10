@@ -7,8 +7,8 @@
 use aria_core::i18n::{FluentArgs, Localizer};
 use aria_library::{Collections, LibrarySnapshot, Playlist, PlaylistId, Track, TrackId};
 use eframe::egui::{
-    Align, Button, Color32, DragAndDrop, Frame, Id, Label, Layout, Margin, Modal, Rect, RichText,
-    ScrollArea, Sense, Stroke, Ui, UiBuilder, WidgetInfo, accesskit::Role, vec2,
+    Align, Button, Color32, Id, Label, Layout, RichText, ScrollArea, Sense, Ui, UiBuilder,
+    WidgetInfo, accesskit::Role, vec2,
 };
 use egui_extras::{Size, StripBuilder};
 
@@ -25,7 +25,10 @@ use crate::{
             icons,
             visuals::{SPACE, TITLE_SIZE},
         },
-        widgets::{empty_state, empty_state_with, section_header, track_menu},
+        widgets::{
+            Confirm, confirm_dialog, empty_state, empty_state_with, reorder, section_header,
+            track_menu,
+        },
     },
 };
 
@@ -35,10 +38,6 @@ const LIST_WIDTH: f32 = 240.0;
 const LIST_ROW: f32 = 48.0;
 /// Height of an entry's row, which `show_rows` needs.
 const ROW: f32 = 36.0;
-/// Width of the grip that shows an entry can be dragged, and the radius of its dots.
-const GRIP: [f32; 2] = [10.0, 1.2];
-/// Width of the line that shows where a dragged entry would land.
-const DROP_LINE: f32 = 2.0;
 /// Width of the duration column.
 const DURATION_WIDTH: f32 = 64.0;
 /// Share of the text columns' width that goes to the title; the artist gets the rest.
@@ -49,10 +48,6 @@ const EMPTY_BUTTON_HEIGHT: f32 = 32.0;
 const RADIUS: u8 = 8;
 /// Id of the delete confirmation.
 const DIALOG_ID: &str = "aria_playlist_delete_dialog";
-/// Width of the delete confirmation's text.
-const DIALOG_WIDTH: f32 = 360.0;
-/// Least width of the delete confirmation's buttons.
-const DIALOG_BUTTON_WIDTH: f32 = 88.0;
 
 /// What the page remembers between frames.
 #[derive(Clone, Default)]
@@ -63,9 +58,6 @@ struct State {
     /// The playlist the open delete confirmation asks about.
     deleting: Option<PlaylistId>,
 }
-
-/// The stored position of the entry being dragged.
-struct DragFrom(u32);
 
 /// One entry the page can show.
 struct Entry<'a> {
@@ -235,17 +227,24 @@ fn detail(
             }
         });
     });
+    let entries = entries(playlist, &ctx.library.snapshot);
+    if entries.is_empty() {
+        // Nothing to list: say why, once. Entries that are all unavailable are said so;
+        // otherwise the playlist has none, or the library has not caught up with it.
+        let title = if playlist.unavailable > 0 {
+            count_text(tr, "playlist-unavailable", playlist.unavailable)
+        } else {
+            tr.tr("playlist-empty").into_owned()
+        };
+        empty_state(ui, icons::PLAYLIST, &title, "", &p);
+        return;
+    }
     if playlist.unavailable > 0 {
         let text = count_text(tr, "playlist-unavailable", playlist.unavailable);
         ui.add(Label::new(RichText::new(text).small().color(p.text_muted)).selectable(false));
     }
     ui.add_space(SPACE[1]);
 
-    if playlist.items.is_empty() {
-        empty_state(ui, icons::PLAYLIST, &tr.tr("playlist-empty"), "", &p);
-        return;
-    }
-    let entries = entries(playlist, &ctx.library.snapshot);
     let table = Table {
         tr,
         p,
@@ -311,6 +310,9 @@ impl Table<'_> {
         let track = entry.track;
         let size = vec2(ui.available_width(), ROW);
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+        let artist = or_unknown(tr, track.artist.as_deref(), "library-unknown-artist");
+        let name = format!("{} — {artist}", track.title);
+        response.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
         if response.hovered() {
             ui.painter().rect_filled(rect, RADIUS, p.surface);
         }
@@ -324,7 +326,9 @@ impl Table<'_> {
         let gap = SPACE[1];
         row.spacing_mut().item_spacing.x = gap;
         let source = ui.make_persistent_id(("aria_playlist_entry", entry.position));
-        row.dnd_drag_source(source, DragFrom(entry.position), |ui| draw_grip(ui, p));
+        reorder::drag_source(&mut row, source, entry.position, |ui| {
+            reorder::grip(ui, p, ROW)
+        });
         out.extend(track_menu::heart(
             &mut row,
             tr,
@@ -333,12 +337,11 @@ impl Table<'_> {
             track.id,
         ));
 
-        let fixed = GRIP[0] + track_menu::HEART_BUTTON[0] + DURATION_WIDTH + 4.0 * gap;
+        let fixed = reorder::GRIP[0] + track_menu::HEART_BUTTON[0] + DURATION_WIDTH + 4.0 * gap;
         let text = (rect.width() - fixed).max(0.0);
         let playing = self.current == Some(track.id);
         let main = if playing { p.accent } else { p.text };
         let muted = if playing { p.accent } else { p.text_muted };
-        let artist = or_unknown(tr, track.artist.as_deref(), "library-unknown-artist");
         let title_width = text * TITLE_SHARE;
         text_cell(&mut row, title_width, &track.title, main, Align::Min);
         text_cell(&mut row, text - title_width, &artist, muted, Align::Min);
@@ -363,7 +366,14 @@ impl Table<'_> {
                 out.push(remove_action(self.playlist, entry.position));
             }
         });
-        self.drop_target(ui, rect, entry.position, out);
+        let dropped = reorder::drop_target(ui, p, rect, entry.position);
+        if let Some((from, to)) = dropped.and_then(|from| drop_move(from, entry.position)) {
+            out.push(PageAction::MoveInPlaylist {
+                playlist: self.playlist,
+                from,
+                to,
+            });
+        }
     }
 
     /// Plays the playlist's entries from row `index`.
@@ -371,41 +381,6 @@ impl Table<'_> {
         PageAction::PlayContext {
             ids: self.ids.clone(),
             start: index,
-        }
-    }
-
-    /// Takes an entry dropped on the row at `rect`, and shows where one being dragged would
-    /// land.
-    fn drop_target(&self, ui: &Ui, rect: Rect, position: u32, out: &mut Vec<PageAction>) {
-        // Where the pointer is, not `Response::contains_pointer`: that is false while a widget
-        // inside the row covers the pointer.
-        let over = ui
-            .input(|input| input.pointer.interact_pos())
-            .is_some_and(|pos| rect.intersect(ui.clip_rect()).contains(pos));
-        if !over {
-            return;
-        }
-        if ui.input(|input| input.pointer.any_released()) {
-            if let Some(from) = DragAndDrop::take_payload::<DragFrom>(ui.ctx())
-                && let Some((from, to)) = drop_move(from.0, position)
-            {
-                out.push(PageAction::MoveInPlaylist {
-                    playlist: self.playlist,
-                    from,
-                    to,
-                });
-            }
-        } else if let Some(from) = DragAndDrop::payload::<DragFrom>(ui.ctx())
-            && from.0 != position
-        {
-            // Moving up lands above this row, moving down below it.
-            let y = if position < from.0 {
-                rect.top()
-            } else {
-                rect.bottom()
-            };
-            ui.painter()
-                .hline(rect.x_range(), y, Stroke::new(DROP_LINE, self.p.accent));
         }
     }
 }
@@ -420,66 +395,28 @@ fn text_cell(ui: &mut Ui, width: f32, text: &str, color: Color32, align: Align) 
     });
 }
 
-/// Two columns of three dots.
-fn draw_grip(ui: &mut Ui, p: &Palette) {
-    let [width, dot] = GRIP;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, ROW), Sense::hover());
-    for column in [-1.0, 1.0] {
-        for line in [-1.0, 0.0, 1.0] {
-            let at = rect.center() + vec2(column * width / 4.0, line * 5.0);
-            ui.painter().circle_filled(at, dot, p.text_muted);
-        }
-    }
-}
-
-/// Asks before a playlist is deleted. Cancel, Escape and a click outside close it; Confirm
-/// closes it and makes the request.
+/// Asks before a playlist is deleted. Confirming makes the request.
 fn confirm_delete(
     ui: &Ui,
     ctx: &mut PageCtx<'_>,
     playlist: &Playlist,
     deleting: &mut Option<PlaylistId>,
 ) {
-    let (tr, p) = (ctx.tr, ctx.palette);
-    let frame = Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(RADIUS)
-        .inner_margin(Margin::same(SPACE[4] as i8))
-        .shadow(ui.visuals().window_shadow);
-    let result = Modal::new(Id::unique(DIALOG_ID))
-        .frame(frame)
-        .show(ui.ctx(), |ui| {
-            ui.set_width(DIALOG_WIDTH);
-            let title = RichText::new(tr.tr("playlist-delete"))
-                .font(semibold(TITLE_SIZE))
-                .color(p.text);
-            ui.add(Label::new(title).selectable(false).wrap());
-            ui.add_space(SPACE[1]);
-            let mut args = FluentArgs::new();
-            args.set("name", playlist.name.as_str());
-            let body = tr.tr_args("playlist-delete-confirm", &args);
-            let body = RichText::new(body).color(p.text_muted);
-            ui.add(Label::new(body).selectable(false).wrap());
-            ui.add_space(SPACE[4]);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let min_size = vec2(DIALOG_BUTTON_WIDTH, 0.0);
-                let confirm = RichText::new(tr.tr("settings-confirm")).color(p.on_accent());
-                let confirm = Button::new(confirm).fill(p.accent).min_size(min_size);
-                if ui.add(confirm).clicked() {
-                    return Some(true);
-                }
-                let cancel = Button::new(tr.tr("settings-cancel")).min_size(min_size);
-                ui.add(cancel).clicked().then_some(false)
-            })
-            .inner
-        });
-    let confirmed = result.inner;
-    if confirmed.is_some() || result.should_close() {
+    let tr = ctx.tr;
+    let mut args = FluentArgs::new();
+    args.set("name", playlist.name.as_str());
+    let text = Confirm {
+        title: &tr.tr("playlist-delete"),
+        body: &tr.tr_args("playlist-delete-confirm", &args),
+        confirm: &tr.tr("settings-confirm"),
+        cancel: &tr.tr("settings-cancel"),
+    };
+    let answer = confirm_dialog(ui, &ctx.palette, Id::unique(DIALOG_ID), &text, |_| {});
+    if answer.is_some() {
         *deleting = None;
         *ctx.modal_open = false;
     }
-    if confirmed == Some(true) {
+    if answer == Some(true) {
         ctx.out.push(PageAction::DeletePlaylist(playlist.id));
     }
 }
@@ -725,5 +662,96 @@ mod tests {
         );
         assert_eq!(resolve(None, &playlists), Some(PlaylistId(1)));
         assert_eq!(resolve(Some(PlaylistId(1)), &[]), None);
+    }
+
+    /// Drags the row named `from` by its grip onto the row named `onto`, with raw pointer
+    /// events, one frame each.
+    fn drag_row(
+        harness: &mut egui_kittest::Harness<'static, (World, State)>,
+        from: &str,
+        onto: &str,
+    ) {
+        let from = harness.get_by_role_and_label(Role::Button, from).rect();
+        let onto = harness.get_by_role_and_label(Role::Button, onto).rect();
+        let grip = from.left_center() + vec2(GRIP_X, 0.0);
+        let target = onto.center();
+        let button = |pos, pressed| eframe::egui::Event::PointerButton {
+            pos,
+            button: eframe::egui::PointerButton::Primary,
+            pressed,
+            modifiers: eframe::egui::Modifiers::NONE,
+        };
+        harness.event(eframe::egui::Event::PointerMoved(grip));
+        harness.event(button(grip, true));
+        harness.event(eframe::egui::Event::PointerMoved(grip + vec2(0.0, -12.0)));
+        harness.event(eframe::egui::Event::PointerMoved(target));
+        harness.event(eframe::egui::Event::PointerMoved(target + vec2(1.0, 0.0)));
+        harness.event(button(target, false));
+        harness.step();
+        harness.run();
+    }
+
+    /// Where, from a row's left edge, its grip is.
+    const GRIP_X: f32 = 6.0;
+
+    #[test]
+    fn dragging_a_row_sends_stored_positions_around_a_hidden_entry() {
+        // Position 1 is an entry the library cannot show.
+        let mut harness = page(vec![playlist(1, "Mix", &[(0, 1), (1, 99), (2, 2)], 1)]);
+        drag_row(
+            &mut harness,
+            "Beta song \u{2014} Artist",
+            "Alpha song \u{2014} Artist",
+        );
+        assert_eq!(
+            harness.state().0.out,
+            [PageAction::MoveInPlaylist {
+                playlist: PlaylistId(1),
+                from: 2,
+                to: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn dropping_a_row_on_itself_sends_nothing() {
+        let mut harness = page(vec![playlist(1, "Mix", &[(0, 1), (2, 2)], 0)]);
+        drag_row(
+            &mut harness,
+            "Beta song \u{2014} Artist",
+            "Beta song \u{2014} Artist",
+        );
+        assert!(harness.state().0.out.is_empty());
+    }
+
+    #[test]
+    fn the_row_menu_removes_the_entry_at_its_stored_position() {
+        let mut harness = page(vec![playlist(1, "Mix", &[(0, 1), (2, 2)], 0)]);
+        harness.get_by_label("Beta song").click_secondary();
+        harness.run();
+        let remove = harness.state().0.english("playlist-remove-entry");
+        harness.get_by_role_and_label(Role::Button, &remove).click();
+        harness.run();
+        assert_eq!(
+            harness.state().0.out,
+            [PageAction::RemoveFromPlaylist {
+                playlist: PlaylistId(1),
+                position: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_playlist_of_only_unavailable_entries_says_so_once() {
+        let harness = page(vec![playlist(1, "Mix", &[(0, 98), (1, 99)], 2)]);
+        let mut args = FluentArgs::new();
+        args.set("count", 2);
+        let line = harness
+            .state()
+            .0
+            .english_with("playlist-unavailable", &args);
+        harness.get_by_label(&line);
+        let empty = harness.state().0.english("playlist-empty");
+        assert!(harness.query_by_label(&empty).is_none());
     }
 }

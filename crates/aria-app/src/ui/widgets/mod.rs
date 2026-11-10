@@ -1,14 +1,17 @@
 //! Reusable widgets. Colors come only from the active [`Palette`](crate::ui::theme::Palette).
 
+mod confirm_dialog;
 mod empty_state;
 mod icon_button;
 mod name_dialog;
 mod nav_item;
+pub mod reorder;
 mod scrub;
 mod section_header;
 mod toast;
 pub mod track_menu;
 
+pub use confirm_dialog::{Confirm, confirm_dialog};
 pub use empty_state::{empty_state, empty_state_with};
 pub use icon_button::IconButton;
 pub use name_dialog::{NameAnswer, NameDialog};

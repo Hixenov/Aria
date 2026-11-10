@@ -10,8 +10,8 @@ use aria_core::{
 };
 use aria_library::{LibrarySnapshot, TrackId};
 use eframe::egui::{
-    Align, Align2, Button, DragAndDrop, Label, Layout, Panel, Rect, RichText, ScrollArea, Sense,
-    Stroke, TextStyle, Ui, UiBuilder, Vec2, pos2, vec2,
+    Align, Align2, Button, Label, Layout, Panel, Rect, RichText, ScrollArea, Sense, TextStyle, Ui,
+    UiBuilder, Vec2, pos2, vec2,
 };
 
 use super::{player_bar::NowPlaying, surface_frame};
@@ -22,7 +22,7 @@ use crate::{
             Palette, fonts, icons,
             visuals::{SPACE, TITLE_SIZE},
         },
-        widgets::{IconButton, empty_state},
+        widgets::{IconButton, empty_state, reorder},
     },
 };
 
@@ -36,10 +36,6 @@ const ROW: f32 = 48.0;
 const COVER: [f32; 2] = [36.0, 4.0];
 /// Edge length of the remove button, and its icon size.
 const REMOVE_BUTTON: [f32; 2] = [28.0, 14.0];
-/// Width of the grip that shows a row can be dragged, and the radius of its dots.
-const GRIP: [f32; 2] = [10.0, 1.2];
-/// Width of the line that shows where a dragged row would land.
-const DROP_LINE: f32 = 2.0;
 
 /// What the user did in the panel. The indices are positions in the user queue, which is the
 /// row's place among the "Next in queue" rows, not among all the rows shown.
@@ -62,9 +58,6 @@ pub struct QueuePanel<'a> {
     /// Where covers come from. Without it the placeholder shows.
     pub artwork: Option<&'a mut ArtworkTextures>,
 }
-
-/// The index of the row being dragged, in the user queue.
-struct DragFrom(usize);
 
 /// One line of the list.
 enum Row {
@@ -240,7 +233,7 @@ fn track_row(
     );
     let source = ui.make_persistent_id(("aria_queue_row", index));
     row.scope_builder(UiBuilder::new().max_rect(body), |ui| {
-        ui.dnd_drag_source(source, DragFrom(index), |ui| {
+        reorder::drag_source(ui, source, index, |ui| {
             draw_body(ui, p, artwork, now, body.size(), true);
         });
     });
@@ -259,29 +252,8 @@ fn track_row(
         }
     });
 
-    // Where the pointer is, not `Response::contains_pointer`: that is false while a widget
-    // inside the row covers the pointer.
-    let over = ui
-        .input(|input| input.pointer.interact_pos())
-        .is_some_and(|pos| rect.intersect(ui.clip_rect()).contains(pos));
-    if !over {
-        return;
-    }
-    if ui.input(|input| input.pointer.any_released()) {
-        if let Some(from) = DragAndDrop::take_payload::<DragFrom>(ui.ctx()) {
-            out.extend(drop_action(from.0, index));
-        }
-    } else if let Some(from) = DragAndDrop::payload::<DragFrom>(ui.ctx())
-        && from.0 != index
-    {
-        // Moving up lands above this row, moving down below it.
-        let y = if index < from.0 {
-            rect.top()
-        } else {
-            rect.bottom()
-        };
-        ui.painter()
-            .hline(rect.x_range(), y, Stroke::new(DROP_LINE, p.accent));
+    if let Some(from) = reorder::drop_target(ui, p, rect, index) {
+        out.extend(drop_action(from, index));
     }
 }
 
@@ -297,7 +269,8 @@ fn draw_body(
     ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
         ui.set_min_size(size);
         if grip {
-            draw_grip(ui, p);
+            reorder::grip(ui, p, ROW);
+            ui.add_space(SPACE[0]);
         }
         let [edge, radius] = COVER;
         let (art, _) = ui.allocate_exact_size(Vec2::splat(edge), Sense::hover());
@@ -328,19 +301,6 @@ fn draw_body(
             ui.add(Label::new(artist).selectable(false).truncate());
         });
     });
-}
-
-/// Two columns of three dots.
-fn draw_grip(ui: &mut Ui, p: &Palette) {
-    let [width, dot] = GRIP;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, ROW), Sense::hover());
-    for column in [-1.0, 1.0] {
-        for line in [-1.0, 0.0, 1.0] {
-            let at = rect.center() + vec2(column * width / 4.0, line * 5.0);
-            ui.painter().circle_filled(at, dot, p.text_muted);
-        }
-    }
-    ui.add_space(SPACE[0]);
 }
 
 #[cfg(test)]
