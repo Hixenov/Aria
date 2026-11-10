@@ -132,6 +132,9 @@ struct PlaybackLink {
     events: UnboundedReceiver<EngineEvent>,
     clock: Arc<PlaybackClock>,
     devices: DeviceLister,
+    /// The volume and mute the settings started with.
+    volume: f32,
+    muted: bool,
 }
 
 impl PlaybackLink {
@@ -151,6 +154,8 @@ impl PlaybackLink {
             events,
             clock,
             devices,
+            volume: settings.volume,
+            muted: settings.muted,
         })
     }
 }
@@ -216,6 +221,8 @@ impl Backend {
             events: engine_events,
             clock,
             devices,
+            volume,
+            muted,
         } = playback;
         let worker = Worker {
             sink,
@@ -228,6 +235,8 @@ impl Backend {
             pending: None,
             deadline: None,
             failing: false,
+            volume,
+            muted,
         };
         let done_guard = DoneGuard::new(done_tx);
         let thread = thread::Builder::new()
@@ -374,6 +383,9 @@ struct Worker {
     /// The last save failed. Further failures are not reported again until a
     /// save succeeds.
     failing: bool,
+    /// The volume and mute in effect, which a reset of the settings leaves alone.
+    volume: f32,
+    muted: bool,
 }
 
 impl Worker {
@@ -391,12 +403,13 @@ impl Worker {
             tokio::select! {
                 cmd = commands.recv() => match cmd {
                     Some(Command::UpdateSettings(settings)) => {
+                        (self.volume, self.muted) = (settings.volume, settings.muted);
                         self.playback.on_settings(&settings);
                         self.flush_playback();
                         self.update(settings);
                     }
                     Some(Command::ResetSettings) => {
-                        self.playback.on_settings(&Settings::default());
+                        self.playback.on_settings(&self.defaults());
                         self.flush_playback();
                         self.reset().await;
                     }
@@ -548,10 +561,20 @@ impl Worker {
         self.deadline = Instant::now().checked_add(self.debounce);
     }
 
+    /// The default settings, except for the volume and mute: someone who resets to fix a theme
+    /// should not get full volume in their headphones.
+    fn defaults(&self) -> Settings {
+        Settings {
+            volume: self.volume,
+            muted: self.muted,
+            ..Settings::default()
+        }
+    }
+
     async fn reset(&mut self) {
         self.pending = None;
         self.deadline = None;
-        let defaults = Settings::default();
+        let defaults = self.defaults();
         let outcome = self.save(defaults.clone()).await;
         let mut batch = vec![Event::SettingsReplaced(defaults)];
         batch.extend(outcome);
@@ -1123,6 +1146,40 @@ mod tests {
         });
         assert_eq!(saved.lock().unwrap().last(), Some(&Settings::default()));
         assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn reset_keeps_the_volume_and_mute() {
+        let (sink, saved) = recording_sink(0);
+        let (waker, _) = counting_waker();
+        let services = BackendServices {
+            library: None,
+            output: Box::new(FakeFactory::new(OutputFormat {
+                sample_rate: 48_000,
+                channels: 2,
+            })),
+            settings: Settings {
+                volume: 0.2,
+                ..Settings::default()
+            },
+        };
+        let handle = Backend::start(Some(sink), services, waker, FAST).unwrap();
+        handle.send(Command::UpdateSettings(Settings {
+            volume: 0.4,
+            muted: true,
+            theme: Theme::Dark,
+            ..Settings::default()
+        }));
+        handle.send(Command::ResetSettings);
+        let kept = Settings {
+            volume: 0.4,
+            muted: true,
+            ..Settings::default()
+        };
+        let replaced = Event::SettingsReplaced(kept.clone());
+        drain_until(&handle, |e| e.contains(&replaced));
+        assert!(handle.shutdown(MAX));
+        assert_eq!(saved.lock().unwrap().last(), Some(&kept));
     }
 
     #[test]
