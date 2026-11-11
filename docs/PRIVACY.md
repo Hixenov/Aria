@@ -47,7 +47,11 @@ Everything Aria writes stays on your machine:
    is rebuilt by a rescan.
 
 Aria only reads your audio files; it never writes to or deletes them. Removing a folder from
-the library removes its rows from `library.db`, not the files.
+the library removes its tracks' rows from `library.db`, not the files. Favorites, playlist
+entries and plays are stored by file path and are not removed with the folder: they stay in
+`library.db`, hidden while the file is not in the library, and show again if you add the folder
+back. To delete them, unmark the tracks, remove the entries or delete the playlists, and clear
+the playback history.
 
 ## Where
 
