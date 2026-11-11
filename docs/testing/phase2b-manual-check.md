@@ -27,6 +27,21 @@ looking at the window.
 | App | Pure parts: Recently added, table rows for a playlist with unavailable entries, name validation, ids the library snapshot does not know are skipped. Pages are drawn in a test harness (egui_kittest): Liked, Playlists, Home and the Settings history controls. Dragging an entry to reorder is covered by a simulated pointer-event test, not by a person. |
 | Speed | The ignored release test for `Collections` on a 50,000-track library (see the README, Performance). |
 
+## What the agent ran on the release build (2026-11-11)
+
+On the Windows PC described in the README, with no keyboard or mouse input sent to the app and no
+sound judged. The PC's own Aria data (a 0.2.0 library of 40 tracks) was copied aside first and
+put back byte for byte afterwards.
+
+| Check | Who | Result |
+|-------|-----|--------|
+| `cargo build --release --locked`, then `target\release\aria.exe` starts | agent | Yes. Version 0.2.1 logged, first frame 282 ms, no errors in the log |
+| A 0.2.0 database opens in 0.2.1 | agent | Yes. The database was upgraded to version 2 with the new tables; its folder, tracks and saved queue were all still there (the scan then added 3 files that had been added to the folder since) |
+| `Aria-0.2.1-setup.exe` (Inno Setup, `/DAppVersion=0.2.1`) installs silently for the current user | agent | Yes. Installed to `%LOCALAPPDATA%\Programs\Aria` with the licences and notices, a Start menu entry and an uninstall entry "Aria 0.2.1"; the installed `aria.exe` is byte-identical to the build |
+| The installed app starts | agent | Yes. First frame 130 ms |
+| Uninstall | agent | Yes, silently. The program folder, the Start menu entry and the uninstall entry are gone; settings, the library and logs are kept, as documented |
+| The installer run by double-click, with its pages | pending | Only the silent install was run |
+
 ## What you need to check by hand
 
 | Check | Who |
