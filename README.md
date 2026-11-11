@@ -17,7 +17,7 @@ Version 0.2.1 adds favorites, playlists, playback history and a Home page on top
 - Playlists: create, rename and delete; add a track from the row menu (to a playlist or to a new one); remove an entry; reorder by dragging; play from any row
 - Playback history: a play counts after 30 seconds; Home shows "Recently played" (20 tracks) and "Recently added" (20 tracks)
 - Settings, Playback: "Keep playback history" and "Clear playback history". Favorites, playlists and history stay on this computer (see [docs/PRIVACY.md](docs/PRIVACY.md))
-- Favorites and playlist entries are kept by file path, so they come back when a folder is removed and added again. A 0.2.0 library database is upgraded in place; the automated migration test passes, and nobody has yet tried it on a real 0.2.0 library
+- Favorites and playlist entries are kept by file path, so they come back when a folder is removed and added again. A 0.2.0 library database is upgraded in place; the automated migration test passes, and nobody has yet tried it on a real 0.2.0 library. After the upgrade 0.2.0 no longer opens it: it says the library was saved by a newer version and runs with the library turned off, leaving the file untouched. Copy the data folder first if you may want to go back to 0.2.0
 - English, Russian and Armenian; the new Russian and Armenian texts were written by the coding agent and not read by a native speaker
 
 ### Phase 2a (local player), version 0.2.0

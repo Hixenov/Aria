@@ -16,13 +16,13 @@ Nobody has run this version by hand yet: see `docs/testing/phase2b-manual-check.
 - Playback history: a play counts after the track has played for 30 seconds. "Recently played" holds up to 20 tracks, each once; the newest 10,000 plays are kept.
 - Home page: "Recently played" and "Recently added" (20 tracks); a click plays that list from that row.
 - Settings, Playback: "Keep playback history" and "Clear playback history" (asks first).
-- Favorites, playlist entries and plays are stored by file path, so they come back, in their old order, when a music folder is removed and added again. A 0.2.0 library database is upgraded in place (database version 1 to 2); the migration only adds tables.
+- Favorites, playlist entries and plays are stored by file path, so they come back, in their old order, when a music folder is removed and added again. A 0.2.0 library database is upgraded in place (database version 1 to 2); the migration only adds tables. There is no way back: once 0.2.1 has opened the database, 0.2.0 refuses it ("The library was saved by a newer version of Aria") and runs with the library turned off, without folders, tracks or the saved queue. 0.2.0 leaves the file untouched, so 0.2.1 opens it again with nothing lost. To keep a library that 0.2.0 can open, copy the data folder before the first start of 0.2.1.
 - English, Russian and Armenian texts for all of the above. The Russian and Armenian texts were written by the coding agent and have not been read by a native speaker.
 - `docs/testing/phase2b-manual-check.md`.
 
 ### Changed
 
-- The track table of Local Music is now one widget shared by Local Music, Liked and Playlists.
+- The track table of Local Music is now shared with Liked. Playlist rows are drawn separately (a grip for dragging, no sortable headers), with the same heart and the same row-menu items, plus removing the entry.
 - Version 0.2.1.
 
 ### Known limitations
