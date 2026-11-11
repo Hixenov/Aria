@@ -143,7 +143,12 @@ fn row(ui: &mut Ui, ctx: &mut PageCtx<'_>, track: &Track, ids: &[TrackId], index
     let p = ctx.palette;
     let size = vec2(ui.available_width(), ROW_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), &track.title));
+    let artist = track.artist.as_deref().map_or_else(
+        || ctx.tr.tr("library-unknown-artist").into_owned(),
+        str::to_owned,
+    );
+    let name = format!("{} — {artist}", track.title);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), &name));
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
     if ui.is_rect_visible(rect) {
         let painter = ui.painter().with_clip_rect(rect);
@@ -175,10 +180,6 @@ fn row(ui: &mut Ui, ctx: &mut PageCtx<'_>, track: &Track, ids: &[TrackId], index
         let left = badge.right() + SPACE[2];
         let body = TextStyle::Body.resolve(ui.style());
         let small = TextStyle::Small.resolve(ui.style());
-        let artist = track.artist.as_deref().map_or_else(
-            || ctx.tr.tr("library-unknown-artist").into_owned(),
-            str::to_owned,
-        );
         painter.text(
             pos2(left, rect.center().y - SPACE[1] / 2.0),
             Align2::LEFT_BOTTOM,
@@ -189,7 +190,7 @@ fn row(ui: &mut Ui, ctx: &mut PageCtx<'_>, track: &Track, ids: &[TrackId], index
         painter.text(
             pos2(left, rect.center().y + SPACE[1] / 2.0),
             Align2::LEFT_TOP,
-            artist,
+            &artist,
             small,
             p.text_muted,
         );
@@ -319,7 +320,7 @@ mod tests {
         let mut harness = home(World::new(collections, library(tracks)));
         // Every track is in both sections; Recently played is the upper one.
         let mut rows: Vec<_> = harness
-            .get_all_by_role_and_label(Role::Button, "Song 1")
+            .get_all_by_role_and_label(Role::Button, "Song 1 — Unknown artist")
             .collect();
         rows.sort_by(|a, b| a.rect().top().total_cmp(&b.rect().top()));
         rows[0].click();
