@@ -8,7 +8,7 @@ use std::{
 };
 
 use aria_core::{
-    DeviceInfo, PlaybackClock,
+    Collections, DeviceInfo, PlaybackClock,
     command::Command,
     event::Event,
     i18n::{Localizer, os_language},
@@ -33,12 +33,12 @@ use crate::{
             right_panel::{self, QueueAction, QueuePanel},
             sidebar::{self, SidebarAction},
         },
-        pages::{self, LibraryView, PageAction, PageCtx},
+        pages::{self, LibraryView, NameFor, PageAction, PageCtx},
         theme::{
             Palette, fonts,
             visuals::{self, SPACE},
         },
-        widgets::Toasts,
+        widgets::{NameAnswer, NameDialog, Toasts},
     },
     whole_ms,
 };
@@ -113,6 +113,11 @@ pub struct AriaApp {
     library: LibraryView,
     /// What the backend last reported of the player.
     player: PlayerView,
+    /// Favorites, playlists and recent plays as the backend last reported them. Empty until
+    /// it does.
+    collections: Arc<Collections>,
+    /// The playlist name dialog, while it is open: what it is for and the text typed so far.
+    name_dialog: Option<(NameFor, String)>,
     /// The output devices the backend last listed. Empty until it answers.
     devices: Vec<DeviceInfo>,
     /// Whether the Settings page was on screen last frame, so that entering it asks for the
@@ -127,9 +132,10 @@ pub struct AriaApp {
     settle_until: f64,
     /// Whether making `artwork` has been tried.
     artwork_started: bool,
-    /// Whether the Settings page's reset dialog is open. Navigation and panel shortcuts
-    /// wait while it is.
-    modal_open: bool,
+    /// Whether a page's confirmation dialog is open: the Settings page's, or the Playlists
+    /// page's delete question. The page sets and clears it;
+    /// [`App::modal_open`] combines it with the name dialog.
+    page_dialog_open: bool,
     /// Resets sent to the backend that it has not answered yet. Each answer brings the
     /// defaults, which are applied already, and changes made since are newer: it is ignored.
     outstanding_resets: u32,
@@ -171,6 +177,8 @@ impl AriaApp {
             picker: FolderPicker::default(),
             library: LibraryView::default(),
             player: PlayerView::default(),
+            collections: Arc::default(),
+            name_dialog: None,
             devices: Vec::new(),
             on_settings: false,
             clock,
@@ -179,7 +187,7 @@ impl AriaApp {
             settle_until: 0.0,
             #[cfg(test)]
             sent: std::cell::RefCell::default(),
-            modal_open: false,
+            page_dialog_open: false,
             outstanding_resets: 0,
             startup: None,
         }
@@ -233,6 +241,7 @@ impl AriaApp {
         self.show_sidebar(ui, &ctx, &palette);
         self.show_right_panel(ui, &palette);
         self.show_page(ui, &ctx, &palette);
+        self.show_name_dialog(&ctx, &palette);
         self.toasts.show(&ctx, &self.localizer, &palette);
     }
 
@@ -288,6 +297,7 @@ impl AriaApp {
             settings: &self.settings,
             queue_open: self.settings.right_panel_open,
             artwork: self.artwork.as_mut(),
+            collections: &self.collections,
         };
         let actions = player_bar::show(ui, &mut bar);
         let now = ctx.input(|input| input.time);
@@ -319,6 +329,9 @@ impl AriaApp {
             PlayerAction::Previous => return self.send(Command::Previous),
             PlayerAction::Seek(position_ms) => return self.send(Command::Seek(position_ms)),
             PlayerAction::ToggleQueue => return self.toggle_right_panel(ctx),
+            PlayerAction::SetFavorite { track, favorite } => {
+                return self.send(Command::SetFavorite { track, favorite });
+            }
             PlayerAction::SetVolume(volume) => {
                 settings.volume = volume;
                 // Raising the volume is asking to hear it.
@@ -381,6 +394,7 @@ impl AriaApp {
             Event::LibraryUpdated(snapshot) => {
                 self.library.snapshot = snapshot;
             }
+            Event::Collections(collections) => self.collections = collections,
             Event::ScanProgress(scan) => {
                 // Covers that were missing may have been written by the scan that just ended;
                 // between snapshots, a missing cover stays missing.
@@ -418,7 +432,7 @@ impl AriaApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.modal_open {
+        if self.modal_open() {
             // The dialog is modal: nothing behind it changes until it is closed.
             return;
         }
@@ -493,9 +507,10 @@ impl AriaApp {
             palette: *palette,
             settings: &self.settings,
             paths_available: self.deps.paths.is_some(),
-            modal_open: &mut self.modal_open,
+            modal_open: &mut self.page_dialog_open,
             out: &mut actions,
             library: &self.library,
+            collections: &self.collections,
             devices: &self.devices,
             artwork: self.artwork.as_mut(),
         };
@@ -542,6 +557,84 @@ impl AriaApp {
             PageAction::RemoveFolder(id) => self.send(Command::RemoveFolder(id)),
             PageAction::Rescan => self.send(Command::Rescan),
             PageAction::ClearArtwork => self.send(Command::ClearArtwork),
+            PageAction::SetFavorite { track, favorite } => {
+                self.send(Command::SetFavorite { track, favorite });
+            }
+            PageAction::AddToPlaylist { playlist, track } => {
+                self.send(Command::AddToPlaylist { playlist, track });
+            }
+            PageAction::RemoveFromPlaylist { playlist, position } => {
+                self.send(Command::RemoveFromPlaylist { playlist, position });
+            }
+            PageAction::MoveInPlaylist { playlist, from, to } => {
+                self.send(Command::MoveInPlaylist { playlist, from, to });
+            }
+            PageAction::DeletePlaylist(id) => self.send(Command::DeletePlaylist(id)),
+            PageAction::ClearHistory => self.send(Command::ClearHistory),
+            PageAction::AskPlaylistName(purpose) => self.open_name_dialog(purpose),
+        }
+    }
+
+    /// Opens the name dialog for `purpose`, with the playlist's current name when renaming.
+    fn open_name_dialog(&mut self, purpose: NameFor) {
+        let text = match purpose {
+            NameFor::New { .. } => String::new(),
+            NameFor::Rename(id) => match self.playlist_name(id) {
+                Some(name) => name.to_owned(),
+                None => {
+                    tracing::debug!(id = id.0, "no such playlist to rename");
+                    return;
+                }
+            },
+        };
+        self.name_dialog = Some((purpose, text));
+    }
+
+    /// Whether a modal dialog is open: a page's confirmation (Settings or Playlists) or the
+    /// playlist name dialog. Navigation and panel shortcuts wait while one is. Each dialog owns its own
+    /// state, so closing one cannot close the other's hold on the app.
+    fn modal_open(&self) -> bool {
+        self.page_dialog_open || self.name_dialog.is_some()
+    }
+
+    /// The name of playlist `id`, if the collections know it.
+    fn playlist_name(&self, id: aria_library::PlaylistId) -> Option<&str> {
+        let playlists = &self.collections.playlists;
+        let playlist = playlists.iter().find(|playlist| playlist.id == id)?;
+        Some(&playlist.name)
+    }
+
+    /// Draws the name dialog while it is open, and sends what it was confirmed for.
+    fn show_name_dialog(&mut self, ctx: &egui::Context, palette: &Palette) {
+        let Some((purpose, mut text)) = self.name_dialog.take() else {
+            return;
+        };
+        // A playlist deleted while its rename was open has nothing left to rename.
+        if let NameFor::Rename(id) = purpose
+            && self.playlist_name(id).is_none()
+        {
+            return;
+        }
+        let (title, confirm) = match purpose {
+            NameFor::New { .. } => ("playlist-new", "playlist-create"),
+            NameFor::Rename(_) => ("playlist-rename", "playlist-rename"),
+        };
+        let (title, confirm) = (self.localizer.tr(title), self.localizer.tr(confirm));
+        let dialog = NameDialog {
+            title: &title,
+            confirm: &confirm,
+        };
+        match dialog.show(ctx, &self.localizer, palette, &mut text) {
+            NameAnswer::Open => {
+                self.name_dialog = Some((purpose, text));
+            }
+            NameAnswer::Cancelled => {}
+            NameAnswer::Confirmed(name) => {
+                self.send(match purpose {
+                    NameFor::New { first } => Command::CreatePlaylist { name, first },
+                    NameFor::Rename(id) => Command::RenamePlaylist { id, name },
+                });
+            }
         }
     }
 
@@ -1007,12 +1100,262 @@ mod tests {
         assert_eq!(toggles_sent(&harness), 0, "Space played while typing");
     }
 
+    fn playlist(id: i64, name: &str) -> aria_library::Playlist {
+        aria_library::Playlist {
+            id: aria_library::PlaylistId(id),
+            name: name.to_owned(),
+            items: Vec::new(),
+            unavailable: 0,
+        }
+    }
+
+    /// How many of the commands sent read as `expected` does.
+    fn sent_like(app: &AriaApp, expected: &Command) -> usize {
+        let expected = format!("{expected:?}");
+        app.sent
+            .borrow()
+            .iter()
+            .filter(|command| format!("{command:?}") == expected)
+            .count()
+    }
+
+    #[test]
+    fn a_collections_event_is_kept() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let collections = Arc::new(aria_library::Collections::new(
+            vec![aria_library::TrackId(3)],
+            vec![playlist(1, "Road")],
+            vec![aria_library::TrackId(2)],
+        ));
+        app.handle_event(&ctx, Event::Collections(Arc::clone(&collections)));
+        assert_eq!(app.collections, collections);
+    }
+
+    #[test]
+    fn page_actions_become_collection_commands() {
+        use aria_library::{PlaylistId, TrackId};
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let (playlist, track) = (PlaylistId(4), TrackId(7));
+        let pairs = [
+            (
+                PageAction::SetFavorite {
+                    track,
+                    favorite: true,
+                },
+                Command::SetFavorite {
+                    track,
+                    favorite: true,
+                },
+            ),
+            (
+                PageAction::AddToPlaylist { playlist, track },
+                Command::AddToPlaylist { playlist, track },
+            ),
+            (
+                PageAction::RemoveFromPlaylist {
+                    playlist,
+                    position: 2,
+                },
+                Command::RemoveFromPlaylist {
+                    playlist,
+                    position: 2,
+                },
+            ),
+            (
+                PageAction::MoveInPlaylist {
+                    playlist,
+                    from: 1,
+                    to: 3,
+                },
+                Command::MoveInPlaylist {
+                    playlist,
+                    from: 1,
+                    to: 3,
+                },
+            ),
+            (
+                PageAction::DeletePlaylist(playlist),
+                Command::DeletePlaylist(playlist),
+            ),
+            (PageAction::ClearHistory, Command::ClearHistory),
+        ];
+        for (action, command) in pairs {
+            app.handle_page_action(&ctx, action);
+            assert_eq!(
+                sent_like(&app, &command),
+                1,
+                "{command:?} was not sent once"
+            );
+        }
+        assert_eq!(app.sent.borrow().len(), 6);
+    }
+
+    #[test]
+    fn the_player_bar_heart_sets_the_favorite() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let track = aria_library::TrackId(9);
+        app.handle_player_action(
+            &ctx,
+            PlayerAction::SetFavorite {
+                track,
+                favorite: false,
+            },
+        );
+        let command = Command::SetFavorite {
+            track,
+            favorite: false,
+        };
+        assert_eq!(sent_like(&app, &command), 1);
+    }
+
+    fn dialog_harness(collections: aria_library::Collections) -> Harness<'static, AriaApp> {
+        let mut app = app(vec![]);
+        app.collections = Arc::new(collections);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 780.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+        harness.run();
+        harness
+    }
+
+    fn english(key: &str) -> String {
+        Localizer::new(Language::En).unwrap().tr(key).into_owned()
+    }
+
+    #[test]
+    fn the_name_dialog_refuses_an_empty_name_and_creates_on_enter() {
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let mut harness = dialog_harness(aria_library::Collections::default());
+        let track = aria_library::TrackId(5);
+        let ctx = harness.ctx.clone();
+        harness.state_mut().handle_page_action(
+            &ctx,
+            PageAction::AskPlaylistName(NameFor::New { first: Some(track) }),
+        );
+        harness.run();
+        assert!(
+            harness.state().modal_open(),
+            "the dialog does not hold the app"
+        );
+
+        let create = english("playlist-create");
+        let button = harness.get_by_role_and_label(egui::accesskit::Role::Button, &create);
+        assert!(
+            button.accesskit_node().is_disabled(),
+            "an empty name can be confirmed"
+        );
+
+        let label = english("playlist-name-label");
+        let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, &label);
+        field.focus();
+        harness.run();
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, &label)
+            .type_text("Road");
+        harness.run();
+        let button = harness.get_by_role_and_label(egui::accesskit::Role::Button, &create);
+        assert!(
+            !button.accesskit_node().is_disabled(),
+            "a good name cannot be confirmed"
+        );
+
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        let command = Command::CreatePlaylist {
+            name: "Road".to_owned(),
+            first: Some(track),
+        };
+        assert_eq!(sent_like(harness.state(), &command), 1);
+        assert!(
+            harness.state().name_dialog.is_none(),
+            "the dialog stayed open"
+        );
+        assert!(!harness.state().modal_open());
+    }
+
+    #[test]
+    fn the_name_dialog_closes_on_escape() {
+        let mut harness = dialog_harness(aria_library::Collections::default());
+        let ctx = harness.ctx.clone();
+        harness.state_mut().handle_page_action(
+            &ctx,
+            PageAction::AskPlaylistName(NameFor::New { first: None }),
+        );
+        harness.run();
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(harness.state().name_dialog.is_none());
+        assert!(!harness.state().modal_open());
+        assert!(
+            harness.state().sent.borrow().is_empty(),
+            "Escape sent something"
+        );
+    }
+
+    #[test]
+    fn the_name_dialog_renames() {
+        use egui_kittest::kittest::Queryable as _;
+        let id = aria_library::PlaylistId(5);
+        let collections =
+            aria_library::Collections::new(vec![], vec![playlist(5, "Old name")], vec![]);
+        let mut harness = dialog_harness(collections);
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskPlaylistName(NameFor::Rename(id)));
+        harness.run();
+
+        let label = english("playlist-name-label");
+        let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, &label);
+        assert_eq!(field.value().as_deref(), Some("Old name"));
+
+        if let Some((_, text)) = &mut harness.state_mut().name_dialog {
+            *text = "  New name ".to_owned();
+        }
+        harness.run();
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, &english("playlist-rename"))
+            .click();
+        harness.run();
+        let command = Command::RenamePlaylist {
+            id,
+            name: "New name".to_owned(),
+        };
+        assert_eq!(sent_like(harness.state(), &command), 1);
+        assert!(harness.state().name_dialog.is_none());
+        assert!(!harness.state().modal_open());
+    }
+
     #[test]
     fn space_is_ignored_with_a_modal_open() {
         let mut harness = space_harness();
-        harness.state_mut().modal_open = true;
+        harness.state_mut().page_dialog_open = true;
         harness.key_press(egui::Key::Space);
         harness.run();
         assert_eq!(toggles_sent(&harness), 0, "Space played behind a dialog");
+    }
+
+    #[test]
+    fn the_two_dialogs_hold_the_app_independently() {
+        let mut harness = dialog_harness(aria_library::Collections::default());
+        assert!(!harness.state().modal_open());
+        let ctx = harness.ctx.clone();
+        harness.state_mut().page_dialog_open = true;
+        harness.state_mut().handle_page_action(
+            &ctx,
+            PageAction::AskPlaylistName(NameFor::New { first: None }),
+        );
+        harness.run();
+        harness.state_mut().page_dialog_open = false;
+        assert!(
+            harness.state().modal_open(),
+            "closing the Settings dialog released the name dialog's hold"
+        );
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(!harness.state().modal_open());
     }
 }

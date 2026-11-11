@@ -5,6 +5,38 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.1] - unreleased (pre-release: Phase 2b, favorites, playlists, history)
+
+Nobody has run this version by hand yet: see `docs/testing/phase2b-manual-check.md`, where every line for a person is still pending.
+
+### Added
+
+- Favorites: a heart column in every track table and a heart beside the title in the player bar, "Add to favorites" and "Remove from favorites" in the row menu, and a Liked page with the same table, search, sorting and row actions as Local Music.
+- Playlists: a Playlists page to create, rename and delete playlists (Delete asks first); add a track from the row menu, either to a playlist in the list or to a new one ("New playlist..."); remove an entry from the row menu; reorder entries by dragging; play a playlist from any row. A line shows how many tracks of a playlist are unavailable.
+- Playback history: a play counts after the track has played for 30 seconds. "Recently played" holds up to 20 tracks, each once; the newest 10,000 plays are kept.
+- Home page: "Recently played" and "Recently added" (20 tracks); a click plays that list from that row.
+- Settings, Playback: "Keep playback history" and "Clear playback history" (asks first).
+- Favorites, playlist entries and plays are stored by file path, so they come back, in their old order, when a music folder is removed and added again. A 0.2.0 library database is upgraded in place (database version 1 to 2); the migration only adds tables. There is no way back: once 0.2.1 has opened the database, 0.2.0 refuses it ("The library was saved by a newer version of Aria") and runs with the library turned off, without folders, tracks or the saved queue. 0.2.0 leaves the file untouched, so 0.2.1 opens it again with nothing lost. To keep a library that 0.2.0 can open, copy the data folder before the first start of 0.2.1.
+- English, Russian and Armenian texts for all of the above. The Russian and Armenian texts were written by the coding agent and have not been read by a native speaker.
+- `docs/testing/phase2b-manual-check.md`.
+
+### Changed
+
+- The track table of Local Music is now shared with Liked. Playlist rows are drawn separately (a grip for dragging, no sortable headers), with the same heart and the same row-menu items, plus removing the entry.
+- Version 0.2.1.
+
+### Known limitations
+
+- A favorite is shown as the outline heart in the accent colour, not a filled heart, because only the regular icon weight is bundled. The difference between a favorite and any other track is colour only.
+- A file that is renamed or moved is a new track: it leaves favorites and playlists, and its playlist entries stay hidden until a file appears at the old path again.
+- One track at a time goes into a playlist.
+- A new playlist does not become the selected one automatically.
+- No M3U import or export, no full history page, no play counts.
+- Nobody has looked at the hearts, Liked, Playlists (including drag to reorder, which an automated pointer test covers but no person has tried), Home or the history settings in a running window. Layout with long playlist names or long titles is unchecked.
+- The Russian and Armenian texts are not reviewed by a native speaker.
+- The Windows installer and release `aria.exe` for 0.2.1 are not covered by this entry: they are built and tested separately before any release.
+- The limitations listed for 0.2.0 still apply.
+
 ## [0.2.0] - 2026-11-10 (pre-release: Phase 2a, local player)
 
 ### Added

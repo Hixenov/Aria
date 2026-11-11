@@ -2,7 +2,7 @@
 ;
 ; Build the release exe first, then compile this script from the repository root:
 ;   cargo build --release --locked -p aria-app
-;   ISCC.exe /DAppVersion=0.2.0 packaging\windows\aria.iss
+;   ISCC.exe /DAppVersion=0.2.1 packaging\windows\aria.iss
 ; The installer is written to target\installer\Aria-<version>-setup.exe.
 ;
 ; The installer is per-user: it needs no administrator rights and installs into
@@ -11,7 +11,7 @@
 ; and your music files are never touched.
 
 #ifndef AppVersion
-  #error Pass the version, e.g. ISCC.exe /DAppVersion=0.2.0 packaging\windows\aria.iss
+  #error Pass the version, e.g. ISCC.exe /DAppVersion=0.2.1 packaging\windows\aria.iss
 #endif
 
 #define Root "..\.."

@@ -9,7 +9,18 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: Phase 2a (local player), version 0.2.0
+## Status: Phase 2b (favorites, playlists, history), version 0.2.1 (pre-release)
+
+Version 0.2.1 adds favorites, playlists, playback history and a Home page on top of the 0.2.0 local player (below). **Nobody has run 0.2.1 by hand**: the hearts, the Liked and Playlists pages (including drag to reorder, which an automated pointer-event test covers but no person has tried), Home and the history settings have not been looked at in a running window. Every line for a person in [docs/testing/phase2b-manual-check.md](docs/testing/phase2b-manual-check.md) is still pending. The Windows installer and `aria.exe` for 0.2.1 are built and tested separately before any release; this README does not claim they have been.
+
+- Favorites: a heart in every track table and in the player bar, and a Liked page
+- Playlists: create, rename and delete; add a track from the row menu (to a playlist or to a new one); remove an entry; reorder by dragging; play from any row
+- Playback history: a play counts after 30 seconds; Home shows "Recently played" (20 tracks) and "Recently added" (20 tracks)
+- Settings, Playback: "Keep playback history" and "Clear playback history". Favorites, playlists and history stay on this computer (see [docs/PRIVACY.md](docs/PRIVACY.md))
+- Favorites and playlist entries are kept by file path, so they come back when a folder is removed and added again. A 0.2.0 library database is upgraded in place; the automated migration test passes, and nobody has yet tried it on a real 0.2.0 library. After the upgrade 0.2.0 no longer opens it: it says the library was saved by a newer version and runs with the library turned off, leaving the file untouched. Copy the data folder first if you may want to go back to 0.2.0
+- English, Russian and Armenian; the new Russian and Armenian texts were written by the coding agent and not read by a native speaker
+
+### Phase 2a (local player), version 0.2.0
 
 Phase 1 built the shell: window and layout, themes, settings, localization, logging and CI.
 Phase 2a turns it into an offline music player for local files:
@@ -22,7 +33,7 @@ Phase 2a turns it into an offline music player for local files:
 
 Formats with automated test coverage: MP3, FLAC, WAV, AIFF, CAF, AAC and ALAC in `.m4a`, Ogg Vorbis, and Opus (through the bundled libopus). The scanner also picks up `.aac`, `.mp4`, `.oga`, `.mka` and `.aif` files, but those were not tested with real audio, so they may not play. Playing each format by ear is on the manual check list and has not been done yet.
 
-Not yet: favorites, playlists and playback history (Phase 2b), the soundboard (2c), Spotify (Phase 3), tray and media keys (Phase 4), lyrics and equalizer (Phase 5). See the [roadmap](docs/ROADMAP.md).
+Not yet: the soundboard (2c), Spotify (Phase 3), tray and media keys (Phase 4), lyrics and equalizer (Phase 5). See the [roadmap](docs/ROADMAP.md).
 
 What has been checked by hand is recorded in [docs/testing/phase2a-manual-check.md](docs/testing/phase2a-manual-check.md). Anything marked pending there has not been verified by a person yet, and that includes listening to audio.
 
@@ -62,10 +73,10 @@ git config --global --add safe.directory /path/to/aria
 
 ```
 cargo build --release --locked -p aria-app
-ISCC.exe /DAppVersion=0.2.0 packaging\windows\aria.iss
+ISCC.exe /DAppVersion=0.2.1 packaging\windows\aria.iss
 ```
 
-It writes `target\installer\Aria-0.2.0-setup.exe`. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
+It writes `target\installer\Aria-0.2.1-setup.exe`. That command is how the installer is built; the 0.2.1 installer has not been built or tested yet. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 
 ## Configuration and data
 
@@ -98,7 +109,21 @@ Library used: 4,000 generated files (about 485 MB), 40 artists, 200 albums, 3-se
 - CPU while playing has not been measured: playing needs input that an agent may not send. It is left to the person checking by hand (see the manual check).
 - These numbers come from one machine and are not a benchmark. Earlier Phase 1 figures (an empty shell, no audio engine) were 94 MB idle.
 
+## Performance (Phase 2b, measured)
+
+The release build of the Collections test in `aria-library` (`cargo test --release -p aria-library --test collections -- --ignored --nocapture`) builds the favorites, playlists and recent plays that the app sends to the window for a synthetic library of 50,000 tracks with 5,000 favorites, 50 playlists of 200 entries each and 10,000 plays. It took **14.0 ms** in one run, against the target of under 50 ms. The machine is the one described above for Phase 2a (Intel Core i3-1315U, Windows 11 Pro for Workstations 10.0.26300). This is one run on one machine, the time is that of the `collections()` call alone; the database was a fresh one in a scratch folder; drawing the pages and the 30-second play counting were not timed.
+
 ## Known limitations
+
+Phase 2b:
+
+- A favorite is shown as the outline heart in the accent colour, not a filled heart, because only the regular icon weight is bundled. The difference is colour only.
+- A file that is renamed or moved is a new track: it leaves favorites and playlists, and its playlist entries stay hidden until a file appears at the old path again.
+- One track at a time goes into a playlist.
+- A new playlist does not become the selected one automatically.
+- No M3U import or export, no full history page, no play counts.
+- Nobody has looked at the new screens in a running window, and long playlist names and row layout at narrow widths are unchecked (see the manual check).
+- The Russian and Armenian texts of the new screens have not been read by a native speaker.
 
 Phase 2a:
 

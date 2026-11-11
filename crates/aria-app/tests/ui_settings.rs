@@ -755,6 +755,7 @@ fn settings_only(
                     modal_open: &mut page.modal_open,
                     out: &mut page.actions,
                     library: &page.library,
+                    collections: &Default::default(),
                     devices: &page.devices,
                     artwork: None,
                 };

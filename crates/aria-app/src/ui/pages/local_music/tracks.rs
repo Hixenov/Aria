@@ -10,15 +10,20 @@ use super::{
     PageAction, PageCtx,
     view::{SortKey, TrackView},
 };
-use crate::ui::theme::{
-    Palette,
-    fonts::{icon_font, semibold},
-    icons,
-    visuals::SPACE,
+use crate::ui::{
+    theme::{
+        Palette,
+        fonts::{icon_font, semibold},
+        icons,
+        visuals::SPACE,
+    },
+    widgets::track_menu,
 };
 
 /// Height of a header and of a row.
 const ROW_HEIGHT: f32 = 28.0;
+/// Width of the heart column.
+const HEART_WIDTH: f32 = 32.0;
 /// Width of the number column.
 const NUMBER_WIDTH: f32 = 48.0;
 /// Width of the duration column.
@@ -31,15 +36,18 @@ const MIN_TEXT_WIDTH: f32 = 100.0;
 const ARROW_SIZE: f32 = 12.0;
 
 /// Draws the table of `rows` (indexes into `snapshot.tracks`) and queues what the user does
-/// with it. Returns the column whose header was clicked, if any.
+/// with it. Returns the column whose header was clicked, if any. `salt` names the table for
+/// egui, so each page keeps its own scroll offset and column widths.
 pub fn show(
     ui: &mut Ui,
+    salt: &str,
     ctx: &mut PageCtx<'_>,
     snapshot: &Arc<LibrarySnapshot>,
     view: &mut TrackView,
 ) -> Option<SortKey> {
     let (tr, p) = (ctx.tr, ctx.palette);
     let current = ctx.library.current;
+    let collections = ctx.collections;
     let sort = view.sort();
     let rows = view.rows(snapshot);
     let mut clicked = None;
@@ -53,9 +61,10 @@ pub fn show(
     };
 
     TableBuilder::new(ui)
-        .id_salt("aria_local_tracks")
+        .id_salt(salt)
         .striped(true)
         .sense(Sense::click())
+        .column(Column::exact(HEART_WIDTH))
         .column(Column::exact(NUMBER_WIDTH))
         .column(
             Column::initial(TEXT_WIDTH)
@@ -70,6 +79,7 @@ pub fn show(
         .column(Column::remainder().at_least(MIN_TEXT_WIDTH).clip(true))
         .column(Column::exact(DURATION_WIDTH))
         .header(ROW_HEIGHT, |mut header| {
+            header.col(|_| {});
             header.col(|ui| {
                 ui.add(Label::new(
                     RichText::new(tr.tr("local-col-number")).color(p.text_muted),
@@ -96,6 +106,9 @@ pub fn show(
                 let playing = current == Some(track.id);
                 let main = if playing { p.accent } else { p.text };
                 let muted = if playing { p.accent } else { p.text_muted };
+                row.col(|ui| {
+                    out.extend(track_menu::heart(ui, tr, &p, collections, track.id));
+                });
                 row.col(|ui| cell(ui, &(index + 1).to_string(), muted));
                 row.col(|ui| cell(ui, &track.title, main));
                 row.col(|ui| {
@@ -136,6 +149,7 @@ pub fn show(
                     if ui.button(tr.tr("local-add-to-queue")).clicked() {
                         out.push(PageAction::AddToQueue(track.id));
                     }
+                    track_menu::items(ui, tr, collections, track.id, out);
                 });
             });
         });

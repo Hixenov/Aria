@@ -73,6 +73,8 @@ settings-output-device = Ելքային սարք
 settings-device-system-default = Համակարգի լռելյայն
 settings-device-unavailable = Անհասանելի սարք
 settings-gapless = Անընդմեջ նվագարկում
+settings-history = Պահել նվագարկման պատմությունը
+settings-history-hint = Պատմությունը մնում է միայն այս համակարգչում։
 settings-library = Գրադարան
 settings-folders-empty = Պանակներ դեռ չկան։ Ավելացրեք ձեր երաժշտության պանակը։
 settings-folder-unavailable = Անհասանելի է
@@ -83,6 +85,9 @@ settings-remove-folder-body = Պանակը կհեռացվի գրադարանից
 settings-clear-artwork = Մաքրել շապիկների քեշը
 settings-clear-artwork-title = Մաքրե՞լ շապիկների քեշը
 settings-clear-artwork-body = Պահված շապիկները կջնջվեն։ Դրանք կստեղծվեն նորից գրադարանի հաջորդ սկանավորման ժամանակ։
+settings-history-clear = Մաքրել նվագարկման պատմությունը
+settings-history-clear-confirm = Մաքրե՞լ նվագարկման պատմությունը
+settings-history-clear-body = «Վերջերս նվագարկված» ցանկը կդատարկվի։ Ընտրանին և նվագացանկերը կմնան։ Սա հնարավոր չէ չեղարկել։
 settings-advanced = Լրացուցիչ
 settings-log-level = Մատյանավորման մակարդակ
 settings-log-level-error = Սխալներ
@@ -126,6 +131,14 @@ library-recovered = Գրադարանի տվյալների բազան վնասվ�
 library-newer = Գրադարանը պահպանվել է Aria-ի ավելի նոր տարբերակով, ուստի այն անջատված է։ Թարմացրեք Aria-ն՝ այն օգտագործելու համար։
 library-unavailable = Չհաջողվեց բացել գրադարանը, ուստի այն առայժմ անջատված է։ Aria-ի մնացած գործառույթները շարունակում են աշխատել։
 library-action-failed = Գրադարանում սխալ տեղի ունեցավ, և գործողությունը չավարտվեց։ Ձեր երաժշտական ֆայլերը չեն փոխվել։
+playlist-name-invalid = Երգացանկի անունը պետք է լինի 1-ից 100 նիշ։
+track-favorite = Ավելացնել ընտրանի
+track-unfavorite = Հեռացնել ընտրանուց
+track-add-to-playlist = Ավելացնել երգացանկին
+playlist-new = Նոր երգացանկ…
+playlist-name-label = Անուն
+playlist-create = Ստեղծել
+playlist-rename = Վերանվանել
 
 ## Playback notices (toasts)
 
@@ -177,3 +190,33 @@ error-startup-window = Aria-ին չհաջողվեց բացել իր պատուհ
 lang-en = English
 lang-ru = Русский
 lang-hy = Հայերեն
+
+# Home page
+home-recent = Վերջերս նվագարկված
+home-added = Վերջերս ավելացված
+home-empty = Գրադարանը դատարկ է
+home-empty-hint = Ավելացրեք երաժշտության պանակ «Կարգավորումներ», «Գրադարան» բաժնում։
+home-recent-empty = Դեռ ոչինչ չի նվագարկվել։
+
+# Liked Songs page
+liked-empty = Դեռ ընտրանի չկա
+liked-empty-hint = Սեղմեք սրտիկը երգի կողքին։
+
+# Playlists page
+playlists-empty = Երգացանկեր դեռ չկան
+playlists-empty-hint = Ստեղծեք երգացանկ այստեղ կամ երգի ընտրացանկում ընտրեք «Ավելացնել երգացանկին»։
+playlist-empty = Այս երգացանկը դատարկ է
+playlist-delete = Ջնջել երգացանկը
+# $name (String) - the playlist's name
+playlist-delete-confirm = Ջնջե՞լ «{ $name }» երգացանկը։ Նրա երգերը կմնան ձեր գրադարանում։
+playlist-remove-entry = Հեռացնել երգացանկից
+# $count (Number) - how many entries of the playlist can't be shown because their files are gone or their folder was removed
+playlist-unavailable = { $count ->
+    [one] { $count } երգ հասանելի չէ
+   *[other] { $count } երգ հասանելի չէ
+}
+# $count (Number) - how many tracks a playlist has
+playlist-track-count = { $count ->
+    [one] { $count } երգ
+   *[other] { $count } երգ
+}

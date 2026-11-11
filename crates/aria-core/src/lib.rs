@@ -19,4 +19,7 @@ pub use aria_audio::{
     ClockReading, CpalFactory, DeviceId, DeviceInfo, OutputFactory, OutputFormat, PlaybackClock,
     fake::FakeFactory,
 };
-pub use aria_library::{Folder, FolderId, LibrarySnapshot, ScanProgress, TrackId};
+pub use aria_library::{
+    Collections, Folder, FolderId, LibrarySnapshot, PLAYLIST_NAME_MAX, Playlist, PlaylistId,
+    PlaylistItem, ScanProgress, TrackId, playlist_name,
+};

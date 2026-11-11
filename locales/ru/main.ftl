@@ -71,6 +71,8 @@ settings-output-device = Устройство вывода
 settings-device-system-default = Системное по умолчанию
 settings-device-unavailable = Недоступное устройство
 settings-gapless = Непрерывное воспроизведение
+settings-history = Вести историю прослушиваний
+settings-history-hint = История хранится только на этом компьютере.
 settings-library = Библиотека
 settings-folders-empty = Папок пока нет. Добавьте папку с вашей музыкой.
 settings-folder-unavailable = Недоступна
@@ -81,6 +83,9 @@ settings-remove-folder-body = Папка будет убрана из библи
 settings-clear-artwork = Очистить кэш обложек
 settings-clear-artwork-title = Очистить кэш обложек?
 settings-clear-artwork-body = Сохранённые обложки будут удалены. Они создадутся заново при следующем сканировании библиотеки.
+settings-history-clear = Очистить историю прослушиваний
+settings-history-clear-confirm = Очистить историю прослушиваний?
+settings-history-clear-body = Список «Недавно играло» будет очищен. Избранное и плейлисты останутся. Это нельзя отменить.
 settings-advanced = Дополнительно
 settings-log-level = Уровень журналирования
 settings-log-level-error = Ошибки
@@ -125,6 +130,14 @@ library-recovered = База данных библиотеки была повр
 library-newer = Библиотека сохранена более новой версией Aria, поэтому она отключена. Обновите Aria, чтобы пользоваться ею.
 library-unavailable = Не удалось открыть библиотеку, поэтому она пока отключена. Остальные функции Aria продолжают работать.
 library-action-failed = В библиотеке произошла ошибка, и действие не завершено. Ваши музыкальные файлы не изменены.
+playlist-name-invalid = Название плейлиста должно быть от 1 до 100 символов.
+track-favorite = Добавить в избранное
+track-unfavorite = Убрать из избранного
+track-add-to-playlist = Добавить в плейлист
+playlist-new = Новый плейлист…
+playlist-name-label = Название
+playlist-create = Создать
+playlist-rename = Переименовать
 
 ## Playback notices (toasts)
 
@@ -178,3 +191,37 @@ error-startup-window = Aria не удалось открыть окно.
 lang-en = English
 lang-ru = Русский
 lang-hy = Հայերեն
+
+# Home page
+home-recent = Недавно играло
+home-added = Недавно добавлено
+home-empty = Библиотека пуста
+home-empty-hint = Добавьте папку с музыкой в разделе «Настройки», «Библиотека».
+home-recent-empty = Пока ничего не играло.
+
+# Liked Songs page
+liked-empty = Пока нет избранного
+liked-empty-hint = Нажмите на сердечко рядом с треком.
+
+# Playlists page
+playlists-empty = Плейлистов пока нет
+playlists-empty-hint = Создайте плейлист здесь или выберите «Добавить в плейлист» в меню трека.
+playlist-empty = Этот плейлист пуст
+playlist-delete = Удалить плейлист
+# $name (String) - the playlist's name
+playlist-delete-confirm = Удалить плейлист «{ $name }»? Его треки останутся в вашей библиотеке.
+playlist-remove-entry = Убрать из плейлиста
+# $count (Number) - how many entries of the playlist can't be shown because their files are gone or their folder was removed
+playlist-unavailable = { $count ->
+    [one] { $count } трек недоступен
+    [few] { $count } трека недоступны
+    [many] { $count } треков недоступны
+   *[other] { $count } трека недоступны
+}
+# $count (Number) - how many tracks a playlist has
+playlist-track-count = { $count ->
+    [one] { $count } трек
+    [few] { $count } трека
+    [many] { $count } треков
+   *[other] { $count } трека
+}

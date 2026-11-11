@@ -421,6 +421,31 @@ impl Worker {
                     }
                     Some(Command::Rescan) => self.to_library(LibraryRequest::Rescan),
                     Some(Command::ClearArtwork) => self.to_library(LibraryRequest::ClearArtwork),
+                    Some(Command::SetFavorite { track, favorite }) => {
+                        self.to_collections(LibraryRequest::SetFavorite { track, favorite });
+                    }
+                    Some(Command::CreatePlaylist { name, first }) => {
+                        self.to_collections(LibraryRequest::CreatePlaylist { name, first });
+                    }
+                    Some(Command::RenamePlaylist { id, name }) => {
+                        self.to_collections(LibraryRequest::RenamePlaylist { id, name });
+                    }
+                    Some(Command::DeletePlaylist(id)) => {
+                        self.to_collections(LibraryRequest::DeletePlaylist(id));
+                    }
+                    Some(Command::AddToPlaylist { playlist, track }) => {
+                        self.to_collections(LibraryRequest::AddToPlaylist { playlist, track });
+                    }
+                    Some(Command::RemoveFromPlaylist { playlist, position }) => {
+                        self.to_collections(LibraryRequest::RemoveFromPlaylist {
+                            playlist,
+                            position,
+                        });
+                    }
+                    Some(Command::MoveInPlaylist { playlist, from, to }) => {
+                        self.to_collections(LibraryRequest::MoveInPlaylist { playlist, from, to });
+                    }
+                    Some(Command::ClearHistory) => self.to_collections(LibraryRequest::ClearHistory),
                     Some(Command::ListDevices) => self.list_devices(),
                     // `None` means the handle was dropped: treat it as Shutdown.
                     Some(Command::Shutdown) | None => break,
@@ -520,6 +545,16 @@ impl Worker {
         }
     }
 
+    /// Like [`to_library`](Self::to_library), but a request that finds no library is answered
+    /// with the "library unavailable" notice, so the click that caused it is not lost silently.
+    fn to_collections(&self, request: LibraryRequest) {
+        if self.library.is_some() {
+            self.to_library(request);
+        } else {
+            self.emit([Event::Notice(library_service::UNAVAILABLE)]);
+        }
+    }
+
     fn library_event(&mut self, event: LibraryEvent) {
         match event {
             LibraryEvent::Snapshot(snapshot) => {
@@ -527,6 +562,7 @@ impl Worker {
                 self.emit([Event::LibraryUpdated(Arc::clone(&snapshot))]);
                 self.playback.on_snapshot(snapshot);
             }
+            LibraryEvent::Collections(collections) => self.emit([Event::Collections(collections)]),
             LibraryEvent::Progress(progress) => self.emit([Event::ScanProgress(progress)]),
             LibraryEvent::Notice(notice) => self.emit([Event::Notice(notice)]),
             LibraryEvent::QueueLoaded(record) => self.playback.on_queue_loaded(record),
@@ -535,13 +571,15 @@ impl Worker {
     }
 
     /// The library thread died. It can tell nobody, so this ends any scan it left showing and
-    /// disables the library, as a library that cannot be opened is disabled.
+    /// disables the library, as a library that cannot be opened is disabled: the pages go to
+    /// their empty states, collections included.
     fn library_lost(&mut self) {
         tracing::error!("the library thread stopped unexpectedly; the library is disabled");
         self.library = None;
         self.emit([
             Event::ScanProgress(None),
             Event::LibraryUpdated(Arc::default()),
+            Event::Collections(Arc::default()),
             Event::Notice(library_service::UNAVAILABLE),
         ]);
         self.playback.library_lost();
@@ -1022,6 +1060,37 @@ mod tests {
     }
 
     #[test]
+    fn a_collection_command_without_a_library_gives_the_unavailable_notice() {
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
+        handle.send(Command::SetFavorite {
+            track: TrackId(1),
+            favorite: true,
+        });
+        drain_until(&handle, |e| e.contains(&library_unavailable()));
+        assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn collection_commands_reach_the_library_and_come_back_as_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let (waker, _wakes) = counting_waker();
+        let services = services(Some(library_paths(dir.path())));
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
+
+        handle.send(Command::CreatePlaylist {
+            name: "Road".into(),
+            first: None,
+        });
+        let named = |e: &Event| {
+            matches!(e, Event::Collections(c)
+                if c.playlists.first().is_some_and(|p| p.name == "Road"))
+        };
+        drain_until_within(&handle, LIBRARY_MAX, |e| e.iter().any(named));
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    #[test]
     fn library_commands_without_a_library_go_nowhere() {
         let (waker, wakes) = counting_waker();
         let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
@@ -1055,6 +1124,12 @@ mod tests {
             .filter(|e| **e == Event::LibraryUpdated(Arc::default()))
             .count();
         assert_eq!(snapshots, 2, "{events:?}");
+        // The thread died before it sent any collections, so these empty ones come from the loss:
+        // the pages show their empty states, as with a library that failed to open.
+        assert!(
+            events.contains(&Event::Collections(Arc::default())),
+            "{events:?}"
+        );
 
         // Commands for it go nowhere, and the rest of the backend still works.
         handle.send(Command::Rescan);

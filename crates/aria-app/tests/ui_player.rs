@@ -120,6 +120,7 @@ fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
                     position_ms: bar.position_ms,
                     settings: &bar.settings,
                     queue_open: false,
+                    collections: &Default::default(),
                     artwork: None,
                 };
                 let actions = player_bar::show(ui, &mut shown);
@@ -189,6 +190,8 @@ fn shows_title_and_artist() {
     harness
         .state_mut()
         .handle_event(&ctx, Event::Player(view(Some(1), false, 200_000)));
+    // Home lists the track too: leave it, so only the player bar names the track.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num9);
     harness.run();
     assert!(harness.query_by_label("So What").is_some());
     assert!(harness.query_by_label("Miles Davis").is_some());

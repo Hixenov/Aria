@@ -68,14 +68,10 @@ impl Route {
     /// The delivery phase that implements this page, or `None` for pages with no phase.
     pub fn phase(self) -> Option<u8> {
         match self {
-            Route::Home => Some(2),
-            Route::Search
-            | Route::Library
-            | Route::Liked
-            | Route::Playlists
-            | Route::Albums
-            | Route::Artists => Some(3),
-            Route::LocalMusic | Route::Settings => None,
+            Route::Search | Route::Library | Route::Albums | Route::Artists => Some(3),
+            Route::Home | Route::Liked | Route::Playlists | Route::LocalMusic | Route::Settings => {
+                None
+            }
         }
     }
 }

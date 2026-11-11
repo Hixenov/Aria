@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use aria_library::{FolderId, TrackId};
+use aria_library::{FolderId, PlaylistId, TrackId};
 
 use crate::settings::Settings;
 
@@ -46,6 +46,55 @@ pub enum Command {
     },
     /// Empty the user queue.
     ClearQueue,
+    /// Mark or unmark a track as a favorite.
+    SetFavorite {
+        /// The track.
+        track: TrackId,
+        /// Whether it is now a favorite.
+        favorite: bool,
+    },
+    /// Make a playlist, with one track in it if given. A name that is empty or longer than 100
+    /// characters gives a notice.
+    CreatePlaylist {
+        /// The name, trimmed by the library.
+        name: String,
+        /// The track to start the playlist with.
+        first: Option<TrackId>,
+    },
+    /// Give a playlist a new name.
+    RenamePlaylist {
+        /// The playlist.
+        id: PlaylistId,
+        /// The new name, under the rules of [`Command::CreatePlaylist`].
+        name: String,
+    },
+    /// Delete a playlist and its entries.
+    DeletePlaylist(PlaylistId),
+    /// Append a track to a playlist.
+    AddToPlaylist {
+        /// The playlist.
+        playlist: PlaylistId,
+        /// The track.
+        track: TrackId,
+    },
+    /// Remove the entry at this stored position of a playlist.
+    RemoveFromPlaylist {
+        /// The playlist.
+        playlist: PlaylistId,
+        /// The entry's stored position, as in `PlaylistItem::position`.
+        position: u32,
+    },
+    /// Move an entry of a playlist so that it ends up at `to`.
+    MoveInPlaylist {
+        /// The playlist.
+        playlist: PlaylistId,
+        /// The entry's stored position now.
+        from: u32,
+        /// Its stored position afterwards.
+        to: u32,
+    },
+    /// Delete every recorded play. Favorites and playlists stay.
+    ClearHistory,
     /// Pause or play. With nothing loaded, this starts what would play next.
     TogglePlay,
     /// Skip to the next track.

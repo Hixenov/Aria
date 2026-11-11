@@ -14,7 +14,7 @@ use aria_core::{
     player::queue::RepeatMode,
     settings::Settings,
 };
-use aria_library::{ArtworkId, LibrarySnapshot, TrackId};
+use aria_library::{ArtworkId, Collections, LibrarySnapshot, TrackId};
 use eframe::egui::{
     Align, Align2, Label, Layout, Margin, Panel, Rect, RichText, Sense, TextStyle, Ui, UiBuilder,
     Vec2, pos2, vec2,
@@ -24,13 +24,17 @@ use super::surface_frame;
 use crate::{
     artwork::{ArtworkTextures, paint_cover},
     ui::{
+        pages::PageAction,
         theme::{
             Palette,
             fonts::{icon_font, semibold},
             icons,
             visuals::SPACE,
         },
-        widgets::{IconButton, Scrub},
+        widgets::{
+            IconButton, Scrub,
+            track_menu::{self, HEART_BUTTON},
+        },
     },
 };
 
@@ -91,6 +95,11 @@ pub enum PlayerAction {
     /// Go to the next repeat mode: off, all, one.
     CycleRepeat,
     ToggleQueue,
+    /// Mark or unmark the current track as a favorite.
+    SetFavorite {
+        track: TrackId,
+        favorite: bool,
+    },
 }
 
 /// The track on the bar.
@@ -159,6 +168,8 @@ pub struct PlayerBar<'a> {
     pub queue_open: bool,
     /// Where covers come from. Without it the placeholder shows.
     pub artwork: Option<&'a mut ArtworkTextures>,
+    /// Which tracks are favorites, for the heart.
+    pub collections: &'a Collections,
 }
 
 /// Shows the bar and returns what the user did on it this frame.
@@ -177,7 +188,7 @@ pub fn show(ui: &mut Ui, bar: &mut PlayerBar<'_>) -> Vec<PlayerAction> {
             let left = Rect::from_min_max(rect.min, pos2(rect.left() + side, rect.bottom()));
             let right = Rect::from_min_max(pos2(rect.right() - side, rect.top()), rect.max);
             zone(ui, left, Layout::left_to_right(Align::Center), |ui| {
-                now_playing(ui, bar);
+                now_playing(ui, bar, &mut actions);
             });
             center(ui, rect, bar, &mut actions);
             zone(ui, right, Layout::right_to_left(Align::Center), |ui| {
@@ -192,8 +203,8 @@ fn zone(ui: &mut Ui, rect: Rect, layout: Layout, add: impl FnOnce(&mut Ui)) {
     ui.scope_builder(UiBuilder::new().max_rect(rect).layout(layout), add);
 }
 
-/// The artwork and the title and artist, or "Nothing playing".
-fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>) {
+/// The artwork, the title and artist, or "Nothing playing", and the heart.
+fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let p = bar.palette;
     let [size, icon] = ARTWORK;
     let (art, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
@@ -219,19 +230,33 @@ fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>) {
         }
     }
     ui.add_space(SPACE[1]);
-    let Some(now) = bar.now else {
+    let (Some(now), Some(track)) = (bar.now, bar.view.current) else {
         let text = RichText::new(bar.tr.tr("empty-nothing-playing")).color(p.text_muted);
         ui.add(Label::new(text).selectable(false).truncate());
+        let label = bar.tr.tr(track_menu::favorite_key(false));
+        let [size, icon] = HEART_BUTTON;
+        let heart = IconButton::new(icons::HEART, &label, p).size(size, icon);
+        ui.add_enabled(false, heart);
         return;
     };
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        let body = TextStyle::Body.resolve(ui.style()).size;
-        let title = RichText::new(&now.title).font(semibold(body)).color(p.text);
-        ui.add(Label::new(title).selectable(false).truncate());
-        let artist = RichText::new(&now.artist).small().color(p.text_muted);
-        ui.add(Label::new(artist).selectable(false).truncate());
+    // The text gives way to the heart, which stays beside it.
+    let text_width = ui.available_width() - HEART_BUTTON[0] - ui.spacing().item_spacing.x;
+    ui.scope(|ui| {
+        ui.set_max_width(text_width.max(0.0));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let body = TextStyle::Body.resolve(ui.style()).size;
+            let title = RichText::new(&now.title).font(semibold(body)).color(p.text);
+            ui.add(Label::new(title).selectable(false).truncate());
+            let artist = RichText::new(&now.artist).small().color(p.text_muted);
+            ui.add(Label::new(artist).selectable(false).truncate());
+        });
     });
+    if let Some(PageAction::SetFavorite { track, favorite }) =
+        track_menu::heart(ui, bar.tr, p, bar.collections, track)
+    {
+        out.push(PlayerAction::SetFavorite { track, favorite });
+    }
 }
 
 /// Shuffle, previous, play, next and repeat, with the seek bar under them, centered in `bar`.

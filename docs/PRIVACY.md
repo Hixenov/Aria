@@ -23,18 +23,39 @@ Everything Aria writes stays on your machine:
    location and message. It is appended to and never rotated or deleted by Aria.
 7. `library.db`, your music library, in the data folder. It holds the full paths of the music
    folders you added and of every track found in them, the tags read from those files (title,
-   artist, album and so on), durations, your saved play queue and the playback position. It
+   artist, album and so on), durations, your saved play queue and the playback position, and,
+   since 0.2.1, your favorites, playlists and playback history (below). It
    stays on your machine. Next to it, SQLite keeps `library.db-wal` and `library.db-shm` while
    Aria runs (and may leave them afterwards). If the database is damaged, Aria moves it aside
    as `library.db.bak` (with `library.db.bak-wal` and `library.db.bak-shm` when those existed),
    replacing an older `.bak`, and starts a new one. These files are never deleted by Aria
    except as that replacement; remove them yourself when you no longer need them.
+
+   Since 0.2.1 the same database also holds three more kinds of personal data:
+   - **Favorites**: the full path of each track you marked, and when.
+   - **Playlists**: their names, when they were created, and the full paths of their tracks in order.
+   - **Playback history**: the full path of each track you played, and when. A play is recorded after 30 seconds of playing, or when the track ends if it is shorter than 30 seconds or its length is not known. Aria keeps the newest 10,000 plays, and "Recently played" on the Home page is built from them.
+
+   Favorites, playlists and history are kept by path, so they come back if you remove a music
+   folder and add it again. History can be turned off ("Keep playback history") and emptied
+   ("Clear playback history") in Settings, Playback. Turning it off stops new plays from being recorded
+   and keeps the old ones until you clear them. Clearing deletes the rows of the history from the
+   database, but SQLite does not overwrite the space they took: their old contents can stay in
+   `library.db` and in `library.db-wal` on disk until SQLite reuses that space for new data.
+   Deleting `library.db` (and its `-wal` and `-shm` files, and any `library.db.bak` files) while
+   Aria is closed removes all of it, together with the rest of the library. Favorites and
+   playlists are removed only by you (unmark a track, remove an entry, delete a playlist). All
+   of this stays in `library.db` on your machine; nothing is sent anywhere.
 8. The artwork cache, `artwork\` inside the cache folder: small thumbnails made from the
    cover art embedded in your audio files. "Clear artwork cache" in Settings empties it, and it
    is rebuilt by a rescan.
 
 Aria only reads your audio files; it never writes to or deletes them. Removing a folder from
-the library removes its rows from `library.db`, not the files.
+the library removes its tracks' rows from `library.db`, not the files. Favorites, playlist
+entries and plays are stored by file path and are not removed with the folder: they stay in
+`library.db`, hidden while the file is not in the library, and show again if you add the folder
+back. To delete them, unmark the tracks, remove the entries or delete the playlists, and clear
+the playback history.
 
 ## Where
 

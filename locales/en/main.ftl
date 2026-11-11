@@ -71,6 +71,8 @@ settings-output-device = Output device
 settings-device-system-default = System default
 settings-device-unavailable = Unavailable device
 settings-gapless = Gapless playback
+settings-history = Keep playback history
+settings-history-hint = History stays on this computer.
 settings-library = Library
 settings-folders-empty = No folders yet. Add a folder with your music.
 settings-folder-unavailable = Can't be reached
@@ -81,6 +83,9 @@ settings-remove-folder-body = The folder is taken out of your library. Its files
 settings-clear-artwork = Clear artwork cache
 settings-clear-artwork-title = Clear the artwork cache?
 settings-clear-artwork-body = Saved covers are deleted. They are rebuilt the next time your library is scanned.
+settings-history-clear = Clear playback history
+settings-history-clear-confirm = Clear your playback history?
+settings-history-clear-body = Recently played is emptied. Favorites and playlists stay. This can't be undone.
 settings-advanced = Advanced
 settings-log-level = Log level
 settings-log-level-error = Error
@@ -124,6 +129,14 @@ library-recovered = The library database was damaged, so a new one was started. 
 library-newer = The library was saved by a newer version of Aria, so it's turned off. Update Aria to use it.
 library-unavailable = The library couldn't be opened, so it's turned off for now. The rest of Aria keeps working.
 library-action-failed = Something went wrong in the library, and that action didn't finish. Your music files weren't changed.
+playlist-name-invalid = A playlist name needs 1 to 100 characters.
+track-favorite = Add to favorites
+track-unfavorite = Remove from favorites
+track-add-to-playlist = Add to playlist
+playlist-new = New playlist…
+playlist-name-label = Name
+playlist-create = Create
+playlist-rename = Rename
 
 ## Playback notices (toasts)
 
@@ -178,3 +191,33 @@ error-startup-window = Aria couldn't open its window.
 lang-en = English
 lang-ru = Русский
 lang-hy = Հայերեն
+
+# Home page
+home-recent = Recently played
+home-added = Recently added
+home-empty = Your library is empty
+home-empty-hint = Add a folder with your music in Settings, Library.
+home-recent-empty = Nothing played yet.
+
+# Liked Songs page
+liked-empty = No favorites yet
+liked-empty-hint = Click the heart next to a track.
+
+# Playlists page
+playlists-empty = No playlists yet
+playlists-empty-hint = Make one here, or choose Add to playlist in a track's menu.
+playlist-empty = This playlist is empty
+playlist-delete = Delete playlist
+# $name (String) - the playlist's name
+playlist-delete-confirm = Delete the playlist { $name }? Its tracks stay in your library.
+playlist-remove-entry = Remove from playlist
+# $count (Number) - how many entries of the playlist can't be shown because their files are gone or their folder was removed
+playlist-unavailable = { $count ->
+    [one] { $count } track unavailable
+   *[other] { $count } tracks unavailable
+}
+# $count (Number) - how many tracks a playlist has
+playlist-track-count = { $count ->
+    [one] { $count } track
+   *[other] { $count } tracks
+}

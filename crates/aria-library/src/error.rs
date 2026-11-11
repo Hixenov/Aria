@@ -26,6 +26,9 @@ pub enum LibraryError {
     /// The folder is already in the library.
     #[error("the folder is already in the library")]
     FolderAlreadyAdded,
+    /// A playlist name is empty or longer than 100 characters after trimming.
+    #[error("the playlist name must be 1 to 100 characters")]
+    InvalidPlaylistName,
 }
 
 impl From<rusqlite::Error> for LibraryError {

@@ -20,7 +20,7 @@ pub enum SortKey {
 }
 
 /// Which tracks the list draws from.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Scope {
     /// The whole library.
     #[default]
@@ -29,6 +29,9 @@ pub enum Scope {
     Album(usize),
     /// The tracks of `snapshot.artists[i]`.
     Artist(usize),
+    /// These tracks, in this order until the user sorts. Ids the snapshot does not hold are
+    /// skipped.
+    Ids(Arc<[TrackId]>),
 }
 
 /// The page's tabs.
@@ -152,10 +155,20 @@ impl TrackView {
         }
     }
 
-    /// Whether the rows are left in the order the scope gives them: inside an album, until
-    /// the user picks a sort.
+    /// Whether the rows are left in the order the scope gives them: inside an album or a
+    /// list of ids, until the user picks a sort.
     fn in_source_order(&self) -> bool {
-        matches!(self.scope, Scope::Album(_)) && !self.explicit
+        matches!(self.scope, Scope::Album(_) | Scope::Ids(_)) && !self.explicit
+    }
+
+    /// Sorts by `key` as a click on its header does: another column starts ascending, the
+    /// same one turns around.
+    pub fn sort_by_header(&mut self, key: SortKey) {
+        let ascending = match self.sort() {
+            Some((current, ascending)) => current != key || !ascending,
+            None => true,
+        };
+        self.set_sort(key, ascending);
     }
 
     /// The sort in effect: the key, and whether it is ascending. `None` while an album is in
@@ -165,8 +178,8 @@ impl TrackView {
     }
 
     /// The scope in effect.
-    pub fn scope(&self) -> Scope {
-        self.scope
+    pub fn scope(&self) -> &Scope {
+        &self.scope
     }
 
     /// Whether a search is in effect.
@@ -194,10 +207,13 @@ impl TrackView {
     }
 
     fn compute(&self, snapshot: &LibrarySnapshot) -> Vec<usize> {
-        let mut rows = match self.scope {
+        let mut rows = match &self.scope {
             Scope::All => (0..snapshot.tracks.len()).collect(),
-            Scope::Album(i) => positions(snapshot, snapshot.albums.get(i).map(|a| &a.tracks[..])),
-            Scope::Artist(i) => positions(snapshot, snapshot.artists.get(i).map(|a| &a.tracks[..])),
+            Scope::Album(i) => positions(snapshot, snapshot.albums.get(*i).map(|a| &a.tracks[..])),
+            Scope::Artist(i) => {
+                positions(snapshot, snapshot.artists.get(*i).map(|a| &a.tracks[..]))
+            }
+            Scope::Ids(ids) => positions(snapshot, Some(&ids[..])),
         };
         if !self.query.is_empty() {
             rows.retain(|&i| self.lowered[i].contains(&self.query));
@@ -560,5 +576,44 @@ mod tests {
             Some((SortKey::Title, true)),
             "another scope starts over with title, ascending"
         );
+    }
+
+    #[test]
+    fn an_id_scope_keeps_its_order_until_sorted() {
+        let snap = snapshot(vec![
+            track(1, "Alpha", None, None, 1000),
+            track(2, "Bravo", None, None, 1000),
+            track(3, "Charlie", None, None, 1000),
+        ]);
+        let mut view = TrackView::new();
+        view.set_scope(Scope::Ids(Arc::from([TrackId(3), TrackId(1), TrackId(2)])));
+        assert_eq!(ids(&mut view, &snap), [3, 1, 2]);
+        assert_eq!(view.sort(), None, "no header is marked");
+        view.set_sort(SortKey::Title, true);
+        assert_eq!(ids(&mut view, &snap), [1, 2, 3]);
+    }
+
+    #[test]
+    fn ids_missing_from_the_snapshot_are_skipped() {
+        let snap = snapshot(vec![
+            track(1, "a", None, None, 1000),
+            track(3, "c", None, None, 1000),
+        ]);
+        let mut view = TrackView::new();
+        view.set_scope(Scope::Ids(Arc::from([TrackId(3), TrackId(99), TrackId(1)])));
+        assert_eq!(ids(&mut view, &snap), [3, 1]);
+    }
+
+    #[test]
+    fn search_filters_an_id_scope() {
+        let snap = snapshot(vec![
+            track(1, "Alpha", None, None, 1000),
+            track(2, "Bravo", None, None, 1000),
+            track(3, "Alps", None, None, 1000),
+        ]);
+        let mut view = TrackView::new();
+        view.set_scope(Scope::Ids(Arc::from([TrackId(3), TrackId(2), TrackId(1)])));
+        view.set_query("alp");
+        assert_eq!(ids(&mut view, &snap), [3, 1], "the scope's order is kept");
     }
 }

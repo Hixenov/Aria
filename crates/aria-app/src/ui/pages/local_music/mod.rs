@@ -15,7 +15,10 @@ use aria_core::i18n::{FluentArgs, Localizer};
 use aria_library::{LibrarySnapshot, ScanProgress, TrackId};
 use eframe::egui::{Align, Button, Id, Label, Layout, RichText, TextEdit, Ui, accesskit::Role};
 
-pub use self::view::{Scope, SortKey, Tab, TrackView};
+pub use self::{
+    tracks::{format_duration, show as show_tracks},
+    view::{Scope, SortKey, Tab, TrackView},
+};
 use super::{PageAction, PageCtx};
 use crate::{
     nav::Route,
@@ -55,17 +58,17 @@ enum Open {
 
 impl Open {
     /// The identity of the group `scope` points at in `snapshot`.
-    fn of(scope: Scope, snapshot: &LibrarySnapshot) -> Option<Self> {
+    fn of(scope: &Scope, snapshot: &LibrarySnapshot) -> Option<Self> {
         let lower = |s: &Option<Arc<str>>| s.as_deref().map(str::to_lowercase);
         match scope {
-            Scope::All => None,
+            Scope::All | Scope::Ids(_) => None,
             Scope::Album(i) => snapshot
                 .albums
-                .get(i)
+                .get(*i)
                 .map(|a| Self::Album(lower(&a.title), lower(&a.artist))),
             Scope::Artist(i) => snapshot
                 .artists
-                .get(i)
+                .get(*i)
                 .map(|a| Self::Artist(lower(&a.name))),
         }
     }
@@ -164,7 +167,7 @@ impl State {
     /// Shows the tracks of `scope` in `snapshot`, whatever was searched for before.
     fn open(&mut self, scope: Scope, snapshot: &Arc<LibrarySnapshot>) {
         self.query.clear();
-        self.open = Open::of(scope, snapshot);
+        self.open = Open::of(&scope, snapshot);
         self.resolved_in = Arc::downgrade(snapshot);
         self.view.set_scope(scope);
         self.tab = Tab::Tracks;
@@ -313,24 +316,19 @@ fn tracks_tab(
         }
         return;
     }
-    if let Some(key) = tracks::show(ui, ctx, snapshot, &mut state.view) {
-        // Another column starts ascending; the same one turns around.
-        let ascending = match state.view.sort() {
-            Some((current, ascending)) => current != key || !ascending,
-            None => true,
-        };
-        state.view.set_sort(key, ascending);
+    if let Some(key) = tracks::show(ui, "aria_local_tracks", ctx, snapshot, &mut state.view) {
+        state.view.sort_by_header(key);
     }
 }
 
 /// The name of the album or artist the Tracks tab is limited to.
-fn scope_name(tr: &Localizer, scope: Scope, snapshot: &LibrarySnapshot) -> Option<String> {
+fn scope_name(tr: &Localizer, scope: &Scope, snapshot: &LibrarySnapshot) -> Option<String> {
     match scope {
-        Scope::All => None,
-        Scope::Album(i) => snapshot.albums.get(i).map(|album| {
+        Scope::All | Scope::Ids(_) => None,
+        Scope::Album(i) => snapshot.albums.get(*i).map(|album| {
             or_unknown(tr, album.title.as_deref(), "library-unknown-album").into_owned()
         }),
-        Scope::Artist(i) => snapshot.artists.get(i).map(|artist| {
+        Scope::Artist(i) => snapshot.artists.get(*i).map(|artist| {
             or_unknown(tr, artist.name.as_deref(), "library-unknown-artist").into_owned()
         }),
     }
@@ -366,7 +364,11 @@ fn no_tracks(ui: &mut Ui, ctx: &PageCtx<'_>) {
 }
 
 /// `value`, or the localized `unknown` message when the tag is missing.
-fn or_unknown<'a>(tr: &'a Localizer, value: Option<&'a str>, unknown: &str) -> Cow<'a, str> {
+pub(super) fn or_unknown<'a>(
+    tr: &'a Localizer,
+    value: Option<&'a str>,
+    unknown: &str,
+) -> Cow<'a, str> {
     value.map_or_else(|| tr.tr(unknown), Cow::Borrowed)
 }
 
@@ -416,7 +418,7 @@ mod tests {
             &[],
         );
         state.follow_open_group(&after);
-        assert_eq!(state.view.scope(), Scope::Album(1));
+        assert_eq!(state.view.scope(), &Scope::Album(1));
         assert_eq!(state.tab, Tab::Tracks);
     }
 
@@ -429,7 +431,7 @@ mod tests {
 
         let after = snapshot(Vec::new(), &["Beatles", "Miles Davis"]);
         state.follow_open_group(&after);
-        assert_eq!(state.view.scope(), Scope::Artist(1));
+        assert_eq!(state.view.scope(), &Scope::Artist(1));
         assert_eq!(state.view.sort(), Some((SortKey::Album, false)));
     }
 
@@ -441,11 +443,11 @@ mod tests {
 
         let after = snapshot(vec![album("Abbey Road", "Beatles")], &[]);
         state.follow_open_group(&after);
-        assert_eq!(state.view.scope(), Scope::All);
+        assert_eq!(state.view.scope(), &Scope::All);
         assert_eq!(state.open, None);
         // And it stays there when the next snapshot brings the album back.
         state.follow_open_group(&before);
-        assert_eq!(state.view.scope(), Scope::All);
+        assert_eq!(state.view.scope(), &Scope::All);
     }
 
     #[test]
@@ -456,6 +458,6 @@ mod tests {
         state.show_all();
         let other = snapshot(vec![album("Z", "Y"), album("A", "B")], &[]);
         state.follow_open_group(&other);
-        assert_eq!(state.view.scope(), Scope::All);
+        assert_eq!(state.view.scope(), &Scope::All);
     }
 }

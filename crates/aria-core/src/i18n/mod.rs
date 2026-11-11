@@ -301,6 +301,7 @@ mod tests {
         "library-newer",
         "library-unavailable",
         "library-action-failed",
+        "playlist-name-invalid",
         "library-scanning",
         "library-unknown-artist",
         "library-unknown-album",
@@ -331,6 +332,33 @@ mod tests {
         "playback-no-device",
         "error-startup-title",
         "error-startup-window",
+        "home-recent",
+        "home-added",
+        "home-empty",
+        "home-empty-hint",
+        "home-recent-empty",
+        "liked-empty",
+        "liked-empty-hint",
+        "playlist-create",
+        "playlist-delete",
+        "playlist-delete-confirm",
+        "playlist-empty",
+        "playlist-name-label",
+        "playlist-new",
+        "playlist-remove-entry",
+        "playlist-rename",
+        "playlist-track-count",
+        "playlist-unavailable",
+        "playlists-empty",
+        "playlists-empty-hint",
+        "settings-history",
+        "settings-history-hint",
+        "settings-history-clear",
+        "settings-history-clear-confirm",
+        "settings-history-clear-body",
+        "track-add-to-playlist",
+        "track-favorite",
+        "track-unfavorite",
         "lang-en",
         "lang-ru",
         "lang-hy",
@@ -435,6 +463,7 @@ mod tests {
         args.set("count", 777);
         args.set("folder", "777");
         args.set("title", "777");
+        args.set("name", "777");
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));
