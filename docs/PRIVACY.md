@@ -23,12 +23,25 @@ Everything Aria writes stays on your machine:
    location and message. It is appended to and never rotated or deleted by Aria.
 7. `library.db`, your music library, in the data folder. It holds the full paths of the music
    folders you added and of every track found in them, the tags read from those files (title,
-   artist, album and so on), durations, your saved play queue and the playback position. It
+   artist, album and so on), durations, your saved play queue and the playback position, and,
+   since 0.2.1, your favorites, playlists and playback history (below). It
    stays on your machine. Next to it, SQLite keeps `library.db-wal` and `library.db-shm` while
    Aria runs (and may leave them afterwards). If the database is damaged, Aria moves it aside
    as `library.db.bak` (with `library.db.bak-wal` and `library.db.bak-shm` when those existed),
    replacing an older `.bak`, and starts a new one. These files are never deleted by Aria
    except as that replacement; remove them yourself when you no longer need them.
+
+   Since 0.2.1 the same database also holds three more kinds of personal data:
+   - **Favorites**: the full path of each track you marked, and when.
+   - **Playlists**: their names, when they were created, and the full paths of their tracks in order.
+   - **Playback history**: the full path of each track you played for at least 30 seconds, and when. Aria keeps the newest 10,000 plays, and "Recently played" on the Home page is built from them.
+
+   Favorites, playlists and history are kept by path, so they come back if you remove a music
+   folder and add it again. History can be turned off ("Keep playback history") and emptied
+   ("Clear playback history") in Settings, Playback. Turning it off stops new plays from being recorded
+   and keeps the old ones until you clear them. Favorites and playlists are removed only by you
+   (unmark a track, remove an entry, delete a playlist). All of this stays in `library.db` on
+   your machine; nothing is sent anywhere.
 8. The artwork cache, `artwork\` inside the cache folder: small thumbnails made from the
    cover art embedded in your audio files. "Clear artwork cache" in Settings empties it, and it
    is rebuilt by a rescan.

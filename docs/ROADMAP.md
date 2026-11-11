@@ -15,7 +15,9 @@ Spotify's developer terms. Local files get the full audio engine (Phase 2).
 1. **Foundation (current).** Window and layout shell, navigation, theme system, persistent
    settings, localization (EN/RU/HY), logging, CI and repository documentation.
 2. **Local audio.** Local library and audio engine (Symphonia decoding, CPAL output), SQLite
-   library storage, the working player bar.
+   library storage, the working player bar. Split into parts: 2a, the local player (0.2.0,
+   released as a pre-release); 2b, favorites, playlists, playback history and Home (0.2.1,
+   implemented, pre-release, not yet checked by hand); 2c, the soundboard (not started).
 3. **Spotify.** Library, search and playlist access through the Web API (OAuth PKCE) and
    Spotify Connect remote control. No in-app audio streaming.
 4. **Desktop experience.** System tray (including the minimize-to-tray preference stored in
