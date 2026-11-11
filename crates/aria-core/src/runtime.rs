@@ -571,13 +571,15 @@ impl Worker {
     }
 
     /// The library thread died. It can tell nobody, so this ends any scan it left showing and
-    /// disables the library, as a library that cannot be opened is disabled.
+    /// disables the library, as a library that cannot be opened is disabled: the pages go to
+    /// their empty states, collections included.
     fn library_lost(&mut self) {
         tracing::error!("the library thread stopped unexpectedly; the library is disabled");
         self.library = None;
         self.emit([
             Event::ScanProgress(None),
             Event::LibraryUpdated(Arc::default()),
+            Event::Collections(Arc::default()),
             Event::Notice(library_service::UNAVAILABLE),
         ]);
         self.playback.library_lost();
@@ -1122,6 +1124,12 @@ mod tests {
             .filter(|e| **e == Event::LibraryUpdated(Arc::default()))
             .count();
         assert_eq!(snapshots, 2, "{events:?}");
+        // The thread died before it sent any collections, so these empty ones come from the loss:
+        // the pages show their empty states, as with a library that failed to open.
+        assert!(
+            events.contains(&Event::Collections(Arc::default())),
+            "{events:?}"
+        );
 
         // Commands for it go nowhere, and the rest of the backend still works.
         handle.send(Command::Rescan);

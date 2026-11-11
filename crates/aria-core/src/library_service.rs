@@ -320,6 +320,15 @@ impl Throttle {
     }
 }
 
+/// What a failure to read the collections leads to.
+#[derive(Clone, Copy)]
+enum OnReadFailure {
+    /// The "action failed" notice, for a change somebody asked for.
+    Notify,
+    /// A line in the log only: a play nobody asked to record is not worth a notice.
+    Log,
+}
+
 /// A request that must wait for a running scan to end.
 enum Change {
     AddFolder(PathBuf),
@@ -457,7 +466,8 @@ impl Service {
                 self.finish_collection_change(library, result);
             }
             LibraryRequest::RecordPlay(track) => match library.record_play(track, now_secs()) {
-                Ok(true) => self.send_collections(library),
+                // Nobody asked for this, so a failure to read the collections back is only logged.
+                Ok(true) => self.send_collections_or(library, OnReadFailure::Log),
                 Ok(false) => tracing::debug!("a play of an unknown track was not recorded"),
                 // A play that cannot be recorded is not worth a notice; playback goes on.
                 Err(error) => tracing::warn!(%error, "a play could not be recorded"),
@@ -624,13 +634,31 @@ impl Service {
     }
 
     /// Reads favorites, playlists and recent plays and sends them, unless the thread is stopping.
+    /// A failure to read them is reported with a notice.
     fn send_collections(&self, library: &Library) {
+        self.send_collections_or(library, OnReadFailure::Notify);
+    }
+
+    /// Like [`send_collections`](Self::send_collections), with `on_failure` saying what a failure
+    /// to read them leads to.
+    fn send_collections_or(&self, library: &Library, on_failure: OnReadFailure) {
         if self.stopping {
             return;
         }
-        match library.collections() {
-            Ok(collections) => self.emit(LibraryEvent::Collections(Arc::new(collections))),
-            Err(error) => self.report_failure(&error),
+        self.send_read_collections(library.collections(), on_failure);
+    }
+
+    fn send_read_collections(
+        &self,
+        read: Result<Collections, LibraryError>,
+        on_failure: OnReadFailure,
+    ) {
+        match (read, on_failure) {
+            (Ok(collections), _) => self.emit(LibraryEvent::Collections(Arc::new(collections))),
+            (Err(error), OnReadFailure::Notify) => self.report_failure(&error),
+            (Err(error), OnReadFailure::Log) => {
+                tracing::warn!(%error, "the collections could not be read after a play");
+            }
         }
     }
 
@@ -1536,6 +1564,28 @@ mod tests {
             log.wait_for(|e| matches!(e, LibraryEvent::Collections(c) if c.recent.is_empty()));
         assert!(collections_of(event).recent.is_empty());
         assert!(handle.shutdown(WAIT));
+    }
+
+    #[test]
+    fn a_failed_read_after_a_play_is_only_logged() {
+        let (_requests, receiver) = crossbeam_channel::unbounded();
+        let (on_event, mut log) = recording();
+        let service = Service::new(receiver, Arc::default(), on_event);
+        let failed = || Err(LibraryError::Io(std::io::Error::other("test read fails")));
+
+        service.send_read_collections(failed(), OnReadFailure::Log);
+        log.finish();
+        assert!(log.seen.is_empty(), "{:?}", log.seen);
+
+        // A change somebody asked for still gets its notice.
+        service.send_read_collections(failed(), OnReadFailure::Notify);
+        log.finish();
+        assert_eq!(
+            log.notices("library-action-failed").len(),
+            1,
+            "{:?}",
+            log.seen
+        );
     }
 
     #[test]

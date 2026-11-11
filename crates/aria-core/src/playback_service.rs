@@ -139,6 +139,9 @@ pub struct PlaybackService {
     play_counts_after_ms: u64,
     /// How long `current` played before `played_from`, when a seek moved it.
     heard_ms: u64,
+    /// Where `current` was when a seek moved it back to `played_from`, while the clock may not
+    /// show that yet: until it reads less than this, it may still be reading the old place.
+    seek_back_from: Option<u64>,
     /// A play of `current` has been recorded.
     play_recorded: bool,
     /// Whether plays are recorded, as the settings last said.
@@ -191,6 +194,7 @@ impl PlaybackService {
             failures: 0,
             play_counts_after_ms: PLAY_COUNTS_AFTER_MS,
             heard_ms: 0,
+            seek_back_from: None,
             play_recorded: false,
             history: true,
             restored: None,
@@ -401,6 +405,7 @@ impl PlaybackService {
         {
             self.failures = 0;
         }
+        self.note_seek_shown();
         if self.played_ms() >= self.play_counts_after_ms {
             self.record_play();
         }
@@ -482,14 +487,44 @@ impl PlaybackService {
     /// How long the current track has played: pauses add nothing, and a seek adds nothing by
     /// itself. Until the clock names the track, it has played only what it did before a seek.
     fn played_ms(&self) -> u64 {
+        self.heard_ms + self.since_seek()
+    }
+
+    /// How long the current track has played since `played_from`, as far as the clock shows.
+    ///
+    /// The clock shows a seek a little after it is asked for. A forward seek needs nothing more:
+    /// the old place is before `played_from`, so it counts as nothing. After a seek back, the
+    /// clock may still read the old place, ahead of `played_from`, so the time is counted from
+    /// that place until the clock reads less than it. If the clock passes that place again before
+    /// anything has seen it read less (a seek back of less than about a tick), that stretch is
+    /// left out: the count can come out a little short, never long.
+    fn since_seek(&self) -> u64 {
         let reading = self.clock.read();
-        let since_seek = match &self.current {
+        match &self.current {
             Some(current) if current.token == reading.token => {
-                reading.position_ms.saturating_sub(self.played_from)
+                let from = match self.seek_back_from {
+                    Some(old) if reading.position_ms >= old => old,
+                    _ => self.played_from,
+                };
+                reading.position_ms.saturating_sub(from)
             }
             _ => 0,
-        };
-        self.heard_ms + since_seek
+        }
+    }
+
+    /// Forgets the place a seek back left once the clock shows the seek.
+    fn note_seek_shown(&mut self) {
+        let reading = self.clock.read();
+        let shown = self
+            .current
+            .as_ref()
+            .is_some_and(|c| c.token == reading.token)
+            && self
+                .seek_back_from
+                .is_some_and(|old| reading.position_ms < old);
+        if shown {
+            self.seek_back_from = None;
+        }
     }
 
     /// Whether the current track, which has just ended, counts as played: it is shorter than the
@@ -518,6 +553,7 @@ impl PlaybackService {
     fn start_counting(&mut self, start_ms: u64) {
         self.played_from = start_ms;
         self.heard_ms = 0;
+        self.seek_back_from = None;
         self.play_recorded = false;
     }
 
@@ -847,10 +883,15 @@ impl PlaybackService {
         }
     }
 
+    /// Moves the current track. The time played up to here is kept, and none is added by the
+    /// move itself, even while the clock still reads the old place.
     fn seek(&mut self, position_ms: u64) {
         if self.current.is_some() {
-            self.heard_ms += self.position().saturating_sub(self.played_from);
+            self.note_seek_shown();
+            let at = self.position();
+            self.heard_ms += self.since_seek();
             self.played_from = position_ms;
+            self.seek_back_from = (position_ms < at).then_some(at);
             self.engine.send(EngineCommand::Seek(position_ms));
         }
     }
@@ -2509,6 +2550,72 @@ mod tests {
         assert!(
             rig.position() < 700,
             "the time before the seek counts: {}",
+            rig.position()
+        );
+    }
+
+    /// Puts the clock back to `position_ms` on the current track, as it read before the engine
+    /// took the last seek. The engine has taken it already, so nothing races the test; to the
+    /// service this is the moment between the seek and the clock showing it.
+    fn clock_not_yet_moved(rig: &Rig, position_ms: u64) {
+        rig.service.clock.publish(ClockReading {
+            token: rig.current_token(),
+            position_ms,
+            playing: true,
+        });
+    }
+
+    #[test]
+    fn a_restart_counts_no_time_before_the_clock_shows_it() {
+        let music = Music::new().tone(10_000);
+        let mut rig = Rig::with(&music);
+        // Previous restarts only past its own threshold, so the play threshold is set above it, at
+        // less than twice the time played before the restart.
+        let threshold = 2 * RESTART_THRESHOLD_MS - 500;
+        rig.service.play_counts_after_ms = threshold;
+        rig.play(&[1], 0);
+        rig.run_until("the restart threshold", |rig| {
+            rig.position() > RESTART_THRESHOLD_MS
+        });
+        let before = rig.position();
+        assert!(before * 2 >= threshold && before < threshold, "{before}");
+
+        rig.send(Command::Previous);
+        rig.wait_until("the restart", |rig| rig.position() < before);
+        // A tick that comes before the clock shows the restart.
+        clock_not_yet_moved(&rig, before + 5);
+        rig.tick();
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+
+        rig.run_ticking_until("a play", |rig| !plays(rig).is_empty());
+        assert!(
+            rig.position() + before >= threshold,
+            "the play needs the threshold of real play: {before} + {}",
+            rig.position()
+        );
+    }
+
+    #[test]
+    fn two_backward_seeks_before_the_clock_shows_the_first_count_the_time_once() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        rig.play(&[1], 0);
+        rig.run_until("most of the threshold", |rig| rig.position() >= 667);
+        let before = rig.position();
+        assert!(before < TEST_PLAY_MS, "{before}");
+
+        rig.send(Command::Seek(333));
+        rig.wait_until("the first seek", |rig| rig.position() < before);
+        clock_not_yet_moved(&rig, before + 5);
+        rig.send(Command::Seek(0));
+        rig.wait_until("the second seek", |rig| rig.position() < 333);
+        rig.tick();
+        assert!(plays(&rig).is_empty(), "{:?}", rig.requests);
+
+        rig.run_ticking_until("a play", |rig| !plays(rig).is_empty());
+        assert!(
+            rig.position() + before + 5 >= TEST_PLAY_MS,
+            "the play needs the threshold of real play: {before} + {}",
             rig.position()
         );
     }
