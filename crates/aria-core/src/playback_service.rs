@@ -497,7 +497,9 @@ impl PlaybackService {
     /// clock may still read the old place, ahead of `played_from`, so the time is counted from
     /// that place until the clock reads less than it. If the clock passes that place again before
     /// anything has seen it read less (a seek back of less than about a tick), that stretch is
-    /// left out: the count can come out a little short, never long.
+    /// left out, so one seek can make the count a little short, never long. Two seeks before the
+    /// clock shows the first can still count up to the first jump twice; that window is a few
+    /// milliseconds.
     fn since_seek(&self) -> u64 {
         let reading = self.clock.read();
         match &self.current {
