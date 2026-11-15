@@ -59,3 +59,5 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 sha2 = "0.10"
 egui_extras = { version = "0.37", default-features = false }
 pollster = "0.4"
+wasapi = "0.27"
+global-hotkey = "0.10"
