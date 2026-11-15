@@ -4,8 +4,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Arc;
 
-use lofty::config::{GlobalOptions, apply_global_options};
+use lofty::config::{GlobalOptions, ParseOptions, apply_global_options};
 use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
+use lofty::mp4::{Mp4Codec, Mp4File};
 use lofty::picture::PictureType;
 use lofty::probe::Probe;
 use lofty::tag::{Accessor, Tag};
@@ -27,6 +28,8 @@ pub struct TrackTags {
     pub duration_ms: u64,
     pub sample_rate: u32,
     pub channels: u16,
+    /// Bits per sample; 0 when the format has none (MP3, AAC) or lofty does not report one.
+    pub bits_per_sample: u16,
     pub codec: Arc<str>,
     /// Raw bytes of the embedded cover; pictures over `MAX_IMAGE_BYTES` are dropped.
     pub picture: Option<Vec<u8>>,
@@ -49,10 +52,29 @@ pub fn read_tags(path: &Path) -> Result<TrackTags, LibraryError> {
         tracing::debug!(path = %path.display(), "tag parser panicked");
         Err(LibraryError::Tags("the tag parser failed".into()))
     })?;
-    Ok(from_tagged(path, &parsed))
+    let mp4_codec = if parsed.file_type() == FileType::Mp4 {
+        read_mp4_codec(path)
+    } else {
+        None
+    };
+    Ok(from_tagged(path, &parsed, mp4_codec))
 }
 
-fn from_tagged(path: &Path, file: &TaggedFile) -> TrackTags {
+/// The codec inside an MP4 container, read from its sample description. `None` when it cannot
+/// be read, which leaves the codec as plain `mp4`.
+fn read_mp4_codec(path: &Path) -> Option<Mp4Codec> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        let options = ParseOptions::new().read_tags(false).read_cover_art(false);
+        Mp4File::read_from(&mut file, options)
+            .ok()?
+            .properties()
+            .codec()
+    }))
+    .unwrap_or(None)
+}
+
+fn from_tagged(path: &Path, file: &TaggedFile, mp4_codec: Option<Mp4Codec>) -> TrackTags {
     let tag = file.primary_tag().or_else(|| file.first_tag());
     let props = file.properties();
     let text = |value: Option<std::borrow::Cow<'_, str>>| -> Option<Arc<str>> {
@@ -86,7 +108,8 @@ fn from_tagged(path: &Path, file: &TaggedFile) -> TrackTags {
         duration_ms: u64::try_from(props.duration().as_millis()).unwrap_or(u64::MAX),
         sample_rate: props.sample_rate().unwrap_or(0),
         channels: props.channels().map_or(0, u16::from),
-        codec: Arc::from(codec_name(file.file_type())),
+        bits_per_sample: props.bit_depth().map_or(0, u16::from),
+        codec: Arc::from(codec_name(file.file_type(), mp4_codec)),
         picture: tag.and_then(pick_picture),
     }
 }
@@ -113,14 +136,18 @@ fn pick_picture(tag: &Tag) -> Option<Vec<u8>> {
     Some(data.to_vec())
 }
 
-fn codec_name(file_type: FileType) -> &'static str {
+fn codec_name(file_type: FileType, mp4_codec: Option<Mp4Codec>) -> &'static str {
     match file_type {
         FileType::Aac => "aac",
         FileType::Aiff => "aiff",
         FileType::Ape => "ape",
         FileType::Flac => "flac",
         FileType::Mpeg => "mp3",
-        FileType::Mp4 => "mp4",
+        FileType::Mp4 => match mp4_codec {
+            Some(Mp4Codec::ALAC) => "alac",
+            Some(Mp4Codec::AAC) => "aac",
+            _ => "mp4",
+        },
         FileType::Mpc => "mpc",
         FileType::Opus => "opus",
         FileType::Vorbis => "vorbis",

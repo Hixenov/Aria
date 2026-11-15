@@ -9,3 +9,6 @@ those files decode to the same audio either way.
 
 The total size stays under 500 KB. For WAV input without ffmpeg, the `test-support` feature of
 `aria-audio` provides `aria_audio::testing`.
+
+`depth-16.flac`, `depth-16.wav`, `depth-24.flac` and `depth-24.wav` hold the same 0.1 s of a 440 Hz
+tone, once at 16 bits and once at 24 bits (the 24-bit samples are the 16-bit ones shifted up by 8).

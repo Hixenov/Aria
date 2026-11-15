@@ -73,6 +73,13 @@ CREATE TABLE plays (
 );
 CREATE INDEX plays_played_at ON plays(played_at);
 ",
+    "
+ALTER TABLE tracks ADD COLUMN bits_per_sample INTEGER NOT NULL DEFAULT 0;
+-- The scan keeps a file whose size and mtime match its row. No file has an mtime of 0, so this
+-- makes the next scan read every file again: it fills the depth and corrects the codec of
+-- .m4a files. Favorites, playlists and plays are keyed by path and are not touched.
+UPDATE tracks SET mtime = 0;
+",
 ];
 
 /// Highest schema version this build understands.

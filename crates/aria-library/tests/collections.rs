@@ -87,13 +87,14 @@ fn a_0_2_0_database_upgrades_and_keeps_its_data() {
         let c = ok(Connection::open(env.db()));
         ok(c.execute_batch(
             "DROP TABLE favorites; DROP TABLE playlist_items; DROP TABLE playlists;
-             DROP TABLE plays; PRAGMA user_version = 1;",
+             DROP TABLE plays; ALTER TABLE tracks DROP COLUMN bits_per_sample;
+             PRAGMA user_version = 1;",
         ));
     }
 
     let lib = env.open();
-    assert_eq!(SCHEMA_VERSION, 2);
-    assert_eq!(count(&env.db(), "PRAGMA user_version"), 2);
+    assert_eq!(SCHEMA_VERSION, 3);
+    assert_eq!(count(&env.db(), "PRAGMA user_version"), 3);
     assert_eq!(ok(lib.snapshot()).tracks, tracks_before);
     assert_eq!(ok(lib.load_queue()), Some(record));
     assert_eq!(ok(lib.collections()), Collections::default());

@@ -148,6 +148,7 @@ mod tests {
             duration_ms: 1000,
             sample_rate: 44_100,
             channels: 2,
+            bits_per_sample: 0,
             codec: Arc::from("flac"),
             artwork: None,
             added_at: 1,

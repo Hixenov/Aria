@@ -303,7 +303,7 @@ impl Run<'_> {
 }
 
 const COLUMNS: &str = "folder_id, path, size, mtime, title, artist, album, album_artist, \
-     track_no, disc_no, year, genre, duration_ms, sample_rate, channels, codec, artwork_hash";
+     track_no, disc_no, year, genre, duration_ms, sample_rate, channels, codec, artwork_hash, \n     bits_per_sample";
 
 impl Library {
     /// Walks every folder and brings the database in step with the files on disk.
@@ -613,7 +613,7 @@ impl Library {
             let mut insert = tx.prepare(&format!(
                 "INSERT INTO tracks ({COLUMNS}, added_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                    ?17, ?18)
+                    ?17, ?18, ?19)
                  ON CONFLICT(path) DO UPDATE SET
                     folder_id = excluded.folder_id, size = excluded.size,
                     mtime = excluded.mtime, title = excluded.title, artist = excluded.artist,
@@ -624,6 +624,7 @@ impl Library {
                         THEN tracks.duration_ms ELSE excluded.duration_ms END,
                     sample_rate = excluded.sample_rate,
                     channels = excluded.channels, codec = excluded.codec,
+                    bits_per_sample = excluded.bits_per_sample,
                     artwork_hash = CASE WHEN excluded.size = -1
                         THEN tracks.artwork_hash ELSE excluded.artwork_hash END"
             ))?;
@@ -634,7 +635,8 @@ impl Library {
                     genre = ?12,
                     duration_ms = CASE WHEN ?13 = 0 THEN duration_ms ELSE ?13 END,
                     sample_rate = ?14, channels = ?15, codec = ?16,
-                    artwork_hash = CASE WHEN ?3 = -1 THEN artwork_hash ELSE ?17 END
+                    artwork_hash = CASE WHEN ?3 = -1 THEN artwork_hash ELSE ?17 END,
+                    bits_per_sample = ?19
                  WHERE id = ?18",
             )?;
             for p in &run.pending {
@@ -661,6 +663,7 @@ impl Library {
                         &*t.codec,
                         artwork,
                         id,
+                        t.bits_per_sample,
                     ])?,
                     None => insert.execute(params![
                         p.folder.0,
@@ -680,6 +683,7 @@ impl Library {
                         t.channels,
                         &*t.codec,
                         artwork,
+                        t.bits_per_sample,
                         now,
                     ])?,
                 };

@@ -32,9 +32,34 @@ pub struct Track {
     pub duration_ms: u64,
     pub sample_rate: u32,
     pub channels: u16,
+    /// Bits per sample; 0 when the format has none (MP3, AAC) or it is not known.
+    pub bits_per_sample: u16,
     pub codec: Arc<str>,
     pub artwork: Option<ArtworkId>,
     pub added_at: i64,
+}
+
+/// How good a track's file is, for the badge and the "Lossless only" filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quality {
+    Lossy,
+    Lossless,
+    /// Lossless with a rate above 48 000 Hz or a depth above 16 bits.
+    HiRes,
+}
+
+impl Track {
+    /// Lossless codecs are FLAC, ALAC, WAV and AIFF. CAF is listed too, but lofty cannot read
+    /// CAF files, so the scan never stores that codec and no CAF track is ever in the library.
+    pub fn quality(&self) -> Quality {
+        if !matches!(&*self.codec, "flac" | "alac" | "wav" | "aiff" | "caf") {
+            Quality::Lossy
+        } else if self.sample_rate > 48_000 || self.bits_per_sample > 16 {
+            Quality::HiRes
+        } else {
+            Quality::Lossless
+        }
+    }
 }
 
 /// A folder the user added to the library.
@@ -57,4 +82,56 @@ pub struct QueueRecord {
     pub position_ms: u64,
     pub shuffle_seed: u64,
     pub context_index: Option<usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(codec: &str, bits: u16, rate: u32) -> Track {
+        Track {
+            id: TrackId(1),
+            folder: FolderId(1),
+            path: PathBuf::new(),
+            title: String::new(),
+            artist: None,
+            album: None,
+            album_artist: None,
+            track_no: None,
+            disc_no: None,
+            year: None,
+            genre: None,
+            duration_ms: 0,
+            sample_rate: rate,
+            channels: 2,
+            bits_per_sample: bits,
+            codec: Arc::from(codec),
+            artwork: None,
+            added_at: 0,
+        }
+    }
+
+    #[test]
+    fn quality_follows_codec_rate_and_depth() {
+        let table = [
+            ("flac", 16, 44_100, Quality::Lossless),
+            ("flac", 24, 44_100, Quality::HiRes),
+            ("flac", 16, 96_000, Quality::HiRes),
+            ("flac", 16, 48_000, Quality::Lossless),
+            ("alac", 24, 48_000, Quality::HiRes),
+            ("mp3", 0, 44_100, Quality::Lossy),
+            ("aac", 0, 44_100, Quality::Lossy),
+            ("wav", 16, 44_100, Quality::Lossless),
+            ("unknown", 0, 44_100, Quality::Lossy),
+            ("mp4", 0, 44_100, Quality::Lossy),
+            ("flac", 24, 96_000, Quality::HiRes),
+        ];
+        for (codec, bits, rate, want) in table {
+            assert_eq!(
+                track(codec, bits, rate).quality(),
+                want,
+                "{codec} {bits}/{rate}"
+            );
+        }
+    }
 }

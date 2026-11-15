@@ -60,6 +60,7 @@ fn track(id: i64, title: &str, artist: Option<&str>, album: Option<&str>, ms: u6
         duration_ms: ms,
         sample_rate: 44_100,
         channels: 2,
+        bits_per_sample: 0,
         codec: Arc::from("flac"),
         artwork: None,
         added_at: id,
