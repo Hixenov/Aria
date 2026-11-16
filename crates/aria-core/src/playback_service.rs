@@ -206,7 +206,11 @@ pub struct PlaybackService {
     /// The engine thread has died, so nothing will ever play.
     engine_gone: bool,
     // What the settings last said. These start as the engine and the queue do.
+    /// The volume the engine was last told: see [`engine_volume`](Self::engine_volume).
     volume: f32,
+    /// The volume in the settings, kept while the lock is on and used again when it lifts.
+    stored_volume: f32,
+    muted: bool,
     device: Option<DeviceId>,
     gapless: bool,
     /// Exclusive mode, as far as this platform has it.
@@ -262,6 +266,8 @@ impl PlaybackService {
             last_save: None,
             engine_gone: false,
             volume: 1.0,
+            stored_volume: 1.0,
+            muted: false,
             device: None,
             gapless: true,
             exclusive: false,
@@ -379,6 +385,7 @@ impl PlaybackService {
                 self.output = None;
                 self.notify(NO_DEVICE);
                 self.publish();
+                self.sync_volume();
             }
             EngineEvent::Stopped => self.stopped(),
             EngineEvent::Output(state) => {
@@ -390,6 +397,7 @@ impl PlaybackService {
                     }
                     self.output = Some(state);
                     self.publish();
+                    self.sync_volume();
                 }
             }
             EngineEvent::ExclusiveUnavailable if self.exclusive => {
@@ -404,6 +412,7 @@ impl PlaybackService {
                     self.exclusive_refused = true;
                     self.output = None;
                     self.publish();
+                    self.sync_volume();
                 }
             }
             EngineEvent::ExclusiveUnavailable => {}
@@ -494,11 +503,8 @@ impl PlaybackService {
     /// device, even the same one, rebuilds the output.
     pub fn on_settings(&mut self, settings: &Settings) {
         self.history = settings.history_enabled;
-        let volume = if settings.muted { 0.0 } else { settings.volume };
-        if volume != self.volume {
-            self.volume = volume;
-            self.engine.send(EngineCommand::SetVolume(volume));
-        }
+        self.stored_volume = settings.volume;
+        self.muted = settings.muted;
         if settings.output_device != self.device {
             self.device.clone_from(&settings.output_device);
             let device = settings.output_device.clone();
@@ -519,6 +525,8 @@ impl PlaybackService {
             self.engine.send(EngineCommand::SetExclusive(exclusive));
             self.publish();
         }
+        // After the mode, which the lock follows.
+        self.sync_volume();
         if let Some(command) = self.soundboard.on_settings(settings) {
             self.engine.send(command);
         }
@@ -623,6 +631,30 @@ impl PlaybackService {
             volume_locked: self.volume_locked(),
         };
         self.events.push(Event::Player(view));
+    }
+
+    /// The volume the engine plays the music at. Muted, nothing. While the slider is locked it
+    /// shows 100 %, and that is what is heard: an exclusive output plays any volume above 0 at
+    /// full level, and a stored 0 is sent as 1.0, so it is not silent. A stored volume above 0 is
+    /// sent as it is, so that an output that turns out shared before the engine says so plays at
+    /// the stored level, not at full. Unlocked, the stored volume.
+    fn engine_volume(&self) -> f32 {
+        if self.muted {
+            0.0
+        } else if self.volume_locked() && self.stored_volume <= 0.0 {
+            1.0
+        } else {
+            self.stored_volume
+        }
+    }
+
+    /// Tells the engine the volume to play at, when it has changed.
+    fn sync_volume(&mut self) {
+        let volume = self.engine_volume();
+        if volume != self.volume {
+            self.volume = volume;
+            self.engine.send(EngineCommand::SetVolume(volume));
+        }
     }
 
     /// Whether the volume slider is locked: exclusive mode is on, and the device is held
@@ -2757,6 +2789,44 @@ mod tests {
         assert!(!rig.view().volume_locked);
         rig.settings(&at_30(exclusive()));
         assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+    }
+
+    #[test]
+    fn a_locked_volume_plays_at_the_level_it_shows() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        let at_0 = |base: Settings| Settings {
+            volume: 0.0,
+            muted: false,
+            ..base
+        };
+        rig.settings(&at_0(Settings::default()));
+        assert_eq!(rig.service.volume, 0.0, "unlocked, the stored 0");
+        // What a locked bar shows, 100 %, is heard: a stored 0 does not silence it.
+        let locked = if EXCLUSIVE_SUPPORTED { 1.0 } else { 0.0 };
+        rig.settings(&at_0(exclusive()));
+        assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+        assert_eq!(rig.service.volume, locked);
+        // Mute still silences.
+        rig.settings(&Settings {
+            muted: true,
+            ..at_0(exclusive())
+        });
+        assert_eq!(rig.service.volume, 0.0);
+        rig.settings(&at_0(exclusive()));
+        assert_eq!(rig.service.volume, locked);
+
+        // A refused open lifts the lock: the stored 0 again, and the slider shows it.
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        assert!(!rig.view().volume_locked);
+        assert_eq!(rig.service.volume, 0.0);
+        // An exclusive output locks it again.
+        rig.engine(EngineEvent::Output(reported(OutputPath::BitPerfect)));
+        assert_eq!(rig.service.volume, locked);
+        // The mode off: the stored 0, which the lock never changed.
+        rig.settings(&at_0(Settings::default()));
+        assert_eq!(rig.service.volume, 0.0);
     }
 
     #[cfg(windows)]
