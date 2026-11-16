@@ -18,8 +18,8 @@ pub mod soundboard;
 
 // What `aria-app` needs from the crates below it, which it reaches only through this one.
 pub use aria_audio::{
-    ClockReading, DeviceId, DeviceInfo, OutputFactory, OutputFormat, PlaybackClock, SystemFactory,
-    fake::FakeFactory,
+    ClockReading, DeviceId, DeviceInfo, OutputFactory, OutputFormat, OutputPath, OutputState,
+    PlaybackClock, SystemFactory, fake::FakeFactory,
 };
 pub use aria_library::{
     Collections, Folder, FolderId, LibrarySnapshot, PLAYLIST_NAME_MAX, Playlist, PlaylistId,

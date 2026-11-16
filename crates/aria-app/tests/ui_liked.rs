@@ -91,6 +91,7 @@ fn harness(favorites: &[i64]) -> Harness<'static, Page> {
                     palette: Palette::dark(),
                     settings: &page.settings,
                     paths_available: true,
+                    exclusive_supported: true,
                     modal_open: &mut page.modal_open,
                     out: &mut page.actions,
                     library: &page.library,

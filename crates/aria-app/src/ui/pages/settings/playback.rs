@@ -1,4 +1,4 @@
-//! The Playback card: the output device and gapless playback.
+//! The Playback card: the output device, gapless playback and exclusive mode.
 
 use aria_core::{DeviceId, DeviceInfo, i18n::Localizer, settings::Settings};
 use eframe::egui::{Button, Checkbox, ComboBox, TextStyle, Ui};
@@ -23,6 +23,22 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
             let checkbox = Checkbox::without_text(&mut s.gapless);
             ui.add(checkbox).accessible_name(&*gapless);
         });
+        divider(ui);
+        let exclusive = tr.tr("settings-exclusive");
+        let hint = tr.tr(if ctx.exclusive_supported {
+            "settings-exclusive-hint"
+        } else {
+            "settings-exclusive-windows-only"
+        });
+        row(ui, &p, &exclusive, |ui| {
+            let checkbox = Checkbox::without_text(&mut s.exclusive_output);
+            let response = ui
+                .add_enabled(ctx.exclusive_supported, checkbox)
+                .accessible_name(&*exclusive);
+            ui.ctx()
+                .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
+        });
+        caption(ui, &p, &hint, TextStyle::Small);
         divider(ui);
         let history = tr.tr("settings-history");
         let hint = tr.tr("settings-history-hint");

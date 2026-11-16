@@ -231,3 +231,23 @@ playlist-track-count = { $count ->
     [one] { $count } երգ
    *[other] { $count } երգ
 }
+
+## Output path, exclusive mode and quality
+output-bit-perfect = Առանց փոփոխության
+output-bit-perfect-hint = Նմուշները հասնում են սարքին անփոփոխ։ Կատարումը փոխելիս ձայնը մարում է 5 մվ-ում։
+output-resampled = Վերաչափված
+output-resampled-hint = Բացառիկ ելք՝ այնպիսի հաճախականությամբ, որը երգը չունի, ուստի նմուշները վերահաշվվում են։
+output-converted = Փոխակերպված
+output-converted-hint = Բացառիկ ելք, բայց նմուշները ֆայլինը չեն․ փոխվել են բիթայնությունը կամ ալիքները։
+output-mixed = Ձայնի հետ խառնված
+output-mixed-hint = Ձայնային վահանակի ձայնը խառնված է հոսքին, ուստի այն ճշգրիտ չէ։
+output-system-mixer = Համակարգի խառնիչ
+output-system-mixer-hint = Նվագարկում համակարգի խառնիչով, որը կարող է փոխել նմուշները։
+player-volume-locked = Ձայնը կարգավորվում է սարքում, քանի դեռ բացառիկ ռեժիմը միացված է։
+settings-exclusive = Բացառիկ ռեժիմ
+settings-exclusive-hint = Մինչ Aria-ն նվագում է, մյուս ծրագրերը լռում են այս սարքում։ Մակարդակը կարգավորեք սարքում։
+settings-exclusive-windows-only = Բացառիկ ռեժիմը հասանելի է միայն Windows-ում։
+quality-lossless = Առանց կորստի
+quality-hi-res = Hi-Res
+local-col-quality = Որակ
+local-lossless-only = Միայն առանց կորստի

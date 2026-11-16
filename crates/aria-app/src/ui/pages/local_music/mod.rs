@@ -97,6 +97,8 @@ struct State {
     tab: Tab,
     /// What is typed in the search field.
     query: String,
+    /// The "Lossless only" toggle.
+    lossless_only: bool,
     view: TrackView,
     /// The group the view is limited to, so it can be found again in a new snapshot.
     open: Option<Open>,
@@ -240,10 +242,12 @@ fn controls(ui: &mut Ui, ctx: &mut PageCtx<'_>, state: &mut State) {
                     .hint_text(&*hint)
                     .desired_width(SEARCH_WIDTH);
                 ui.add(field).accessible_name(&*hint);
+                ui.checkbox(&mut state.lossless_only, &*ctx.tr.tr("local-lossless-only"));
             });
         }
     });
     state.view.set_query(&state.query);
+    state.view.set_lossless_only(state.lossless_only);
 }
 
 /// A tab. Whether it was clicked.

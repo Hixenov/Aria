@@ -41,6 +41,8 @@ pub struct PageCtx<'a> {
     pub settings: &'a Settings,
     /// Whether Aria's directories are known, so they can be opened.
     pub paths_available: bool,
+    /// Whether this platform has the exclusive output. Where it is off, its switch is disabled.
+    pub exclusive_supported: bool,
     /// Whether the page has its modal dialog open. The app ignores navigation and panel
     /// shortcuts while it is set.
     pub modal_open: &'a mut bool,

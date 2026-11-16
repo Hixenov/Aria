@@ -236,3 +236,23 @@ playlist-track-count = { $count ->
     [many] { $count } треков
    *[other] { $count } трека
 }
+
+## Output path, exclusive mode and quality
+output-bit-perfect = Без изменений
+output-bit-perfect-hint = Отсчёты доходят до устройства без изменений. Смена трека идёт с затуханием за 5 мс.
+output-resampled = С передискретизацией
+output-resampled-hint = Монопольный вывод на частоте, которой нет у трека, поэтому отсчёты пересчитываются.
+output-converted = С преобразованием
+output-converted-hint = Монопольный вывод, но отсчёты не совпадают с файлом: изменились разрядность или каналы.
+output-mixed = Со звуком
+output-mixed-hint = В поток подмешан звук из саундборда, поэтому вывод не бит-в-бит.
+output-system-mixer = Системный микшер
+output-system-mixer-hint = Воспроизведение через системный микшер, который может менять отсчёты.
+player-volume-locked = Громкость задаётся на устройстве, пока включён монопольный режим.
+settings-exclusive = Монопольный режим
+settings-exclusive-hint = Пока играет Aria, другие программы молчат на этом устройстве. Уровень задайте на самом устройстве.
+settings-exclusive-windows-only = Монопольный режим доступен только в Windows.
+quality-lossless = Без потерь
+quality-hi-res = Hi-Res
+local-col-quality = Качество
+local-lossless-only = Только без потерь

@@ -8,13 +8,13 @@
 use std::time::Duration;
 
 use aria_core::{
-    ClockReading,
+    ClockReading, OutputPath,
     i18n::{FluentArgs, Localizer},
-    playback_service::PlayerView,
+    playback_service::{PlayerView, TrackFormat},
     player::queue::RepeatMode,
     settings::Settings,
 };
-use aria_library::{ArtworkId, Collections, LibrarySnapshot, TrackId};
+use aria_library::{ArtworkId, Collections, LibrarySnapshot, Quality, TrackId};
 use eframe::egui::{
     Align, Align2, Label, Layout, Margin, Panel, Rect, RichText, Sense, TextStyle, Ui, UiBuilder,
     Vec2, pos2, vec2,
@@ -250,12 +250,83 @@ fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>, out: &mut Vec<PlayerAction>
             ui.add(Label::new(title).selectable(false).truncate());
             let artist = RichText::new(&now.artist).small().color(p.text_muted);
             ui.add(Label::new(artist).selectable(false).truncate());
+            output_line(ui, bar);
         });
     });
     if let Some(PageAction::SetFavorite { track, favorite }) =
         track_menu::heart(ui, bar.tr, p, bar.collections, track)
     {
         out.push(PlayerAction::SetFavorite { track, favorite });
+    }
+}
+
+/// The file's format and how its sound reaches the device, as small text under the artist. The
+/// path has a tooltip saying what it means. Nothing is shown of a path the engine has not
+/// reported: while exclusive mode is on and no state has arrived, the format stands alone, and
+/// the system mixer is named only when exclusive mode is off.
+fn output_line(ui: &mut Ui, bar: &PlayerBar<'_>) {
+    let p = bar.palette;
+    let format = bar.view.format.as_ref().map(format_label);
+    let path = path_key(bar.view);
+    if format.is_none() && path.is_none() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACE[0];
+        if let Some(format) = &format {
+            let text = RichText::new(format).small().color(p.text_muted);
+            ui.add(Label::new(text).selectable(false));
+        }
+        if let Some(key) = path {
+            if format.is_some() {
+                let dot = RichText::new("·").small().color(p.text_muted);
+                ui.add(Label::new(dot).selectable(false));
+            }
+            let text = RichText::new(bar.tr.tr(key)).small().color(p.text_muted);
+            let label = Label::new(text).selectable(false).sense(Sense::hover());
+            ui.add(label)
+                .on_hover_text(bar.tr.tr(&format!("{key}-hint")));
+        }
+    });
+}
+
+/// The locale key naming how the current track reaches the device. `None` with nothing
+/// current, and while exclusive mode is on (the volume is locked) but the engine has not said.
+fn path_key(view: &PlayerView) -> Option<&'static str> {
+    view.current?;
+    match view.output {
+        Some(state) => Some(match state.path {
+            OutputPath::BitPerfect => "output-bit-perfect",
+            OutputPath::Resampled => "output-resampled",
+            OutputPath::Converted => "output-converted",
+            OutputPath::MixedWithSound => "output-mixed",
+            OutputPath::SystemMixer => "output-system-mixer",
+        }),
+        None if view.volume_locked => None,
+        None => Some("output-system-mixer"),
+    }
+}
+
+/// A file's format as the bar shows it: the codec, the depth for lossless files only (a lossy
+/// file's tags can report one that means nothing), and the rate in kHz. "FLAC 24/96", "MP3 44.1".
+pub fn format_label(format: &TrackFormat) -> String {
+    let (whole, part) = (format.sample_rate / 1_000, format.sample_rate % 1_000);
+    let rate = if part == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{part:03}")
+            .trim_end_matches('0')
+            .to_owned()
+    };
+    let rate = match format.quality {
+        Quality::Lossless | Quality::HiRes if format.bits_per_sample > 0 => {
+            format!("{}/{rate}", format.bits_per_sample)
+        }
+        _ => rate,
+    };
+    match &*format.codec {
+        "unknown" => rate,
+        codec => format!("{} {rate}", codec.to_uppercase()),
     }
 }
 
@@ -497,12 +568,14 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
 
     let (rect, _) = ui.allocate_exact_size(vec2(VOLUME_WIDTH, SEEK_ROW), Sense::hover());
     let label = tr.tr("player-volume");
-    let volume = bar.settings.volume;
+    // In exclusive mode the level is the device's: the bar shows full and cannot move.
+    let locked = bar.view.volume_locked;
+    let volume = if locked { 1.0 } else { bar.settings.volume };
     let scrub = Scrub {
         id: "aria_volume",
         rect,
         value: volume,
-        enabled: true,
+        enabled: !locked,
         label: &label,
         step: VOLUME_STEP,
     };
@@ -510,6 +583,14 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     // Every move is a change to apply; the app skips the ones that change nothing.
     if let Some(at) = moved.dragging.or(moved.committed) {
         out.push(PlayerAction::SetVolume(at));
+    }
+    if locked {
+        ui.interact(
+            rect,
+            ui.scope_id().with("aria_volume_locked"),
+            Sense::hover(),
+        )
+        .on_hover_text(tr.tr("player-volume-locked"));
     }
 
     let muted = bar.settings.muted;
@@ -548,4 +629,38 @@ fn pending(
         ui.label(RichText::new(name).color(p.text));
         ui.label(RichText::new(&*hint).color(p.text_muted));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn format(codec: &str, bits: u16, rate: u32, quality: Quality) -> String {
+        format_label(&TrackFormat {
+            codec: Arc::from(codec),
+            sample_rate: rate,
+            bits_per_sample: bits,
+            quality,
+        })
+    }
+
+    #[test]
+    fn format_labels() {
+        assert_eq!(format("flac", 24, 96_000, Quality::HiRes), "FLAC 24/96");
+        assert_eq!(
+            format("flac", 16, 44_100, Quality::Lossless),
+            "FLAC 16/44.1"
+        );
+        assert_eq!(format("alac", 24, 192_000, Quality::HiRes), "ALAC 24/192");
+        assert_eq!(format("mp3", 0, 44_100, Quality::Lossy), "MP3 44.1");
+        assert_eq!(format("flac", 24, 88_200, Quality::HiRes), "FLAC 24/88.2");
+    }
+
+    #[test]
+    fn a_lossy_file_never_shows_a_depth() {
+        // lofty can report 16 for AAC.
+        assert_eq!(format("aac", 16, 44_100, Quality::Lossy), "AAC 44.1");
+    }
 }

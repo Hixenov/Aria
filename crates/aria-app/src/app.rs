@@ -517,6 +517,7 @@ impl AriaApp {
             palette: *palette,
             settings: &self.settings,
             paths_available: self.deps.paths.is_some(),
+            exclusive_supported: aria_core::playback_service::EXCLUSIVE_SUPPORTED,
             modal_open: &mut self.page_dialog_open,
             out: &mut actions,
             library: &self.library,

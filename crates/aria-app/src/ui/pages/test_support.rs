@@ -41,6 +41,7 @@ impl World {
             palette: Palette::for_theme(Theme::Dark, &self.settings),
             settings: &self.settings,
             paths_available: false,
+            exclusive_supported: true,
             modal_open: &mut self.modal_open,
             out: &mut self.out,
             library: &self.library,

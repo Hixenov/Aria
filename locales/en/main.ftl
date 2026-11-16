@@ -232,3 +232,23 @@ playlist-track-count = { $count ->
     [one] { $count } track
    *[other] { $count } tracks
 }
+
+## Output path, exclusive mode and quality
+output-bit-perfect = Bit-perfect
+output-bit-perfect-hint = The samples reach the device unchanged. A track change fades over 5 ms.
+output-resampled = Resampled
+output-resampled-hint = Exclusive output at a rate the track does not have, so the samples are resampled.
+output-converted = Converted
+output-converted-hint = Exclusive output, but the samples are not the file's: the depth or the channels changed.
+output-mixed = Mixed with a sound
+output-mixed-hint = A soundboard sound is mixed into the stream, so it is not bit-perfect.
+output-system-mixer = System mixer
+output-system-mixer-hint = Playing through the system mixer, which may change the samples.
+player-volume-locked = Volume is set on the device while exclusive mode is on.
+settings-exclusive = Exclusive mode
+settings-exclusive-hint = Other programs are silent on the device while Aria plays. Set the level on the device.
+settings-exclusive-windows-only = Exclusive mode is available on Windows only.
+quality-lossless = Lossless
+quality-hi-res = Hi-Res
+local-col-quality = Quality
+local-lossless-only = Lossless only
