@@ -12,7 +12,10 @@ use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample};
 use crate::device::{DeviceId, DeviceKind, device_error, find_output_device, list_devices};
 use crate::error::AudioError;
 use crate::mixer::{InputHandle, Mixer, MixerControl};
-use crate::output::{AudioOutput, DeviceLister, OutputFactory, OutputFormat};
+use crate::output::{
+    AudioOutput, DeviceLister, Opened, OutputFactory, OutputFormat, OutputRequest,
+};
+use crate::sample_format::{DeviceFormat, SampleKind};
 
 /// How much the callback renders at a time, before converting to the device's sample type.
 const SCRATCH_FRAMES: usize = 1024;
@@ -32,7 +35,14 @@ impl OutputFactory for CpalFactory {
         Arc::new(|| list_devices(DeviceKind::Output))
     }
 
-    fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError> {
+    /// Always shared: CPAL opens no exclusive streams, so `request` changes nothing. The device
+    /// format names the stream's own rate and channels, with [`SampleKind::I32`] standing for the
+    /// float samples the system mixer is handed.
+    fn open(
+        &self,
+        device: Option<&DeviceId>,
+        _request: OutputRequest,
+    ) -> Result<Opened, AudioError> {
         let device = device.cloned();
         let health = Arc::new(StreamHealth::default());
         let stream_health = Arc::clone(&health);
@@ -57,14 +67,22 @@ impl OutputFactory for CpalFactory {
                 AudioError::Device("the output thread stopped".into())
             }
         })??;
-        Ok(Box::new(CpalOutput {
-            format,
-            control,
-            health,
-            stop: Some(stop),
-            closed,
-            thread: Some(thread),
-        }))
+        Ok(Opened {
+            output: Box::new(CpalOutput {
+                format,
+                control,
+                health,
+                stop: Some(stop),
+                closed,
+                thread: Some(thread),
+            }),
+            exclusive: false,
+            device: DeviceFormat {
+                sample_rate: format.sample_rate,
+                channels: format.channels,
+                kind: SampleKind::I32,
+            },
+        })
     }
 }
 

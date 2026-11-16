@@ -306,6 +306,8 @@ impl PlaybackService {
                 self.publish();
             }
             EngineEvent::Stopped => self.stopped(),
+            // Only sent in exclusive mode, which nothing here turns on.
+            EngineEvent::Output(_) | EngineEvent::ExclusiveUnavailable => {}
         }
     }
 

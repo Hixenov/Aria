@@ -14,14 +14,19 @@ use std::time::{Duration, Instant};
 use aria_audio::fake::{FakeControl, FakeFactory};
 use aria_audio::testing::{write_gapless_pair, write_tone_wav};
 use aria_audio::{
-    AudioError, AudioOutput, ClockReading, DeviceId, DeviceLister, Engine, EngineCommand,
-    EngineEvent, EngineHandle, FADE_MS, IDLE_GRACE, OutputFactory, OutputFormat, PlaybackClock,
-    TrackRequest,
+    AudioError, ClockReading, DeviceFormat, DeviceId, DeviceLister, Engine, EngineCommand,
+    EngineEvent, EngineHandle, FADE_MS, IDLE_GRACE, Opened, OutputFactory, OutputFormat,
+    OutputPath, OutputRequest, OutputState, PlaybackClock, SampleKind, TrackDecoder, TrackRequest,
 };
 use tempfile::TempDir;
 
-use EngineCommand::{Load, Pause, Play, Seek, SetDevice, SetGapless, SetNext, SetVolume, Stop};
-use EngineEvent::{DeviceFellBack, NoDevice, Stopped, TrackEnded, TrackFailed, TrackStarted};
+use EngineCommand::{
+    Load, Pause, Play, Seek, SetDevice, SetExclusive, SetGapless, SetNext, SetVolume, Stop,
+};
+use EngineEvent::{
+    DeviceFellBack, ExclusiveUnavailable, NoDevice, Output, Stopped, TrackEnded, TrackFailed,
+    TrackStarted,
+};
 
 const STEREO_44K: OutputFormat = OutputFormat {
     sample_rate: 44_100,
@@ -171,6 +176,25 @@ impl Rig {
         }
     }
 
+    /// The next event that is not about the output's state.
+    fn next_track_event(&self) -> EngineEvent {
+        loop {
+            match self.next_event() {
+                Output(_) => {}
+                event => return event,
+            }
+        }
+    }
+
+    /// The next state the engine reports, passing over other events.
+    fn next_state(&self) -> OutputState {
+        loop {
+            if let Output(state) = self.next_event() {
+                return state;
+            }
+        }
+    }
+
     fn assert_no_event(&self) {
         let event = self.events.try_recv();
         assert!(event.is_err(), "unexpected {event:?}");
@@ -221,7 +245,7 @@ impl Rig {
     /// Pull a little and see the track start.
     fn hear_start(&self, output: &FakeControl) {
         output.pull(4_096);
-        let event = self.next_event();
+        let event = self.next_track_event();
         assert!(matches!(event, TrackStarted { .. }), "got {event:?}");
     }
 
@@ -1296,7 +1320,11 @@ impl OutputFactory for StuckFactory {
         Arc::new(|| Ok(Vec::new()))
     }
 
-    fn open(&self, _device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError> {
+    fn open(
+        &self,
+        _device: Option<&DeviceId>,
+        _request: OutputRequest,
+    ) -> Result<Opened, AudioError> {
         let _ = self.reached.send(());
         let _ = self.release.recv();
         Err(AudioError::NoDevice)
@@ -1410,4 +1438,506 @@ fn the_engine_thread_is_named() {
     let name = names.recv_timeout(DEADLINE).unwrap();
     assert_eq!(name.as_deref(), Some("aria-audio-engine"));
     assert!(engine.shutdown(DEADLINE));
+}
+
+// Exclusive mode.
+
+fn device_format(sample_rate: u32, channels: u16, kind: SampleKind) -> DeviceFormat {
+    DeviceFormat {
+        sample_rate,
+        channels,
+        kind,
+    }
+}
+
+fn state(path: OutputPath, device_rate: u32, device_bits: u16) -> OutputState {
+    OutputState {
+        path,
+        device_rate,
+        device_bits,
+    }
+}
+
+/// `tone.flac` and the other 16-bit 44.1 kHz fixtures, as they should reach an exclusive output.
+const CD_BIT_PERFECT: OutputState = OutputState {
+    path: OutputPath::BitPerfect,
+    device_rate: 44_100,
+    device_bits: 16,
+};
+
+fn whole_second(token: u64) -> EngineEvent {
+    TrackStarted {
+        token,
+        duration_ms: Some(1_000),
+    }
+}
+
+fn quarter_second(token: u64) -> EngineEvent {
+    TrackStarted {
+        token,
+        duration_ms: Some(250),
+    }
+}
+
+/// The states among `events`, in order.
+fn states(events: &[EngineEvent]) -> Vec<OutputState> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Output(state) => Some(*state),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `events` without the states.
+fn without_states(events: &[EngineEvent]) -> Vec<EngineEvent> {
+    events
+        .iter()
+        .filter(|event| !matches!(event, Output(_)))
+        .copied()
+        .collect()
+}
+
+/// Every sample of a file, as the decoder hands them over.
+fn decode_all(path: &Path) -> Vec<f32> {
+    let mut decoder = match TrackDecoder::open(path) {
+        Ok(decoder) => decoder,
+        Err(error) => panic!("{} did not open: {error}", path.display()),
+    };
+    let mut samples = Vec::new();
+    loop {
+        match decoder.next_block() {
+            Ok(Some(block)) => samples.extend_from_slice(block),
+            Ok(None) => return samples,
+            Err(error) => panic!("{} did not decode: {error}", path.display()),
+        }
+    }
+}
+
+fn peak(samples: &[f32]) -> f32 {
+    samples
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0, f32::max)
+}
+
+/// A quarter of a second of a 16-bit stereo tone at `rate`, in `dir`.
+fn quarter_tone(dir: &Path, token: u64, rate: u32) -> TrackRequest {
+    let path = dir.join(format!("{token}.wav"));
+    if let Err(error) = write_tone_wav(&path, rate, 2, u64::from(rate / 4), 440.0) {
+        panic!("no tone file: {error}");
+    }
+    TrackRequest { token, path }
+}
+
+impl Rig {
+    fn exclusive(format: OutputFormat) -> Self {
+        let rig = Self::new(format);
+        rig.send(SetExclusive(true));
+        rig
+    }
+
+    /// Wait until the clock is on `token`, and return its position.
+    fn position_on(&self, token: u64) -> u64 {
+        wait_until("the clock to change tracks", || self.read().token == token);
+        self.read().position_ms
+    }
+}
+
+#[test]
+fn exclusive_mode_opens_the_output_at_the_track_rate() {
+    let rig = Rig::exclusive(STEREO_48K);
+
+    rig.send(load(track(1, "tone.flac")));
+    let output = rig.output(0);
+
+    assert_eq!(
+        output.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+    let (audio, events) = rig.pull_to_stop(&output);
+    assert_eq!(events, [whole_second(1), TrackEnded { token: 1 }, Stopped]);
+    assert_near(audible_frames(&audio), SECOND);
+    assert!(rig.engine.shutdown(DEADLINE));
+}
+
+#[test]
+fn a_rate_change_reopens_the_output_between_tracks() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.start_pair(
+        quarter_tone(dir.path(), 1, 44_100),
+        quarter_tone(dir.path(), 2, 96_000),
+    );
+    let mut events = Vec::new();
+
+    let first = rig.output(0);
+    let (first_audio, heard) = rig.pull_until(&first, |event| *event == TrackEnded { token: 1 });
+    events.extend(heard);
+
+    // The second track waited for the first to be heard out, and starts on an output of its own.
+    let second = rig.output(1);
+    assert!(first.is_closed());
+    assert_eq!(
+        second.opened_as(),
+        (true, device_format(96_000, 2, SampleKind::I16))
+    );
+    assert_eq!(rig.position_on(2), 0);
+    rig.send(SetNext(Some(quarter_tone(dir.path(), 3, 44_100))));
+    let (second_audio, heard) = rig.pull_until(&second, |event| *event == TrackEnded { token: 2 });
+    events.extend(heard);
+
+    let third = rig.output(2);
+    assert!(second.is_closed());
+    assert_eq!(
+        third.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    assert_eq!(rig.position_on(3), 0);
+    let (third_audio, heard) = rig.pull_to_stop(&third);
+    events.extend(heard);
+
+    assert_eq!(
+        without_states(&events),
+        [
+            quarter_second(1),
+            TrackEnded { token: 1 },
+            quarter_second(2),
+            TrackEnded { token: 2 },
+            quarter_second(3),
+            TrackEnded { token: 3 },
+            Stopped,
+        ]
+    );
+    assert_eq!(
+        states(&events),
+        [
+            CD_BIT_PERFECT,
+            state(OutputPath::BitPerfect, 96_000, 16),
+            CD_BIT_PERFECT,
+        ]
+    );
+    // Each track whole, and on its own output only.
+    assert_near(audible_frames(&first_audio), 11_025);
+    assert_near(audible_frames(&second_audio), 24_000);
+    assert_near(audible_frames(&third_audio), 11_025);
+    assert_eq!(rig.factory.outputs().len(), 3);
+    let reading = rig.read();
+    assert_eq!(reading.token, 3);
+    assert!(reading.position_ms >= 240, "the clock said {reading:?}");
+}
+
+#[test]
+fn a_rate_change_with_gapless_off_reopens_the_output_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.send(SetGapless(false));
+    rig.send(load(quarter_tone(dir.path(), 1, 44_100)));
+    rig.send(SetNext(Some(quarter_tone(dir.path(), 2, 96_000))));
+
+    let first = rig.output(0);
+    let (first_audio, mut events) =
+        rig.pull_until(&first, |event| *event == TrackEnded { token: 1 });
+    let second = rig.output(1);
+    assert_eq!(second.opened_as().1.sample_rate, 96_000);
+    assert_eq!(rig.position_on(2), 0);
+    let (second_audio, heard) = rig.pull_to_stop(&second);
+    events.extend(heard);
+
+    assert_eq!(
+        without_states(&events),
+        [
+            quarter_second(1),
+            TrackEnded { token: 1 },
+            quarter_second(2),
+            TrackEnded { token: 2 },
+            Stopped,
+        ]
+    );
+    assert_near(audible_frames(&first_audio), 11_025);
+    assert_near(audible_frames(&second_audio), 24_000);
+}
+
+#[test]
+fn loading_a_track_of_another_rate_reopens_the_output() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.start(track(1, "tone.flac"));
+    let first = rig.output(0);
+    rig.hear_start(&first);
+
+    rig.send(load(track(2, "tone-48k.flac")));
+
+    let second = rig.output(1);
+    assert!(first.is_closed());
+    assert_eq!(
+        second.opened_as(),
+        (true, device_format(48_000, 2, SampleKind::I16))
+    );
+    let (audio, events) = rig.pull_to_stop(&second);
+    assert_eq!(
+        without_states(&events),
+        [whole_second(2), TrackEnded { token: 2 }, Stopped]
+    );
+    assert_eq!(states(&events), [state(OutputPath::BitPerfect, 48_000, 16)]);
+    assert_near(audible_frames(&audio), 48_000);
+}
+
+#[test]
+fn tracks_of_one_rate_stay_on_one_output() {
+    let rig = Rig::exclusive(STEREO_48K);
+
+    rig.start_pair(
+        track(1, "silence-gap-a.flac"),
+        track(2, "silence-gap-b.flac"),
+    );
+    let output = rig.output(0);
+    let audio = output.pull(SECOND + 1_000);
+
+    assert_eq!(output.opened_as().1.sample_rate, 44_100);
+    let heard = trimmed(&audio);
+    assert_near(heard.len() / 2, SECOND);
+    assert!(longest_zero_run(heard) <= 2, "a gap at the join");
+    assert!(largest_step(heard) < SMOOTH_STEP, "the waveform jumped");
+    let (_, events) = rig.pull_to_stop(&output);
+    assert_eq!(states(&events), [CD_BIT_PERFECT]);
+    assert_eq!(rig.factory.outputs().len(), 1);
+}
+
+#[test]
+fn an_unsupported_rate_opens_the_nearest_and_resamples() {
+    let rig = Rig::new(STEREO_44K);
+    rig.factory.set_exclusive_rates(vec![48_000, 96_000]);
+    rig.send(SetExclusive(true));
+
+    rig.send(load(track(1, "tone.flac")));
+    let output = rig.output(0);
+
+    assert_eq!(
+        output.opened_as(),
+        (true, device_format(48_000, 2, SampleKind::I16))
+    );
+    assert_eq!(rig.next_state(), state(OutputPath::Resampled, 48_000, 16));
+    let (audio, events) = rig.pull_to_stop(&output);
+    assert_eq!(events, [whole_second(1), TrackEnded { token: 1 }, Stopped]);
+    assert_near(audible_frames(&audio), 48_000);
+}
+
+#[test]
+fn a_refused_exclusive_open_falls_back_to_shared() {
+    let rig = Rig::new(STEREO_48K);
+    rig.factory.refuse_exclusive(true);
+    rig.send(SetExclusive(true));
+
+    rig.send(load(track(1, "tone.flac")));
+    let output = rig.output(0);
+
+    assert_eq!(
+        output.opened_as(),
+        (false, device_format(48_000, 2, SampleKind::I32))
+    );
+    // Both come before anything is heard.
+    assert_eq!(rig.next_event(), ExclusiveUnavailable);
+    assert_eq!(
+        rig.next_event(),
+        Output(state(OutputPath::SystemMixer, 48_000, 32))
+    );
+    let (audio, events) = rig.pull_to_stop(&output);
+    // Once only, and the track plays.
+    assert_eq!(events, [whole_second(1), TrackEnded { token: 1 }, Stopped]);
+    assert_near(audible_frames(&audio), 48_000);
+    assert_eq!(rig.factory.outputs().len(), 1);
+}
+
+#[test]
+fn each_condition_that_breaks_bit_perfect_is_reported() {
+    // 24 bits on a device that takes only 16.
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.factory.set_exclusive_kinds(vec![SampleKind::I16]);
+    rig.send(load(track(1, "depth-24.flac")));
+    assert_eq!(
+        rig.output(0).opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    assert_eq!(rig.next_state(), state(OutputPath::Converted, 44_100, 16));
+
+    // The same file where 24 bits fit.
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.send(load(track(1, "depth-24.flac")));
+    assert_eq!(rig.next_state(), state(OutputPath::BitPerfect, 44_100, 24));
+
+    // Mono on a device that takes only stereo: mono to both channels counts as unchanged.
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.send(load(track(1, "tone-mono.wav")));
+    assert_eq!(
+        rig.output(0).opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+
+    // A lossy file decodes to float.
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.send(load(track(1, "tone.mp3")));
+    assert_eq!(rig.next_state(), state(OutputPath::Converted, 44_100, 32));
+
+    // A gain other than 1.0: only muting makes one while exclusive.
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.send(load(track(1, "tone.flac")));
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+    rig.send(SetVolume(0.0));
+    assert_eq!(rig.next_state(), state(OutputPath::Converted, 44_100, 16));
+    rig.send(SetVolume(0.3));
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+}
+
+#[test]
+fn volume_is_unity_in_exclusive_mode() {
+    let source = decode_all(&fixture("tone.flac"));
+    let rig = Rig::exclusive(STEREO_44K);
+    rig.send(SetVolume(0.5));
+    rig.start(track(1, "tone.flac"));
+    let exclusive = rig.output(0);
+    assert!(exclusive.opened_as().0);
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+
+    let audio = exclusive.pull(SECOND / 4);
+    // Past whatever fade there was at the start.
+    let fade = 2 * SECOND * FADE_MS as usize / 1_000;
+    assert!(
+        audio[fade..] == source[fade..audio.len()],
+        "the samples are not the file's"
+    );
+
+    // Mute still silences.
+    rig.send(SetVolume(0.0));
+    assert_eq!(rig.next_state().path, OutputPath::Converted);
+    // The gain ramps down within one buffer.
+    exclusive.pull(CHUNK_FRAMES);
+    let muted = exclusive.pull(CHUNK_FRAMES);
+    assert!(
+        muted.iter().all(|sample| *sample == 0.0),
+        "mute let sound through"
+    );
+    rig.send(SetVolume(0.5));
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+
+    // Shared again, the volume is back.
+    rig.send(SetExclusive(false));
+    let shared = rig.output(1);
+    assert!(!shared.opened_as().0);
+    assert_eq!(rig.next_state(), state(OutputPath::SystemMixer, 44_100, 32));
+    rig.hold(1);
+    rig.resume();
+    let halved = shared.pull(CHUNK_FRAMES * 2);
+    let level = peak(&halved[fade..]);
+    let expected = peak(&source) / 2.0;
+    assert!(
+        (level - expected).abs() < 1e-6,
+        "peak {level}, expected {expected}"
+    );
+}
+
+#[test]
+fn switching_the_mode_while_playing_carries_on_from_the_same_place() {
+    let rig = Rig::new(STEREO_48K);
+    rig.start(track(1, "tone.flac"));
+    let shared = rig.output(0);
+    assert!(!shared.opened_as().0);
+    rig.pull_heard(&shared, 12_000, 240);
+    assert!(matches!(rig.next_event(), TrackStarted { .. }));
+
+    rig.send(SetExclusive(true));
+    let exclusive = rig.output(1);
+    assert!(shared.is_closed());
+    assert_eq!(
+        exclusive.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    rig.hold(1);
+    let at = rig.read().position_ms;
+    assert!(at.abs_diff(250) <= 100, "the clock said {at}");
+    rig.resume();
+    rig.pull_heard(&exclusive, 11_025, at + 240);
+
+    rig.send(SetExclusive(false));
+    let shared_again = rig.output(2);
+    assert!(exclusive.is_closed());
+    assert!(!shared_again.opened_as().0);
+    rig.hold(1);
+    let at = rig.read().position_ms;
+    assert!(at.abs_diff(500) <= 100, "the clock said {at}");
+    rig.resume();
+    let (audio, events) = rig.pull_to_stop(&shared_again);
+
+    assert_eq!(without_states(&events), [TrackEnded { token: 1 }, Stopped]);
+    assert_eq!(
+        states(&events),
+        [CD_BIT_PERFECT, state(OutputPath::SystemMixer, 48_000, 32)]
+    );
+    assert_near(audible_frames(&audio), 24_000);
+}
+
+#[test]
+fn a_seek_in_exclusive_mode_keeps_the_output() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.start(track(1, "tone.flac"));
+    let output = rig.output(0);
+    rig.hear_start(&output);
+
+    rig.send(Seek(500));
+    wait_until("the seek", || rig.read().position_ms == 500);
+    let (audio, events) = rig.pull_to_stop(&output);
+
+    assert_eq!(events, [TrackEnded { token: 1 }, Stopped]);
+    assert_near(audible_frames(&audio), SECOND / 2);
+    assert_eq!(rig.factory.outputs().len(), 1);
+}
+
+#[test]
+fn a_failed_exclusive_output_is_replaced_and_playback_carries_on() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.start(track(1, "tone.flac"));
+    let first = rig.output(0);
+    rig.pull_heard(&first, SECOND / 2, 490);
+    assert!(matches!(rig.next_track_event(), TrackStarted { .. }));
+    let before = rig.read();
+
+    first.fail();
+
+    assert_eq!(rig.next_track_event(), DeviceFellBack);
+    let second = rig.output(1);
+    assert_eq!(
+        second.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    assert!(rig.read().playing);
+    rig.hold(1);
+    let after = rig.read();
+    assert!(
+        after.position_ms.abs_diff(before.position_ms) <= 100,
+        "{before:?} became {after:?}"
+    );
+    rig.resume();
+    let (audio, events) = rig.pull_to_stop(&second);
+
+    // The same state as before, so nothing new to say about it.
+    assert_eq!(events, [TrackEnded { token: 1 }, Stopped]);
+    assert_near(audible_frames(&audio), SECOND / 2);
+}
+
+#[test]
+fn shared_mode_behaves_as_before() {
+    let rig = Rig::new(STEREO_48K);
+
+    rig.send(load(track(1, "tone.flac")));
+    let output = rig.output(0);
+    let (_, events) = rig.pull_to_stop(&output);
+
+    assert_eq!(
+        output.opened_as(),
+        (false, device_format(48_000, 2, SampleKind::I32))
+    );
+    // Nothing about the output: with the mode off, the path is always the system mixer.
+    assert_eq!(events, [whole_second(1), TrackEnded { token: 1 }, Stopped]);
 }

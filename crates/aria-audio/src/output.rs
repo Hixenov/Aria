@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::device::{DeviceId, DeviceInfo};
 use crate::error::AudioError;
 use crate::mixer::InputHandle;
+use crate::sample_format::{DeviceFormat, SourceFormat};
 
 /// The sample rate and channel count an output runs at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,29 @@ pub trait AudioOutput: Send {
     fn failed(&self) -> bool;
 }
 
+/// How an output is wanted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OutputRequest {
+    /// Open the device for this program alone, when it allows that.
+    pub exclusive: bool,
+    /// The track the output is for, which an exclusive output takes its format from. `None`:
+    /// the device's own format.
+    pub source: Option<SourceFormat>,
+}
+
+/// An output just opened, and how.
+pub struct Opened {
+    pub output: Box<dyn AudioOutput>,
+    /// Whether the device is held exclusively. False when exclusive was asked for and the device
+    /// would not allow it.
+    pub exclusive: bool,
+    /// The format the device runs at. A shared output reports [`SampleKind::I32`] for the float
+    /// stream it hands to the system mixer.
+    ///
+    /// [`SampleKind::I32`]: crate::sample_format::SampleKind::I32
+    pub device: DeviceFormat,
+}
+
 /// Lists the output devices a factory can open. It can be slow, so it is for a thread that may
 /// wait.
 pub type DeviceLister = Arc<dyn Fn() -> Result<Vec<DeviceInfo>, AudioError> + Send + Sync>;
@@ -34,7 +58,11 @@ pub type DeviceLister = Arc<dyn Fn() -> Result<Vec<DeviceInfo>, AudioError> + Se
 /// Opens outputs. Each call opens a new, independent one.
 pub trait OutputFactory: Send {
     /// Open `device`, or the system default when it is `None`.
-    fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError>;
+    ///
+    /// A factory that cannot open the device exclusively opens it shared and says so in
+    /// [`Opened::exclusive`]. It never fails only because exclusive was asked for.
+    fn open(&self, device: Option<&DeviceId>, request: OutputRequest)
+    -> Result<Opened, AudioError>;
 
     /// A way to list the devices this factory opens, which can be kept after the factory has been
     /// handed to an engine.
