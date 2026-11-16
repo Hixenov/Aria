@@ -561,7 +561,7 @@ fn insert_rows(db: &Path, folder: FolderId, rows: u32) {
 }
 
 #[test]
-#[ignore = "performance check, run in release by Task 15"]
+#[ignore = "performance check: cargo test --release -p aria-library --test scan -- --ignored --nocapture"]
 fn synthetic_50k_library() {
     let mut env = Env::new();
     let folder = env.add_music();
