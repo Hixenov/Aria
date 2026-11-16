@@ -5,6 +5,47 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.2] - unreleased (pre-release: Phase 2c, lossless output and the soundboard)
+
+Nobody has run this version by hand yet, and nobody has listened to it: see `docs/testing/phase2c-manual-check.md`, where every line for a person is still pending. The Windows installer and release `aria.exe` for 0.2.2 are not covered by this entry: they are built and tested separately before any release.
+
+### Added
+
+- Exclusive output (Windows only, off by default; Settings, Playback). The track's samples go to the device through WASAPI exclusive mode, at the track's own sample rate, with no resampling by the system mixer. It tries the track's own bit depth, then 24 bits in a 32-bit container, 32-bit integer and 16-bit, and uses the first the device accepts. If the device has no format at the track's rate, Aria opens the nearest rate it supports and resamples, and says so. If exclusive mode is refused, playback falls back to the system mixer with a notice. While it plays, other programs are silent on that device; Aria releases the device 15 seconds after pause. Volume is locked at 100 % (mute still works) and the saved volume returns when the mode is turned off.
+- An output indicator in the player bar: the track's format and one state, "Bit-perfect", "Exclusive, resampled", "Exclusive, converted", "Exclusive, mixed with a sound" or "System mixer", with a tooltip for each. "Bit-perfect" is shown only for an integer source of 24 bits or fewer, at gain 1.0, with no resampling, no other input and unchanged channels (mono played on both channels counts as unchanged). The 5 ms fades on start, pause, resume and seek are not bit-exact; gapless joins have no fade. ALAC is shown as "converted" because its decoder does not report a bit depth. Float sources and integer sources wider than 24 bits are never shown as bit-perfect.
+- The library stores each track's bit depth. A Quality column in the track tables (Local Music and Liked) shows a "Lossless" badge (FLAC, ALAC, WAV, AIFF) or a "Hi-Res" badge (lossless and above 48 kHz or above 16 bits); a tooltip gives codec, depth and rate. A "Lossless only" toggle on the Tracks tab. ALAC is now told from AAC inside `.m4a`.
+- Soundboard page: add sounds (several files at once), rename, remove, a volume per sound, a hotkey per sound, click to play, "Stop all". Up to 100 sounds; names of 1 to 50 characters; at most 6 play at once (a seventh stops the one that started first); firing a playing sound restarts it. A sound is a reference to a file: Aria never copies, changes or deletes it. Sounds are not tracks: they do not enter the queue or the history. A missing or unreadable file gives a notice when the sound is fired.
+- Settings, Soundboard: a second output device and "Play sounds to" (My device, Second device, Both). The second device opens in shared mode when a sound needs it and closes 15 seconds after the last sound. With no second device, "Second device" and "Both" play on your own device.
+- Global hotkeys (Settings, Soundboard, on by default): one per sound and one for "Stop all". A hotkey must include Ctrl, Alt or Win unless it is F1 to F24 or a numpad key. A hotkey used by another sound, or held by another program, is refused with a notice and not saved. One switch turns them all off. Aria receives only the registered combinations from the system and installs no keyboard hook.
+- English, Russian and Armenian texts for all of the above. The Russian and Armenian texts were written by the coding agent and have not been read by a native speaker.
+- New dependencies: `wasapi` 0.27 (MIT, Windows only), `global-hotkey` 0.10 (Apache-2.0 OR MIT) and, through it, `keyboard-types` (MIT OR Apache-2.0). `cargo deny` was not run on the development PC; it runs in CI.
+- `docs/testing/phase2c-manual-check.md`.
+
+### Changed
+
+- The library database goes from version 2 to 3: a bit-depth column and a `sounds` table are added, and every file is read once more on the first start (a big library may take a while). Favorites, playlists and history are kept. There is no way back: 0.2.1 refuses a version 3 database ("The library was saved by a newer version of Aria") and runs with the library turned off, leaving the file untouched, so 0.2.2 opens it again with nothing lost. Copy the data folder first if you may want to go back to 0.2.1.
+- Version 0.2.2.
+
+### Known limitations
+
+- Exclusive output exists on Windows only. While it plays, other programs are silent on that device. If another program holds the device exclusively, Windows refuses Aria's shared stream too, so Aria cannot play on that device until it is released.
+- Where the next track needs a different sample rate, a wider bit depth than the open output carries, or more channels, the output is closed and opened again: a short silence at that join. Tracks in the same format stay gapless.
+- The first 5 ms after start, pause, resume and seek are faded and not bit-exact.
+- Float sources, integer sources wider than 24 bits and ALAC are not shown as bit-perfect.
+- What the device actually receives cannot be recorded through WASAPI loopback. That the samples arrive unchanged is a check by hand, best with a DAC that shows its input rate. Nobody has listened to exclusive output.
+- The output thread runs at normal priority, so dropouts under heavy load are possible. Not checked.
+- Sounds on your own device are mixed into the music stream: they break bit-perfect output while they play. They are cut when the music output is closed or reopened (a rate, depth or channel change at a join, a device change, switching exclusive mode, a device failure). A "Both" sound keeps playing on the second device if its part on your device is cut.
+- A sound removed while it plays keeps playing until it ends ("Stop all" stops it).
+- A library scan can delay the "file missing" notice for a sound by up to about 250 ms; the sound itself starts without waiting.
+- Aria provides no virtual audio cable and does not read the microphone. For a voice chat, the second device must be a virtual cable that the chat program uses as its microphone; the chat hears the sounds and not your voice unless another program mixes them. No cable and no chat program were tested.
+- Hotkeys were checked on Windows only, by one synthetic key press reaching a test window while unfocused and while minimized. The real Aria window has not been run with hotkeys by anyone; the final wiring is tested with a fake backend. While Aria is minimized a press may take about 100 ms to act. Games in the foreground are not tested.
+- Capturing a hotkey in the dialog: the Win key cannot be captured (egui does not report it on Windows); numpad keys are set with a "Numpad" switch because egui cannot tell a numpad key from the main row; numpad `*` and `.` cannot be captured; Ctrl+C, Ctrl+X and Ctrl+V cannot be captured. Letters follow the keyboard layout.
+- Exclusive output and hotkeys are built for Linux and macOS where the crates support them, but verified on Windows only. Exclusive output does not exist there.
+- CAF files are skipped by the library scan (as in 0.2.1), so no CAF track appears in the library; a CAF file works as a soundboard sound.
+- Verified on this PC (Windows 11, Intel Core i3-1315U, Realtek headphones), with silence only and nobody listening: WASAPI exclusive opened the default device at 44.1 kHz and 16 bits; closing took about 42 to 49 ms; a second exclusive open was refused as busy; the device accepted 16-bit and 24-bit-in-32, mono and stereo, 32 to 192 kHz, and refused 32-bit integer and rates above 192 kHz. This is one device.
+- The Russian and Armenian texts are not reviewed by a native speaker.
+- The limitations listed for 0.2.1 and 0.2.0 still apply.
+
 ## [0.2.1] - unreleased (pre-release: Phase 2b, favorites, playlists, history)
 
 Nobody has run this version by hand yet: see `docs/testing/phase2b-manual-check.md`, where every line for a person is still pending.
