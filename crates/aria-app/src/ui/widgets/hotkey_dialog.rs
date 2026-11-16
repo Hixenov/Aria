@@ -51,7 +51,8 @@ pub enum HotkeyAnswer {
 pub struct HotkeyDialog<'a> {
     /// The hotkey being replaced, if there is one.
     pub current: Option<Hotkey>,
-    /// The hotkeys used elsewhere in Aria: by other sounds, or by "Stop all".
+    /// The hotkeys used elsewhere in Aria: by other sounds, or by "Stop all". Aria's own
+    /// shortcuts are refused as well.
     pub taken: &'a [Hotkey],
 }
 
@@ -120,7 +121,7 @@ fn is_numpad(key: HotkeyKey) -> bool {
 fn refusal(hotkey: Hotkey, taken: &[Hotkey]) -> Option<&'static str> {
     if !hotkey.is_allowed() {
         Some("hotkey-not-allowed")
-    } else if taken.contains(&hotkey) {
+    } else if hotkey.is_aria_shortcut() || taken.contains(&hotkey) {
         Some("hotkey-taken")
     } else {
         None
@@ -441,12 +442,45 @@ mod tests {
 
     #[test]
     fn a_combination_used_elsewhere_in_aria_cannot_be_confirmed() {
-        let mut harness = dialog(None, vec![key("Ctrl+1")]);
-        harness.key_press_modifiers(Modifiers::CTRL, Key::Num1);
+        let mut harness = dialog(None, vec![key("Ctrl+Alt+1")]);
+        harness.key_press_modifiers(Modifiers::CTRL | Modifiers::ALT, Key::Num1);
         harness.run();
         harness.get_by_label(&en(&harness, "hotkey-taken"));
         assert!(confirm_disabled(&harness));
         assert_eq!(harness.state().answer, HotkeyAnswer::Open);
+    }
+
+    #[test]
+    fn arias_own_shortcuts_cannot_be_confirmed() {
+        // Ctrl on Windows and Linux; on a Mac, Aria's shortcuts use Command.
+        let command = if cfg!(target_os = "macos") {
+            Modifiers::MAC_CMD | Modifiers::COMMAND
+        } else {
+            Modifiers::CTRL | Modifiers::COMMAND
+        };
+        for (modifiers, pressed) in [
+            (command, Key::Num1),
+            (command, Key::Num0),
+            (command | Modifiers::ALT, Key::R),
+        ] {
+            let mut harness = dialog(None, vec![]);
+            harness.key_press_modifiers(modifiers, pressed);
+            harness.run();
+            harness.get_by_label(&en(&harness, "hotkey-taken"));
+            assert!(confirm_disabled(&harness), "{pressed:?}");
+        }
+        // Space and Alt+Left/Right are Aria's too, and are not caught at all.
+        for (modifiers, pressed) in [
+            (Modifiers::NONE, Key::Space),
+            (Modifiers::ALT, Key::ArrowLeft),
+            (Modifiers::ALT, Key::ArrowRight),
+        ] {
+            let mut harness = dialog(None, vec![]);
+            harness.key_press_modifiers(modifiers, pressed);
+            harness.run();
+            harness.get_by_label(&en(&harness, "sound-hotkey-none"));
+            assert!(confirm_disabled(&harness), "{pressed:?}");
+        }
     }
 
     #[test]

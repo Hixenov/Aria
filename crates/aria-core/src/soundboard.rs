@@ -132,14 +132,15 @@ pub(crate) struct Reaction {
 }
 
 /// Why `hotkey` may not be used, as the notice that says so, or `None` if it may. `taken` are the
-/// hotkeys already in use inside Aria, apart from the one it would replace.
+/// hotkeys of other sounds and of "Stop all", apart from the one it would replace; Aria's own
+/// shortcuts are always taken.
 pub(crate) fn hotkey_refusal(
     hotkey: &Hotkey,
     taken: impl IntoIterator<Item = Hotkey>,
 ) -> Option<Notice> {
     if !hotkey.is_allowed() {
         Some(HOTKEY_NOT_ALLOWED)
-    } else if taken.into_iter().any(|other| other == *hotkey) {
+    } else if hotkey.is_aria_shortcut() || taken.into_iter().any(|other| other == *hotkey) {
         Some(HOTKEY_TAKEN)
     } else {
         None
@@ -542,6 +543,33 @@ mod tests {
             Some(HOTKEY_TAKEN)
         );
         assert_eq!(hotkey_refusal(&key("Ctrl+A"), [key("Alt+A")]), None);
+    }
+
+    #[test]
+    fn arias_own_shortcuts_are_refused_as_taken() {
+        let command = if cfg!(target_os = "macos") {
+            "Win"
+        } else {
+            "Ctrl"
+        };
+        for rest in ["1", "9", "0", "Alt+R"] {
+            let hotkey = key(&format!("{command}+{rest}"));
+            assert_eq!(hotkey_refusal(&hotkey, []), Some(HOTKEY_TAKEN), "{hotkey}");
+        }
+        // For "Stop all" too.
+        let board = Soundboard::default();
+        let settings = Settings {
+            stop_sounds_hotkey: Some(key(&format!("{command}+1"))),
+            ..Settings::default()
+        };
+        assert_eq!(board.stop_hotkey_refusal(&settings), Some(HOTKEY_TAKEN));
+        // With Shift, or on the numpad, the combination is free.
+        let free = key(&format!("{command}+Shift+1"));
+        assert_eq!(hotkey_refusal(&free, []), None);
+        assert_eq!(
+            hotkey_refusal(&key(&format!("{command}+Numpad1")), []),
+            None
+        );
     }
 
     #[test]

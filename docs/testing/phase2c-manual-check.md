@@ -104,7 +104,7 @@ output. Only silence was ever written to the device, and nobody listened.
 | A hotkey fires its sound with a game (or another full-screen program) in the foreground | pending |
 | A hotkey fires its sound with Aria minimized (a press may take about 100 ms to act) | pending |
 | A combination another program holds is refused with a notice and not saved | pending |
-| A bare typing key is refused; F1 to F24 and a combination with Ctrl, Alt or Win are accepted; a hotkey used by another sound is refused | pending |
+| A bare typing key is refused; F1 to F24 and a combination with Ctrl, Alt or Win are accepted; a hotkey used by another sound, or one of Aria's own shortcuts (Ctrl+1, Ctrl+Alt+R), is refused | pending |
 | Setting a numpad key with the "Numpad" switch in the dialog | pending |
 | Escape cancels the dialog; Delete or Backspace clears the hotkey | pending |
 | The "Global hotkeys" switch off: no hotkey fires; on again: they fire again | pending |

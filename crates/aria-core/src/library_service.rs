@@ -1970,6 +1970,26 @@ mod tests {
         assert_eq!(env.open().sounds().unwrap()[1].hotkey, None);
     }
 
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_hotkey_aria_uses_itself_is_refused() {
+        let env = Env::new();
+        let (handle, mut log) = started_for_sounds(&env);
+        let id = add(&handle, &mut log, vec![sound_file(&env, "a.ogg")])[0].id;
+        let before = count_sounds(&log);
+        for text in ["Ctrl+1", "Ctrl+0", "Ctrl+Alt+R"] {
+            handle.send(LibraryRequest::SetSoundHotkey {
+                id,
+                hotkey: Some(hotkey(text)),
+                stop: None,
+            });
+        }
+        finish_sounds(handle, &mut log);
+        assert_eq!(count_sounds(&log), before);
+        assert_eq!(log.notices("hotkey-taken").len(), 3);
+        assert_eq!(env.open().sounds().unwrap()[0].hotkey, None);
+    }
+
     #[test]
     fn a_hotkey_equal_to_stop_all_is_refused() {
         let env = Env::new();

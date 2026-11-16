@@ -98,6 +98,26 @@ impl Hotkey {
     pub fn is_allowed(&self) -> bool {
         self.key.is_valid() && (self.ctrl || self.alt || self.win || self.key.stands_alone())
     }
+
+    /// Whether this is one of Aria's own shortcuts: Ctrl+0 to Ctrl+9 (the pages) or Ctrl+Alt+R
+    /// (the right panel), with Command in place of Ctrl on a Mac. Registered with the system, a
+    /// hotkey would take it from Aria, so it counts as used inside Aria. Aria's other shortcuts,
+    /// Space and Alt+Left/Right, are on keys no hotkey can have.
+    pub fn is_aria_shortcut(&self) -> bool {
+        // Aria reads its shortcuts with exactly these modifiers held.
+        let command = if cfg!(target_os = "macos") {
+            self.win && !self.ctrl
+        } else {
+            self.ctrl && !self.win
+        };
+        command
+            && !self.shift
+            && match self.key {
+                HotkeyKey::Digit(_) => !self.alt,
+                HotkeyKey::Letter('R') => self.alt,
+                _ => false,
+            }
+    }
 }
 
 /// Text that is not a hotkey.
@@ -238,6 +258,47 @@ mod tests {
     fn key(text: &str) -> Hotkey {
         text.parse()
             .unwrap_or_else(|_| panic!("{text:?} should be a hotkey"))
+    }
+
+    /// `rest` with Aria's command key: Ctrl, or Command (Win) on a Mac.
+    fn command(rest: &str) -> Hotkey {
+        let modifier = if cfg!(target_os = "macos") {
+            "Win"
+        } else {
+            "Ctrl"
+        };
+        key(&format!("{modifier}+{rest}"))
+    }
+
+    #[test]
+    fn arias_own_shortcuts_are_known() {
+        for digit in 0..=9 {
+            assert!(command(&digit.to_string()).is_aria_shortcut(), "{digit}");
+        }
+        assert!(command("Alt+R").is_aria_shortcut());
+        // Other modifiers, or the numpad's digits, are not Aria's.
+        for other in [
+            "Shift+1",
+            "Alt+1",
+            "R",
+            "Shift+Alt+R",
+            "Numpad1",
+            "F1",
+            "Alt+5",
+        ] {
+            assert!(!command(other).is_aria_shortcut(), "{other}");
+        }
+        for other in ["Alt+1", "Alt+R", "F5", "Numpad1"] {
+            assert!(!key(other).is_aria_shortcut(), "{other}");
+        }
+    }
+
+    #[test]
+    fn arias_shortcuts_on_other_keys_cannot_be_hotkeys() {
+        // Space and Alt+Left/Right are Aria's too; no hotkey has those keys.
+        for text in ["Space", "Alt+Left", "Alt+Right", "Left"] {
+            assert!(text.parse::<Hotkey>().is_err(), "{text}");
+        }
     }
 
     #[test]
