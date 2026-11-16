@@ -76,7 +76,9 @@ fn is_disabled(harness: &Harness<'_, AriaApp>, label: &str) -> bool {
         .is_disabled()
 }
 
-const DIGITS: [Key; 9] = [
+/// The key of each route in `Route::ALL`: Ctrl+1…8, then Ctrl+0 for the Soundboard and Ctrl+9
+/// for Settings, which comes last.
+const DIGITS: [Key; 10] = [
     Key::Num1,
     Key::Num2,
     Key::Num3,
@@ -85,6 +87,7 @@ const DIGITS: [Key; 9] = [
     Key::Num6,
     Key::Num7,
     Key::Num8,
+    Key::Num0,
     Key::Num9,
 ];
 

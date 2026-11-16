@@ -112,6 +112,7 @@ notice-settings-readonly = Couldn't access the settings file, so defaults are in
 notice-settings-save-failed = Couldn't save settings. Aria will try again after your next change.
 notice-open-folder-failed = Couldn't open the folder.
 notice-pick-folder-failed = Couldn't open the folder picker.
+notice-pick-sounds-failed = Couldn't open the file picker.
 notice-dismiss = Dismiss
 
 ## Library notices (toasts)
@@ -252,3 +253,30 @@ quality-lossless = Lossless
 quality-hi-res = Hi-Res
 local-col-quality = Quality
 local-lossless-only = Lossless only
+
+## Soundboard page and settings
+
+nav-soundboard = Soundboard
+soundboard-empty = No sounds yet
+soundboard-empty-hint = Add short audio files to play them with a click or a hotkey.
+soundboard-add = Add sounds…
+soundboard-stop-all = Stop all
+sound-rename = Rename
+sound-hotkey = Hotkey…
+sound-hotkey-none = None
+sound-volume = Volume
+sound-remove = Remove
+# $name (String) - the sound's name
+sound-remove-confirm = Remove { $name } from the soundboard? The file is not deleted.
+settings-soundboard = Soundboard
+settings-sound-device = Second device
+settings-sound-device-none = None
+settings-sound-target = Play sounds to
+settings-sound-target-mine = My device
+settings-sound-target-second = Second device
+settings-sound-target-both = Both
+settings-sound-target-note = No second device is chosen, so sounds play on your device.
+settings-global-hotkeys = Global hotkeys
+settings-global-hotkeys-hint = Hotkeys work while another program has the focus. Aria receives only the combinations you set.
+settings-stop-hotkey = Hotkey for Stop all
+settings-voice-chat-hint = To be heard in a voice chat, choose a virtual audio cable as the second device and set it as the chat's microphone. Aria does not install one. The chat hears the sounds, not your microphone.

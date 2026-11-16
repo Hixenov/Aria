@@ -109,6 +109,7 @@ fn harness(snapshot: LibrarySnapshot) -> Harness<'static, Page> {
                     out: &mut page.actions,
                     library: &page.library,
                     collections: &Default::default(),
+                    soundboard: &Default::default(),
                     devices: &[],
                     artwork: None,
                 };

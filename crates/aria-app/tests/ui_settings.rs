@@ -759,6 +759,7 @@ fn settings_only(
                     out: &mut page.actions,
                     library: &page.library,
                     collections: &Default::default(),
+                    soundboard: &Default::default(),
                     devices: &page.devices,
                     artwork: None,
                 };

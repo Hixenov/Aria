@@ -1,4 +1,4 @@
-//! Navigation and panel shortcuts: Ctrl+1…9, Alt+Left/Right, the mouse's back and forward
+//! Navigation and panel shortcuts: Ctrl+1…9 and Ctrl+0, Alt+Left/Right, the mouse's back and forward
 //! buttons, Ctrl+Alt+R, and Space for play and pause.
 
 use eframe::egui::{self, InputState, Key, KeyboardShortcut, Modifiers, PointerButton};
@@ -14,17 +14,20 @@ const BACK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::ArrowL
 const FORWARD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::ArrowRight);
 /// Space plays and pauses.
 const TOGGLE_PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
-/// With Ctrl (Cmd on macOS), these jump to the matching entry of [`Route::ALL`].
-const ROUTE_KEYS: [Key; 9] = [
-    Key::Num1,
-    Key::Num2,
-    Key::Num3,
-    Key::Num4,
-    Key::Num5,
-    Key::Num6,
-    Key::Num7,
-    Key::Num8,
-    Key::Num9,
+/// With Ctrl (Cmd on macOS), these keys jump to their route. Ctrl+1…8 take the first eight
+/// entries of [`Route::ALL`], as they always did; Settings stays on Ctrl+9, and the Soundboard,
+/// which sits before it in the sidebar, is Ctrl+0.
+const ROUTE_KEYS: [(Key, Route); 10] = [
+    (Key::Num1, Route::Home),
+    (Key::Num2, Route::Search),
+    (Key::Num3, Route::Library),
+    (Key::Num4, Route::Liked),
+    (Key::Num5, Route::Playlists),
+    (Key::Num6, Route::Albums),
+    (Key::Num7, Route::Artists),
+    (Key::Num8, Route::LocalMusic),
+    (Key::Num9, Route::Settings),
+    (Key::Num0, Route::Soundboard),
 ];
 
 /// What the keyboard and mouse asked for this frame.
@@ -51,7 +54,7 @@ pub(crate) fn read_shortcuts(input: &mut InputState, typing: bool) -> Shortcuts 
     if !typing {
         shortcuts.toggle_play = consume_exact(input, &TOGGLE_PLAY);
     }
-    for (route, key) in Route::ALL.into_iter().zip(ROUTE_KEYS) {
+    for (key, route) in ROUTE_KEYS {
         if consume_exact(input, &KeyboardShortcut::new(Modifiers::COMMAND, key)) {
             shortcuts.jump = Some(route);
         }
@@ -127,6 +130,42 @@ mod tests {
         input.events.push(key_event(Key::Num3, Modifiers::COMMAND));
         assert!(consume_exact(&mut input, &ctrl(Key::Num3)));
         assert!(input.events.is_empty(), "the shortcut was not consumed");
+    }
+
+    #[test]
+    fn ctrl_9_is_settings_and_ctrl_0_is_soundboard() {
+        for (key, route) in [(Key::Num9, Route::Settings), (Key::Num0, Route::Soundboard)] {
+            let mut input = InputState::default();
+            input.events.push(key_event(key, Modifiers::COMMAND));
+            assert_eq!(read_shortcuts(&mut input, false).jump, Some(route));
+        }
+    }
+
+    #[test]
+    fn ctrl_1_to_8_keep_their_routes() {
+        let keys = [
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+        ];
+        for (key, route) in keys.into_iter().zip(Route::ALL) {
+            let mut input = InputState::default();
+            input.events.push(key_event(key, Modifiers::COMMAND));
+            assert_eq!(read_shortcuts(&mut input, false).jump, Some(route));
+        }
+    }
+
+    #[test]
+    fn every_route_has_one_shortcut() {
+        for route in Route::ALL {
+            let keys = ROUTE_KEYS.iter().filter(|(_, r)| *r == route).count();
+            assert_eq!(keys, 1, "{route:?}");
+        }
     }
 
     #[test]

@@ -139,7 +139,7 @@ From Phase 1, still true:
 - Spotify audio is not streamed in-app. This is a compliance choice; see the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 - The Armenian translation needs native-speaker review, and Armenian headings render at regular weight because there is no Armenian semibold font.
 - egui's colour-picker popup and the panel splitter's accessibility label are English only.
-- Alt+Left/Right and Ctrl+1...9 are app-wide shortcuts.
+- Alt+Left/Right and Ctrl+1...9 and Ctrl+0 are app-wide shortcuts.
 - `ARIA_CONFIG_DIR` overrides only the config directory. Logs, the library database, the artwork cache and the window state still go to the OS defaults.
 - Only Windows has been run by hand (on one machine). Linux and macOS are built and tested by CI only; nobody has opened the app on them yet.
 - In the narrowest layout (a 900 px window with the widest sidebar and the queue open), the Russian theme switch does not fit on one line, so its "System" button wraps under the other two inside one outline.

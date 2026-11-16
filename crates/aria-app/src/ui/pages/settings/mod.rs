@@ -1,8 +1,9 @@
-//! The Settings page: General, Playback, Library, Advanced and About, each a card of rows, and
-//! the dialog that confirms a reset, a folder's removal or clearing the artwork cache.
+//! The Settings page: General, Playback, Soundboard, Library, Advanced and About, each a card
+//! of rows, and the dialog that confirms a reset, a folder's removal or clearing the artwork cache.
 
 mod library;
 mod playback;
+mod soundboard;
 
 use aria_core::{
     i18n::Localizer,
@@ -102,6 +103,7 @@ pub fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
             ui.set_max_width(ui.available_width().min(MAX_WIDTH));
             general(ui, ctx.tr, &ctx.palette, &mut settings);
             playback::show(ui, ctx, &mut settings);
+            soundboard::show(ui, ctx, &mut settings);
             library::show(ui, ctx);
             advanced(ui, ctx, &mut settings.log_level);
             about(ui, ctx.tr, &ctx.palette);

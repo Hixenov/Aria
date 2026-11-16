@@ -96,6 +96,7 @@ fn harness(favorites: &[i64]) -> Harness<'static, Page> {
                     out: &mut page.actions,
                     library: &page.library,
                     collections: &page.collections,
+                    soundboard: &Default::default(),
                     devices: &[],
                     artwork: None,
                 };

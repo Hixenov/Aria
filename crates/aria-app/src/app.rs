@@ -21,11 +21,12 @@ use aria_core::{
     settings::{SIDEBAR_MAX, SIDEBAR_MIN, Settings},
     soundboard::SoundboardState,
 };
+use aria_library::{PLAYLIST_NAME_MAX, SOUND_NAME_MAX};
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
 use crate::{
     artwork::ArtworkTextures,
-    folders::{FolderOpener, FolderPicker},
+    folders::{FolderOpener, FolderPicker, SoundPicker},
     nav::{History, Route},
     shortcuts::read_shortcuts,
     ui::{
@@ -61,6 +62,13 @@ const OPEN_FOLDER_FAILED: Notice = Notice {
 const PICK_FOLDER_FAILED: Notice = Notice {
     level: NoticeLevel::Warning,
     key: "notice-pick-folder-failed",
+    args: Vec::new(),
+};
+
+/// Shown when the sound file dialog could not be opened.
+const PICK_SOUNDS_FAILED: Notice = Notice {
+    level: NoticeLevel::Warning,
+    key: "notice-pick-sounds-failed",
     args: Vec::new(),
 };
 
@@ -109,6 +117,8 @@ pub struct AriaApp {
     folders: FolderOpener,
     /// The dialog for choosing a folder to add to the library.
     picker: FolderPicker,
+    /// The dialog for choosing sound files to add to the soundboard.
+    sound_picker: SoundPicker,
     /// What the backend last reported of the library and the player. Starts empty, since a
     /// disabled library sends nothing at all.
     library: LibraryView,
@@ -178,6 +188,7 @@ impl AriaApp {
             toasts: Toasts::new(player_bar::HEIGHT),
             folders: FolderOpener::default(),
             picker: FolderPicker::default(),
+            sound_picker: SoundPicker::default(),
             library: LibraryView::default(),
             player: PlayerView::default(),
             collections: Arc::default(),
@@ -240,6 +251,7 @@ impl AriaApp {
         }
         self.collect_folder_failures(&ctx);
         self.collect_picked_folder();
+        self.collect_picked_sounds();
         self.handle_shortcuts(&ctx);
 
         self.poll_artwork(&ctx);
@@ -441,6 +453,14 @@ impl AriaApp {
         }
     }
 
+    /// Adds the sound files the user chose in the dialog, if some were chosen since the last
+    /// frame.
+    fn collect_picked_sounds(&mut self) {
+        if let Some(files) = self.sound_picker.picked() {
+            self.send(Command::AddSounds(files));
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         if self.modal_open() {
             // The dialog is modal: nothing behind it changes until it is closed.
@@ -522,6 +542,7 @@ impl AriaApp {
             out: &mut actions,
             library: &self.library,
             collections: &self.collections,
+            soundboard: &self.soundboard,
             devices: &self.devices,
             artwork: self.artwork.as_mut(),
         };
@@ -583,6 +604,19 @@ impl AriaApp {
             PageAction::DeletePlaylist(id) => self.send(Command::DeletePlaylist(id)),
             PageAction::ClearHistory => self.send(Command::ClearHistory),
             PageAction::AskPlaylistName(purpose) => self.open_name_dialog(purpose),
+            PageAction::AddSounds => self.pick_sounds(ctx),
+            PageAction::AskSoundName(id) => self.open_name_dialog(NameFor::Sound(id)),
+            PageAction::SetSoundVolume { id, volume } => {
+                self.send(Command::SetSoundVolume { id, volume });
+            }
+            PageAction::RemoveSound(id) => self.send(Command::RemoveSound(id)),
+            PageAction::PlaySound(id) => self.send(Command::PlaySound(id)),
+            PageAction::StopSounds => self.send(Command::StopSounds),
+            // The hotkey dialog comes with the hotkeys themselves.
+            PageAction::AskSoundHotkey(id) => {
+                tracing::debug!(sound = id.0, "a sound hotkey was asked for");
+            }
+            PageAction::AskStopHotkey => tracing::debug!("a Stop all hotkey was asked for"),
         }
     }
 
@@ -594,6 +628,13 @@ impl AriaApp {
                 Some(name) => name.to_owned(),
                 None => {
                     tracing::debug!(id = id.0, "no such playlist to rename");
+                    return;
+                }
+            },
+            NameFor::Sound(id) => match self.sound_name(id) {
+                Some(name) => name.to_owned(),
+                None => {
+                    tracing::debug!(id = id.0, "no such sound to rename");
                     return;
                 }
             },
@@ -615,6 +656,12 @@ impl AriaApp {
         Some(&playlist.name)
     }
 
+    /// The name of sound `id`, if the soundboard has it.
+    fn sound_name(&self, id: aria_library::SoundId) -> Option<&str> {
+        let sound = self.soundboard.sounds.iter().find(|sound| sound.id == id)?;
+        Some(&sound.name)
+    }
+
     /// Draws the name dialog while it is open, and sends what it was confirmed for.
     fn show_name_dialog(&mut self, ctx: &egui::Context, palette: &Palette) {
         let Some((purpose, mut text)) = self.name_dialog.take() else {
@@ -626,14 +673,22 @@ impl AriaApp {
         {
             return;
         }
-        let (title, confirm) = match purpose {
-            NameFor::New { .. } => ("playlist-new", "playlist-create"),
-            NameFor::Rename(_) => ("playlist-rename", "playlist-rename"),
+        // A sound removed while its rename was open has nothing left to rename.
+        if let NameFor::Sound(id) = purpose
+            && self.sound_name(id).is_none()
+        {
+            return;
+        }
+        let (title, confirm, max_chars) = match purpose {
+            NameFor::New { .. } => ("playlist-new", "playlist-create", PLAYLIST_NAME_MAX),
+            NameFor::Rename(_) => ("playlist-rename", "playlist-rename", PLAYLIST_NAME_MAX),
+            NameFor::Sound(_) => ("sound-rename", "sound-rename", SOUND_NAME_MAX),
         };
         let (title, confirm) = (self.localizer.tr(title), self.localizer.tr(confirm));
         let dialog = NameDialog {
             title: &title,
             confirm: &confirm,
+            max_chars,
         };
         match dialog.show(ctx, &self.localizer, palette, &mut text) {
             NameAnswer::Open => {
@@ -644,6 +699,7 @@ impl AriaApp {
                 self.send(match purpose {
                     NameFor::New { first } => Command::CreatePlaylist { name, first },
                     NameFor::Rename(id) => Command::RenamePlaylist { id, name },
+                    NameFor::Sound(id) => Command::RenameSound { id, name },
                 });
             }
         }
@@ -667,6 +723,14 @@ impl AriaApp {
         if let Err(err) = self.picker.start(ctx) {
             tracing::warn!(%err, "could not open the folder dialog");
             self.notify(ctx, PICK_FOLDER_FAILED);
+        }
+    }
+
+    /// Opens the sound file dialog, unless one is open already.
+    fn pick_sounds(&mut self, ctx: &egui::Context) {
+        if let Err(err) = self.sound_picker.start(ctx) {
+            tracing::warn!(%err, "could not open the sound file dialog");
+            self.notify(ctx, PICK_SOUNDS_FAILED);
         }
     }
 
@@ -1305,6 +1369,87 @@ mod tests {
             "the dialog stayed open"
         );
         assert!(!harness.state().modal_open());
+    }
+
+    fn sound_view(id: i64, name: &str) -> aria_core::soundboard::SoundView {
+        aria_core::soundboard::SoundView {
+            id: aria_core::SoundId(id),
+            name: name.into(),
+            volume: 1.0,
+            hotkey: None,
+            missing: false,
+            playing: false,
+        }
+    }
+
+    #[test]
+    fn rename_opens_the_name_dialog_with_the_current_name() {
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let mut harness = dialog_harness(aria_library::Collections::default());
+        let ctx = harness.ctx.clone();
+        let state = SoundboardState {
+            sounds: vec![sound_view(3, "Airhorn")],
+        };
+        harness
+            .state_mut()
+            .handle_event(&ctx, Event::Soundboard(Arc::new(state)));
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskSoundName(aria_core::SoundId(3)));
+        harness.run();
+        assert!(harness.state().modal_open());
+
+        let label = english("playlist-name-label");
+        let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, &label);
+        assert_eq!(field.accesskit_node().value().as_deref(), Some("Airhorn"));
+
+        // 50 characters are the most a sound's name can have.
+        let confirm = english("sound-rename");
+        let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, &label);
+        field.focus();
+        harness.run();
+        harness.state_mut().name_dialog =
+            Some((NameFor::Sound(aria_core::SoundId(3)), "x".repeat(51)));
+        harness.run();
+        let button = harness.get_by_role_and_label(egui::accesskit::Role::Button, &confirm);
+        assert!(button.accesskit_node().is_disabled(), "51 characters");
+        harness.state_mut().name_dialog =
+            Some((NameFor::Sound(aria_core::SoundId(3)), "x".repeat(50)));
+        harness.run();
+        let button = harness.get_by_role_and_label(egui::accesskit::Role::Button, &confirm);
+        assert!(!button.accesskit_node().is_disabled(), "50 characters");
+        button.click();
+        harness.run();
+        let command = Command::RenameSound {
+            id: aria_core::SoundId(3),
+            name: "x".repeat(50),
+        };
+        assert_eq!(sent_like(harness.state(), &command), 1);
+        assert!(!harness.state().modal_open());
+    }
+
+    #[test]
+    fn the_sound_actions_become_commands() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let id = aria_core::SoundId(4);
+        for (action, command) in [
+            (PageAction::PlaySound(id), Command::PlaySound(id)),
+            (PageAction::StopSounds, Command::StopSounds),
+            (PageAction::RemoveSound(id), Command::RemoveSound(id)),
+            (
+                PageAction::SetSoundVolume { id, volume: 0.25 },
+                Command::SetSoundVolume { id, volume: 0.25 },
+            ),
+        ] {
+            app.handle_page_action(&ctx, action);
+            assert_eq!(sent_like(&app, &command), 1, "{command:?}");
+        }
+        // The hotkey dialogs come later: for now nothing is sent.
+        let before = app.sent.borrow().len();
+        app.handle_page_action(&ctx, PageAction::AskSoundHotkey(id));
+        app.handle_page_action(&ctx, PageAction::AskStopHotkey);
+        assert_eq!(app.sent.borrow().len(), before);
     }
 
     #[test]

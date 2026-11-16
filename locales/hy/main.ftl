@@ -114,6 +114,7 @@ notice-settings-readonly = Կարգավորումների ֆայլը հասան�
 notice-settings-save-failed = Չհաջողվեց պահպանել կարգավորումները։ Նոր փորձ կկատարվի հաջորդ փոփոխության ժամանակ։
 notice-open-folder-failed = Չհաջողվեց բացել պանակը։
 notice-pick-folder-failed = Չհաջողվեց բացել պանակի ընտրությունը։
+notice-pick-sounds-failed = Չհաջողվեց բացել ֆայլերի ընտրությունը։
 notice-dismiss = Փակել
 
 ## Library notices (toasts)
@@ -251,3 +252,30 @@ quality-lossless = Առանց կորստի
 quality-hi-res = Hi-Res
 local-col-quality = Որակ
 local-lossless-only = Միայն առանց կորստի
+
+## Soundboard page and settings
+
+nav-soundboard = Ձայնային վահանակ
+soundboard-empty = Ձայներ դեռ չկան
+soundboard-empty-hint = Ավելացրեք կարճ աուդիոֆայլեր՝ դրանք մեկ սեղմումով կամ ստեղների համակցությամբ նվագարկելու համար։
+soundboard-add = Ավելացնել ձայներ…
+soundboard-stop-all = Կանգնեցնել բոլորը
+sound-rename = Վերանվանել
+sound-hotkey = Ստեղների համակցություն…
+sound-hotkey-none = Չկա
+sound-volume = Ձայնի ուժգնություն
+sound-remove = Հեռացնել
+# $name (String) - the sound's name
+sound-remove-confirm = Հեռացնե՞լ «{ $name }» ձայնը ձայնային վահանակից։ Ֆայլը չի ջնջվում։
+settings-soundboard = Ձայնային վահանակ
+settings-sound-device = Երկրորդ սարք
+settings-sound-device-none = Չկա
+settings-sound-target = Նվագարկել ձայները
+settings-sound-target-mine = Իմ սարքում
+settings-sound-target-second = Երկրորդ սարքում
+settings-sound-target-both = Երկու սարքերում
+settings-sound-target-note = Երկրորդ սարք ընտրված չէ, ուստի ձայները նվագարկվում են ձեր սարքում։
+settings-global-hotkeys = Գլոբալ ստեղների համակցություններ
+settings-global-hotkeys-hint = Համակցությունները աշխատում են, երբ ուշադրությունը մեկ այլ ծրագրի վրա է։ Aria-ն ստանում է միայն ձեր սահմանած համակցությունները։
+settings-stop-hotkey = «Կանգնեցնել բոլորը» համակցություն
+settings-voice-chat-hint = Ձայնային զրույցում լսելի լինելու համար երկրորդ սարք ընտրեք վիրտուալ աուդիոմալուխ և նշանակեք այն զրույցի խոսափող։ Aria-ն այդպիսի մալուխ չի տեղադրում։ Զրույցը լսում է ձայները, ոչ թե ձեր խոսափողը։

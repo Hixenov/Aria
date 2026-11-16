@@ -112,6 +112,7 @@ notice-settings-readonly = Нет доступа к файлу настроек,
 notice-settings-save-failed = Не удалось сохранить настройки. Aria попробует снова при следующем изменении.
 notice-open-folder-failed = Не удалось открыть папку.
 notice-pick-folder-failed = Не удалось открыть выбор папки.
+notice-pick-sounds-failed = Не удалось открыть выбор файлов.
 notice-dismiss = Закрыть
 
 ## Library notices (toasts)
@@ -256,3 +257,30 @@ quality-lossless = Без потерь
 quality-hi-res = Hi-Res
 local-col-quality = Качество
 local-lossless-only = Только без потерь
+
+## Soundboard page and settings
+
+nav-soundboard = Звуковая панель
+soundboard-empty = Звуков пока нет
+soundboard-empty-hint = Добавьте короткие аудиофайлы, чтобы запускать их щелчком или сочетанием клавиш.
+soundboard-add = Добавить звуки…
+soundboard-stop-all = Остановить все
+sound-rename = Переименовать
+sound-hotkey = Сочетание клавиш…
+sound-hotkey-none = Нет
+sound-volume = Громкость
+sound-remove = Убрать
+# $name (String) - the sound's name
+sound-remove-confirm = Убрать «{ $name }» из звуковой панели? Файл не удаляется.
+settings-soundboard = Звуковая панель
+settings-sound-device = Второе устройство
+settings-sound-device-none = Нет
+settings-sound-target = Воспроизводить звуки на
+settings-sound-target-mine = Моём устройстве
+settings-sound-target-second = Втором устройстве
+settings-sound-target-both = Обоих устройствах
+settings-sound-target-note = Второе устройство не выбрано, поэтому звуки воспроизводятся на вашем устройстве.
+settings-global-hotkeys = Глобальные сочетания клавиш
+settings-global-hotkeys-hint = Сочетания работают, когда фокус у другой программы. Aria получает только заданные вами сочетания.
+settings-stop-hotkey = Сочетание для «Остановить все»
+settings-voice-chat-hint = Чтобы звуки были слышны в голосовом чате, выберите виртуальный аудиокабель вторым устройством и назначьте его микрофоном чата. Aria такой кабель не устанавливает. Чат слышит звуки, а не ваш микрофон.

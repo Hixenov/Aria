@@ -9,6 +9,7 @@ mod local_music;
 mod playlists;
 mod search;
 mod settings;
+mod soundboard;
 #[cfg(test)]
 mod test_support;
 
@@ -16,8 +17,9 @@ use aria_core::{
     DeviceInfo,
     i18n::{FluentArgs, Localizer},
     settings::Settings,
+    soundboard::SoundboardState,
 };
-use aria_library::{Collections, FolderId, PlaylistId, TrackId};
+use aria_library::{Collections, FolderId, PlaylistId, SoundId, TrackId};
 use eframe::egui::Ui;
 
 pub use self::local_music::{LibraryView, Scope, SortKey, Tab, TrackView};
@@ -53,6 +55,8 @@ pub struct PageCtx<'a> {
     /// Favorites, playlists and recent plays as the backend last reported them. They can name
     /// tracks `library` does not know yet, or no longer.
     pub collections: &'a Collections,
+    /// The sounds as the backend last reported them. Empty until it answers.
+    pub soundboard: &'a SoundboardState,
     /// The output devices as the backend last listed them. Empty until it answers.
     pub devices: &'a [DeviceInfo],
     /// Cover textures, when the thumbnails' folder is known. Without it, covers show as
@@ -126,6 +130,27 @@ pub enum PageAction {
     ClearHistory,
     /// Open the name dialog. Confirming it sends CreatePlaylist or RenamePlaylist.
     AskPlaylistName(NameFor),
+    /// Ask the user for sound files to add to the soundboard.
+    AddSounds,
+    /// Open the name dialog. Confirming it sends RenameSound.
+    AskSoundName(SoundId),
+    /// Set a sound's volume, `0.0..=1.0`. Sent when the user lets go of the slider.
+    SetSoundVolume {
+        /// The sound.
+        id: SoundId,
+        /// Its new volume.
+        volume: f32,
+    },
+    /// Take a sound off the soundboard. Its file is left alone.
+    RemoveSound(SoundId),
+    /// Play a sound from its start.
+    PlaySound(SoundId),
+    /// Stop every sound. The music goes on.
+    StopSounds,
+    /// Ask for a new hotkey for this sound.
+    AskSoundHotkey(SoundId),
+    /// Ask for a new hotkey for "Stop all".
+    AskStopHotkey,
 }
 
 /// What the playlist name dialog is asked for.
@@ -138,6 +163,8 @@ pub enum NameFor {
     },
     /// A new name for this playlist.
     Rename(PlaylistId),
+    /// A new name for this sound.
+    Sound(SoundId),
 }
 
 /// Draws the page for `route`.
@@ -151,6 +178,7 @@ pub fn show(route: Route, ui: &mut Ui, ctx: &mut PageCtx<'_>) {
         Route::Albums => albums::show(ui, ctx),
         Route::Artists => artists::show(ui, ctx),
         Route::LocalMusic => local_music::show(ui, ctx),
+        Route::Soundboard => soundboard::show(ui, ctx),
         Route::Settings => settings::show(ui, ctx),
     }
 }

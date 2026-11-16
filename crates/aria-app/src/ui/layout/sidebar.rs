@@ -29,7 +29,7 @@ const WORDMARK_SIZE: f32 = 18.0;
 const HISTORY_BUTTON: [f32; 2] = [28.0, 16.0];
 
 /// Navigation groups, top to bottom, with a separator between them. [`PINNED`] sits at the
-/// bottom. Together they follow [`Route::ALL`], so Ctrl+1…9 match the order on screen.
+/// bottom. Together they follow [`Route::ALL`], so Ctrl+1…8 match the order on screen; Settings is Ctrl+9 and the Soundboard Ctrl+0.
 const GROUPS: [&[Route]; 2] = [
     &[Route::Home, Route::Search],
     &[
@@ -39,6 +39,7 @@ const GROUPS: [&[Route]; 2] = [
         Route::Albums,
         Route::Artists,
         Route::LocalMusic,
+        Route::Soundboard,
     ],
 ];
 /// The entry pinned to the bottom of the sidebar.

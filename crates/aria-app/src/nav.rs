@@ -7,7 +7,7 @@ use crate::ui::theme::icons;
 /// Maximum number of entries kept on the back stack.
 pub const HISTORY_CAP: usize = 50;
 
-/// The nine sidebar pages.
+/// The ten sidebar pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Route {
     Home,
@@ -18,12 +18,13 @@ pub enum Route {
     Albums,
     Artists,
     LocalMusic,
+    Soundboard,
     Settings,
 }
 
 impl Route {
     /// Every route, in sidebar order.
-    pub const ALL: [Route; 9] = [
+    pub const ALL: [Route; 10] = [
         Route::Home,
         Route::Search,
         Route::Library,
@@ -32,6 +33,7 @@ impl Route {
         Route::Albums,
         Route::Artists,
         Route::LocalMusic,
+        Route::Soundboard,
         Route::Settings,
     ];
 
@@ -46,6 +48,7 @@ impl Route {
             Route::Albums => "nav-albums",
             Route::Artists => "nav-artists",
             Route::LocalMusic => "nav-local",
+            Route::Soundboard => "nav-soundboard",
             Route::Settings => "nav-settings",
         }
     }
@@ -61,6 +64,7 @@ impl Route {
             Route::Albums => icons::VINYL_RECORD,
             Route::Artists => icons::MICROPHONE_STAGE,
             Route::LocalMusic => icons::FOLDER_SIMPLE,
+            Route::Soundboard => icons::SPEAKER_HIGH,
             Route::Settings => icons::GEAR,
         }
     }
@@ -69,9 +73,12 @@ impl Route {
     pub fn phase(self) -> Option<u8> {
         match self {
             Route::Search | Route::Library | Route::Albums | Route::Artists => Some(3),
-            Route::Home | Route::Liked | Route::Playlists | Route::LocalMusic | Route::Settings => {
-                None
-            }
+            Route::Home
+            | Route::Liked
+            | Route::Playlists
+            | Route::LocalMusic
+            | Route::Soundboard
+            | Route::Settings => None,
         }
     }
 }
@@ -196,6 +203,15 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, HISTORY_CAP);
+    }
+
+    #[test]
+    fn the_soundboard_follows_local_music_and_has_a_page() {
+        assert_eq!(Route::ALL.len(), 10);
+        let at = Route::ALL.iter().position(|r| *r == Route::Soundboard);
+        let local = Route::ALL.iter().position(|r| *r == Route::LocalMusic);
+        assert_eq!(at, local.map(|i| i + 1));
+        assert_eq!(Route::Soundboard.phase(), None);
     }
 
     #[test]

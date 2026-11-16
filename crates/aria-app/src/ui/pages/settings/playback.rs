@@ -15,7 +15,11 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
     group(ui, &p, &tr.tr("settings-playback"), |ui| {
         let device = tr.tr("settings-output-device");
         row(ui, &p, &device, |ui| {
-            device_combo(ui, tr, &device, ctx.devices, &mut s.output_device);
+            let choice = DeviceChoice {
+                salt: "aria_output_device",
+                none_key: "settings-device-system-default",
+            };
+            device_combo(ui, tr, &device, ctx.devices, &mut s.output_device, &choice);
         });
         divider(ui);
         let gapless = tr.tr("settings-gapless");
@@ -58,17 +62,27 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
     });
 }
 
-/// The output device combo box, named `name` for assistive technology: "System default",
-/// then each device. A saved device that is not in `devices` stays selected as "Unavailable
-/// device", so the setting is kept until the user chooses another. Its id is never shown.
-fn device_combo(
+/// How a device combo box differs from another.
+pub(super) struct DeviceChoice {
+    /// Tells it from the other combo boxes on the page.
+    pub(super) salt: &'static str,
+    /// The message id of the first entry, the one that stands for no particular device.
+    pub(super) none_key: &'static str,
+}
+
+/// An output device combo box, named `name` for assistive technology: the `choice`'s first
+/// entry ("System default" for the music, "None" for the second device), then each device. A
+/// saved device that is not in `devices` stays selected as "Unavailable device", so the
+/// setting is kept until the user chooses another. Its id is never shown.
+pub(super) fn device_combo(
     ui: &mut Ui,
     tr: &Localizer,
     name: &str,
     devices: &[DeviceInfo],
     selected: &mut Option<DeviceId>,
+    choice: &DeviceChoice,
 ) {
-    let system_default = tr.tr("settings-device-system-default");
+    let system_default = tr.tr(choice.none_key);
     let unavailable = tr.tr("settings-device-unavailable");
     let listed = |id: &DeviceId| devices.iter().find(|d| d.id == *id);
     let missing = selected.as_ref().is_some_and(|id| listed(id).is_none());
@@ -76,7 +90,7 @@ fn device_combo(
         None => system_default.to_string(),
         Some(id) => listed(id).map_or_else(|| unavailable.to_string(), |d| d.name.clone()),
     };
-    ComboBox::from_id_salt("aria_output_device")
+    ComboBox::from_id_salt(choice.salt)
         .width(DEVICE_COMBO_WIDTH)
         .truncate()
         .selected_text(text)
