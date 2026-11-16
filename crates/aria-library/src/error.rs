@@ -29,6 +29,9 @@ pub enum LibraryError {
     /// A playlist name is empty or longer than 100 characters after trimming.
     #[error("the playlist name must be 1 to 100 characters")]
     InvalidPlaylistName,
+    /// A sound name is empty or longer than 50 characters after trimming.
+    #[error("the sound name must be 1 to 50 characters")]
+    InvalidSoundName,
 }
 
 impl From<rusqlite::Error> for LibraryError {

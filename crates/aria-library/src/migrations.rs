@@ -79,6 +79,14 @@ ALTER TABLE tracks ADD COLUMN bits_per_sample INTEGER NOT NULL DEFAULT 0;
 -- makes the next scan read every file again: it fills the depth and corrects the codec of
 -- .m4a files. Favorites, playlists and plays are keyed by path and are not touched.
 UPDATE tracks SET mtime = 0;
+CREATE TABLE sounds (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    path     BLOB NOT NULL,
+    name     TEXT NOT NULL,
+    volume   REAL NOT NULL DEFAULT 1.0,
+    hotkey   TEXT,
+    position INTEGER NOT NULL
+);
 ",
 ];
 

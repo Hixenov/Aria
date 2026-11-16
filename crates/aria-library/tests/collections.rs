@@ -87,7 +87,7 @@ fn a_0_2_0_database_upgrades_and_keeps_its_data() {
         let c = ok(Connection::open(env.db()));
         ok(c.execute_batch(
             "DROP TABLE favorites; DROP TABLE playlist_items; DROP TABLE playlists;
-             DROP TABLE plays; ALTER TABLE tracks DROP COLUMN bits_per_sample;
+             DROP TABLE plays; DROP TABLE sounds; ALTER TABLE tracks DROP COLUMN bits_per_sample;
              PRAGMA user_version = 1;",
         ));
     }

@@ -66,10 +66,13 @@ fn read_mp4_codec(path: &Path) -> Option<Mp4Codec> {
     catch_unwind(AssertUnwindSafe(|| {
         let mut file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
         let options = ParseOptions::new().read_tags(false).read_cover_art(false);
-        Mp4File::read_from(&mut file, options)
-            .ok()?
-            .properties()
-            .codec()
+        match Mp4File::read_from(&mut file, options) {
+            Ok(mp4) => mp4.properties().codec(),
+            Err(_) => {
+                tracing::debug!("the MP4 codec could not be read; the codec stays mp4");
+                None
+            }
+        }
     }))
     .unwrap_or(None)
 }
