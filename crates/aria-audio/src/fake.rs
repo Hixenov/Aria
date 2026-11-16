@@ -22,6 +22,8 @@ struct FactoryState {
     devices: Vec<DeviceInfo>,
     exclusive_rates: Vec<u32>,
     exclusive_kinds: Vec<SampleKind>,
+    /// `None`: the factory's own channel count only.
+    exclusive_channels: Option<Vec<u16>>,
     refuse_exclusive: bool,
 }
 
@@ -33,6 +35,7 @@ impl Default for FactoryState {
             devices: Vec::new(),
             exclusive_rates: EXCLUSIVE_RATES.to_vec(),
             exclusive_kinds: EXCLUSIVE_KINDS.to_vec(),
+            exclusive_channels: None,
             refuse_exclusive: false,
         }
     }
@@ -41,8 +44,8 @@ impl Default for FactoryState {
 /// Opens fake outputs. Clones share their state, so a test can keep one and hand one away.
 ///
 /// A shared open runs at the factory's format. An exclusive one takes the track's format where
-/// the device allows it, at the factory's channel count only: by default every rate from
-/// 44.1 kHz to 192 kHz and every [`SampleKind`].
+/// the device allows it: by default the factory's channel count only, every rate from 44.1 kHz
+/// to 192 kHz and every [`SampleKind`].
 #[derive(Clone)]
 pub struct FakeFactory {
     format: OutputFormat,
@@ -78,6 +81,12 @@ impl FakeFactory {
         self.state().exclusive_kinds = kinds;
     }
 
+    /// Make the channel counts the device takes exclusively `channels`. Until then it takes only
+    /// the factory's own.
+    pub fn set_exclusive_channels(&self, channels: Vec<u16>) {
+        self.state().exclusive_channels = Some(channels);
+    }
+
     /// Make exclusive opens land on a shared output, as a device another program holds would.
     pub fn refuse_exclusive(&self, refuse: bool) {
         self.state().refuse_exclusive = refuse;
@@ -97,9 +106,10 @@ impl FakeFactory {
         if state.refuse_exclusive {
             return None;
         }
-        let channels = self.format.channels;
+        let own = [self.format.channels];
+        let channels = state.exclusive_channels.as_deref().unwrap_or(&own);
         choose_format(source, &state.exclusive_rates, &mut |format| {
-            format.channels == channels
+            channels.contains(&format.channels)
                 && state.exclusive_rates.contains(&format.sample_rate)
                 && state.exclusive_kinds.contains(&format.kind)
         })

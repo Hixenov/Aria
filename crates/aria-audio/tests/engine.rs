@@ -1515,6 +1515,38 @@ fn decode_all(path: &Path) -> Vec<f32> {
     }
 }
 
+/// The frames of `channels` channels in which something sounds, one after the other. Where an
+/// output ran dry the frames are silent, so this lines up what was heard with what a file holds.
+fn sounding(samples: &[f32], channels: usize) -> Vec<f32> {
+    samples
+        .chunks_exact(channels)
+        .filter(|frame| frame.iter().any(|sample| *sample != 0.0))
+        .flatten()
+        .copied()
+        .collect()
+}
+
+/// `heard` holds every sample of the stereo `file`, exactly, in order, and nothing else.
+fn assert_heard_whole(heard: &[f32], file: &Path) {
+    assert_heard_exactly(heard, &decode_all(file), 2, file);
+}
+
+fn assert_heard_exactly(heard: &[f32], expected: &[f32], channels: usize, file: &Path) {
+    let (heard, expected) = (sounding(heard, channels), sounding(expected, channels));
+    assert!(
+        heard == expected,
+        "{} sounding samples heard, {} in {}",
+        heard.len(),
+        expected.len(),
+        file.display()
+    );
+}
+
+/// A mono file's samples as both channels carry them.
+fn as_stereo(mono: &[f32]) -> Vec<f32> {
+    mono.iter().flat_map(|sample| [*sample, *sample]).collect()
+}
+
 fn peak(samples: &[f32]) -> f32 {
     samples
         .iter()
@@ -1620,9 +1652,9 @@ fn a_rate_change_reopens_the_output_between_tracks() {
         ]
     );
     // Each track whole, and on its own output only.
-    assert_near(audible_frames(&first_audio), 11_025);
-    assert_near(audible_frames(&second_audio), 24_000);
-    assert_near(audible_frames(&third_audio), 11_025);
+    assert_heard_whole(&first_audio, &dir.path().join("1.wav"));
+    assert_heard_whole(&second_audio, &dir.path().join("2.wav"));
+    assert_heard_whole(&third_audio, &dir.path().join("3.wav"));
     assert_eq!(rig.factory.outputs().len(), 3);
     let reading = rig.read();
     assert_eq!(reading.token, 3);
@@ -1656,8 +1688,8 @@ fn a_rate_change_with_gapless_off_reopens_the_output_too() {
             Stopped,
         ]
     );
-    assert_near(audible_frames(&first_audio), 11_025);
-    assert_near(audible_frames(&second_audio), 24_000);
+    assert_heard_whole(&first_audio, &dir.path().join("1.wav"));
+    assert_heard_whole(&second_audio, &dir.path().join("2.wav"));
 }
 
 #[test]
@@ -1681,7 +1713,7 @@ fn loading_a_track_of_another_rate_reopens_the_output() {
         [whole_second(2), TrackEnded { token: 2 }, Stopped]
     );
     assert_eq!(states(&events), [state(OutputPath::BitPerfect, 48_000, 16)]);
-    assert_near(audible_frames(&audio), 48_000);
+    assert_heard_whole(&audio, &fixture("tone-48k.flac"));
 }
 
 #[test]
@@ -1987,8 +2019,8 @@ fn a_wider_depth_reopens_the_output_between_tracks() {
         states(&events),
         [CD_BIT_PERFECT, state(OutputPath::BitPerfect, 44_100, 24)]
     );
-    assert_near(audible_frames(&first_audio), 4_410);
-    assert_near(audible_frames(&second_audio), 4_410);
+    assert_heard_whole(&first_audio, &fixture("depth-16.flac"));
+    assert_heard_whole(&second_audio, &fixture("depth-24.flac"));
     assert_eq!(rig.factory.outputs().len(), 2);
 }
 
@@ -2013,4 +2045,181 @@ fn a_narrower_depth_keeps_the_output() {
     // 16 bits widen exactly into 24.
     assert_eq!(states(&events), [state(OutputPath::BitPerfect, 44_100, 24)]);
     assert_eq!(rig.factory.outputs().len(), 1);
+}
+
+#[test]
+fn turning_exclusive_back_on_reports_the_state_again() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.send(load(track(1, "tone.flac")));
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+    rig.send(Stop);
+    assert_eq!(rig.next_track_event(), Stopped);
+
+    // Off and on again with nothing playing, so no state could be worked out in between.
+    rig.send(SetExclusive(false));
+    rig.send(SetExclusive(true));
+    rig.send(load(track(2, "tone.flac")));
+
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+}
+
+#[test]
+fn a_stereo_track_after_a_mono_one_is_not_downmixed() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.factory.set_exclusive_channels(vec![1, 2]);
+    rig.start_pair(track(1, "tone-mono.wav"), track(2, "tone.flac"));
+    let output = rig.output(0);
+
+    // The mono track goes to both channels, so the stereo one can follow on the same output.
+    assert_eq!(
+        output.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    let (audio, events) = rig.pull_to_stop(&output);
+
+    assert_eq!(
+        without_states(&events),
+        [
+            whole_second(1),
+            TrackEnded { token: 1 },
+            whole_second(2),
+            TrackEnded { token: 2 },
+            Stopped,
+        ]
+    );
+    assert_eq!(states(&events), [CD_BIT_PERFECT]);
+    let mut expected = as_stereo(&decode_all(&fixture("tone-mono.wav")));
+    expected.extend(decode_all(&fixture("tone.flac")));
+    assert_heard_exactly(&audio, &expected, 2, &fixture("tone.flac"));
+    assert_eq!(rig.factory.outputs().len(), 1);
+}
+
+#[test]
+fn a_track_with_more_channels_reopens_a_mono_output() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.factory.set_exclusive_channels(vec![1]);
+    rig.start_pair(track(1, "tone-mono.wav"), track(2, "tone.flac"));
+    let first = rig.output(0);
+    assert_eq!(
+        first.opened_as(),
+        (true, device_format(44_100, 1, SampleKind::I16))
+    );
+
+    // From now on the device takes stereo too, as one whose stereo mode was busy would.
+    rig.factory.set_exclusive_channels(vec![1, 2]);
+    let (first_audio, mut events) =
+        rig.pull_until(&first, |event| *event == TrackEnded { token: 1 });
+    let second = rig.output(1);
+    assert!(first.is_closed());
+    assert_eq!(
+        second.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    assert_eq!(rig.position_on(2), 0);
+    let (second_audio, heard) = rig.pull_to_stop(&second);
+    events.extend(heard);
+
+    assert_eq!(
+        without_states(&events),
+        [
+            whole_second(1),
+            TrackEnded { token: 1 },
+            whole_second(2),
+            TrackEnded { token: 2 },
+            Stopped,
+        ]
+    );
+    // Both bit-perfect at 44.1/16, so the state never changed.
+    assert_eq!(states(&events), [CD_BIT_PERFECT]);
+    let mono = fixture("tone-mono.wav");
+    assert_heard_exactly(&first_audio, &decode_all(&mono), 1, &mono);
+    assert_heard_whole(&second_audio, &fixture("tone.flac"));
+}
+
+#[test]
+fn a_seek_while_a_reopen_waits_plays_on_from_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = Rig::exclusive(STEREO_48K);
+    // The first track is decoded to its end, so the second waits for an output of its own.
+    rig.start_pair(
+        quarter_tone(dir.path(), 1, 44_100),
+        quarter_tone(dir.path(), 2, 96_000),
+    );
+    let output = rig.output(0);
+    rig.hear_start(&output);
+
+    rig.send(Seek(150));
+    wait_until("the seek", || rig.read().position_ms.abs_diff(150) <= 5);
+    let (first_audio, mut events) =
+        rig.pull_until(&output, |event| *event == TrackEnded { token: 1 });
+    let second = rig.output(1);
+    assert_eq!(
+        second.opened_as(),
+        (true, device_format(96_000, 2, SampleKind::I16))
+    );
+    let (second_audio, heard) = rig.pull_to_stop(&second);
+    events.extend(heard);
+
+    assert_eq!(
+        without_states(&events),
+        [
+            TrackEnded { token: 1 },
+            quarter_second(2),
+            TrackEnded { token: 2 },
+            Stopped,
+        ]
+    );
+    // The 5 ms fade out of what was queued, then the first track from 150 ms to its end.
+    assert_near(audible_frames(&first_audio), 220 + 4_410);
+    assert_heard_whole(&second_audio, &dir.path().join("2.wav"));
+    assert_eq!(rig.factory.outputs().len(), 2);
+}
+
+#[test]
+fn a_stop_while_a_reopen_waits_opens_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.start_pair(
+        quarter_tone(dir.path(), 1, 44_100),
+        quarter_tone(dir.path(), 2, 96_000),
+    );
+    let output = rig.output(0);
+    rig.hear_start(&output);
+
+    rig.send(Stop);
+
+    assert_eq!(rig.next_track_event(), Stopped);
+    wait_until("the clock to reset", || {
+        rig.read() == ClockReading::default()
+    });
+    output.pull(SECOND);
+    // The thread still answers, and nothing was waiting to start.
+    rig.send(load(track(3, "no-such-file.flac")));
+    assert_eq!(rig.next_track_event(), TrackFailed { token: 3 });
+    assert_eq!(rig.factory.outputs().len(), 1);
+    assert_eq!(rig.read().token, 0);
+}
+
+#[test]
+fn a_reopen_for_a_new_rate_keeps_counting_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.start_pair(
+        quarter_tone(dir.path(), 1, 44_100),
+        quarter_tone(dir.path(), 2, 96_000),
+    );
+    for rebuild in 0..3 {
+        rig.output(rebuild).fail();
+        assert_eq!(rig.next_track_event(), DeviceFellBack);
+    }
+    let last = rig.output(3);
+    rig.pull_until(&last, |event| *event == TrackEnded { token: 1 });
+
+    let reopened = rig.output(4);
+    assert_eq!(reopened.opened_as().1.sample_rate, 96_000);
+    reopened.fail();
+
+    // Three rebuilds in the window already: a new format is no fresh start.
+    assert_eq!(rig.next_track_event(), NoDevice);
+    assert_eq!(rig.factory.outputs().len(), 5);
 }

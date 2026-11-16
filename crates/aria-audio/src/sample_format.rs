@@ -123,18 +123,19 @@ fn kinds_for(source: SourceFormat) -> impl Iterator<Item = SampleKind> {
 /// source's rate; then the same at the nearest supported rate. `rates` are the rates the
 /// device supports; `accepts` asks the device about one format. `None` when it takes none.
 ///
-/// A mono source may also be played to both channels (spec 3.1 counts that as unchanged). For
-/// each depth it is asked for with one channel first and two channels second, before the next
-/// depth; so a mono 16-bit source at 44.1 kHz asks, in order: I16 mono, I16 stereo, I24In32
-/// mono, I24In32 stereo, I32 mono, I32 stereo, then the same at the nearest rate. Any other
-/// channel count is asked for only as it is.
+/// A mono source is played to both channels where the device allows it (spec 3.1 counts that as
+/// unchanged), so that a stereo track after it can follow on the same output. For each depth it
+/// is asked for with two channels first and one channel second, before the next depth; so a
+/// mono 16-bit source at 44.1 kHz asks, in order: I16 stereo, I16 mono, I24In32 stereo, I24In32
+/// mono, I32 stereo, I32 mono, then the same at the nearest rate. Any other channel count is
+/// asked for only as it is.
 pub fn choose_format(
     source: SourceFormat,
     rates: &[u32],
     accepts: &mut dyn FnMut(DeviceFormat) -> bool,
 ) -> Option<DeviceFormat> {
     let layouts: &[u16] = if source.channels == 1 {
-        &[1, 2]
+        &[2, 1]
     } else {
         std::slice::from_ref(&source.channels)
     };
@@ -447,33 +448,33 @@ mod tests {
     }
 
     #[test]
-    fn a_mono_source_on_a_stereo_only_device_opens_in_stereo() {
+    fn a_mono_source_asks_for_stereo_first() {
         let mono = SourceFormat {
             sample_rate: 44_100,
             channels: 1,
             bits: Some(16),
             float: false,
         };
+        let stereo_cd = DeviceFormat {
+            sample_rate: 44_100,
+            channels: 2,
+            kind: SampleKind::I16,
+        };
+
+        // A device that takes both gets stereo; nothing else is asked.
+        let (chosen, asked) = choose(mono, &[44_100], &ALL_KINDS);
+        assert_eq!(chosen, Some(stereo_cd));
+        assert_eq!(asked.len(), 1);
+
+        // A device that takes only mono gets mono, after stereo was asked.
         let mut asked = Vec::new();
         let chosen = choose_format(mono, &[44_100], &mut |format| {
             asked.push(format);
-            format.channels == 2
+            format.channels == 1
         });
-        assert_eq!(
-            chosen,
-            Some(DeviceFormat {
-                sample_rate: 44_100,
-                channels: 2,
-                kind: SampleKind::I16
-            })
-        );
-        let order: Vec<_> = asked.iter().map(|f| (f.kind, f.channels)).collect();
-        assert_eq!(order, [(SampleKind::I16, 1), (SampleKind::I16, 2)]);
-
-        // A device that takes mono gets mono; nothing else is asked.
-        let (chosen, asked) = choose(mono, &[44_100], &ALL_KINDS);
         assert_eq!(chosen.map(|f| f.channels), Some(1));
-        assert_eq!(asked.len(), 1);
+        let order: Vec<_> = asked.iter().map(|f| (f.kind, f.channels)).collect();
+        assert_eq!(order, [(SampleKind::I16, 2), (SampleKind::I16, 1)]);
 
         // Every depth tries both layouts before the rate gives way.
         let mut asked = Vec::new();
@@ -485,8 +486,7 @@ mod tests {
             chosen,
             Some(DeviceFormat {
                 sample_rate: 48_000,
-                channels: 2,
-                kind: SampleKind::I16
+                ..stereo_cd
             })
         );
         let order: Vec<_> = asked
@@ -496,13 +496,12 @@ mod tests {
         assert_eq!(
             order,
             [
-                (44_100, SampleKind::I16, 1),
                 (44_100, SampleKind::I16, 2),
-                (44_100, SampleKind::I24In32, 1),
+                (44_100, SampleKind::I16, 1),
                 (44_100, SampleKind::I24In32, 2),
-                (44_100, SampleKind::I32, 1),
+                (44_100, SampleKind::I24In32, 1),
                 (44_100, SampleKind::I32, 2),
-                (48_000, SampleKind::I16, 1),
+                (44_100, SampleKind::I32, 1),
                 (48_000, SampleKind::I16, 2),
             ]
         );

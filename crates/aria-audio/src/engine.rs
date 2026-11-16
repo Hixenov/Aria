@@ -272,7 +272,7 @@ struct Sink {
 impl Sink {
     /// Whether a track of `source` can follow on this output as it is. A shared output takes
     /// anything and resamples. An exclusive one keeps to the rate it was opened for, or that it
-    /// runs at, and to integer depths its samples carry exactly.
+    /// runs at, to integer depths its samples carry exactly, and to as many channels as it has.
     fn fits(&self, source: &SourceFormat) -> bool {
         if !self.exclusive {
             return true;
@@ -280,7 +280,15 @@ impl Sink {
         let rate_fits = self.opened_for.map(|opened| opened.sample_rate)
             == Some(source.sample_rate)
             || self.device.sample_rate == source.sample_rate;
-        rate_fits && !self.too_narrow_for(source)
+        rate_fits && !self.too_narrow_for(source) && !self.too_few_channels_for(source)
+    }
+
+    /// Whether `source` has more channels than the output, which would mix it down, and a new
+    /// output might have them. As with depth, an output opened for a track with that many
+    /// already got what the device gives.
+    fn too_few_channels_for(&self, source: &SourceFormat) -> bool {
+        let opened_channels = self.opened_for.map_or(0, |opened| opened.channels);
+        source.channels > self.device.channels && source.channels > opened_channels
     }
 
     /// Whether `source` is integer audio deeper than the output carries, and a new output might
@@ -865,6 +873,11 @@ impl Worker {
             return;
         }
         self.exclusive = exclusive;
+        if exclusive {
+            // Whoever listens has taken the path for the system mixer since the mode went off,
+            // whether or not that was ever said. The first exclusive state must be sent.
+            self.last_output = None;
+        }
         let Some(sink) = &self.sink else {
             return;
         };
@@ -1188,8 +1201,10 @@ impl Worker {
         // Before the track takes its place, which counts from the start of the output.
         let reopen = self.close_unfit_output(decoder.info());
         self.start_at(track, decoder, 0, false);
-        if reopen && self.playing {
-            self.ensure_output();
+        // Not through `ensure_output`, which would forget the recent failures: a new format is
+        // no fresh start.
+        if reopen && self.playing && self.open_output().is_none() {
+            self.lose_output();
         }
     }
 
