@@ -20,7 +20,7 @@ use std::{
 
 use anyhow::{Context as _, anyhow};
 use aria_app::{
-    APP_NAME,
+    APP_NAME, SystemHotkeys,
     app::{AppDeps, AriaApp},
     whole_ms,
 };
@@ -150,7 +150,19 @@ fn main() -> anyhow::Result<()> {
     };
     log_stage("backend", stage.elapsed());
 
-    // 6. The window. The app owns the backend from here and stops it in `on_exit`. `main`
+    // 6. Global hotkeys. Their manager must be made here, on the main thread, before the event
+    // loop starts. Without it Aria runs with every hotkey refused.
+    let stage = Instant::now();
+    let hotkeys = match SystemHotkeys::new() {
+        Ok(hotkeys) => Some(hotkeys),
+        Err(err) => {
+            tracing::warn!(%err, "global hotkeys are unavailable");
+            None
+        }
+    };
+    log_stage("hotkeys", stage.elapsed());
+
+    // 7. The window. The app owns the backend from here and stops it in `on_exit`. `main`
     // keeps `logging` itself, so what is logged after the window closes still reaches the
     // file.
     let deps = AppDeps {
@@ -158,6 +170,7 @@ fn main() -> anyhow::Result<()> {
         logging: logging.as_ref().map(LoggingHandle::level),
         paths,
         clock: None,
+        hotkeys,
     };
     let mut parts = Some((settings, localizer, deps, notices));
     let stage = Instant::now();

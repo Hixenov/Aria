@@ -110,6 +110,7 @@ fn harness(snapshot: LibrarySnapshot) -> Harness<'static, Page> {
                     library: &page.library,
                     collections: &Default::default(),
                     soundboard: &Default::default(),
+                    inactive_hotkeys: &[],
                     devices: &[],
                     artwork: None,
                 };

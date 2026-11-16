@@ -15,6 +15,7 @@ mod test_support;
 
 use aria_core::{
     DeviceInfo,
+    hotkey::Hotkey,
     i18n::{FluentArgs, Localizer},
     settings::Settings,
     soundboard::SoundboardState,
@@ -57,6 +58,8 @@ pub struct PageCtx<'a> {
     pub collections: &'a Collections,
     /// The sounds as the backend last reported them. Empty until it answers.
     pub soundboard: &'a SoundboardState,
+    /// The hotkeys the system refused to register, which do not work now.
+    pub inactive_hotkeys: &'a [Hotkey],
     /// The output devices as the backend last listed them. Empty until it answers.
     pub devices: &'a [DeviceInfo],
     /// Cover textures, when the thumbnails' folder is known. Without it, covers show as

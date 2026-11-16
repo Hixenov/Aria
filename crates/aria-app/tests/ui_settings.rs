@@ -760,6 +760,7 @@ fn settings_only(
                     library: &page.library,
                     collections: &Default::default(),
                     soundboard: &Default::default(),
+                    inactive_hotkeys: &[],
                     devices: &page.devices,
                     artwork: None,
                 };

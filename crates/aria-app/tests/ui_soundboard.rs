@@ -99,6 +99,7 @@ fn page(route: Route, settings: Settings, sounds: Vec<SoundView>) -> Harness<'st
                     library: &library,
                     collections: &Default::default(),
                     soundboard: &page.soundboard,
+                    inactive_hotkeys: &[],
                     devices: &page.devices,
                     artwork: None,
                 };

@@ -50,6 +50,7 @@ impl World {
             library: &self.library,
             collections: &self.collections,
             soundboard: &self.soundboard,
+            inactive_hotkeys: &[],
             devices: &[],
             artwork: None,
         };

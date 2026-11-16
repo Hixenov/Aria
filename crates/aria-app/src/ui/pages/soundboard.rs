@@ -1,5 +1,6 @@
 //! The Soundboard page: a wrapping grid of tiles, one per sound. A click plays a sound, a
-//! right click opens its menu: rename, hotkey, volume and remove.
+//! right click opens its menu: rename, hotkey, volume and remove. A hotkey the system refused is
+//! struck through on its tile.
 //!
 //! The page keeps no copy of the sounds. Every change is a request, and the list it draws is
 //! the one the backend last reported. A volume is sent only when the user lets go of the bar:
@@ -13,7 +14,7 @@ use aria_library::SoundId;
 use eframe::egui::{
     Align2, Button, CursorIcon, Id, Sense, Stroke, StrokeKind, TextStyle, Ui, WidgetInfo,
     accesskit::{Role, Toggled},
-    text::LayoutJob,
+    text::{LayoutJob, TextFormat},
     vec2,
 };
 
@@ -148,7 +149,10 @@ fn tile(ui: &mut Ui, ctx: &mut PageCtx<'_>, sound: &SoundView, removing: &mut Op
     let (rect, response) = ui.allocate_exact_size(vec2(TILE[0], TILE[1]), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, &sound.name));
     let hotkey = sound.hotkey.as_ref().map(ToString::to_string);
-    let description = describe(tr, sound, hotkey.as_deref());
+    let inactive = sound
+        .hotkey
+        .is_some_and(|hotkey| ctx.inactive_hotkeys.contains(&hotkey));
+    let description = describe(tr, sound, hotkey.as_deref(), inactive);
     let toggled = if sound.playing {
         Toggled::True
     } else {
@@ -162,22 +166,30 @@ fn tile(ui: &mut Ui, ctx: &mut PageCtx<'_>, sound: &SoundView, removing: &mut Op
     });
 
     if ui.is_rect_visible(rect) {
-        paint(ui, &p, rect, sound, hotkey.as_deref(), &response);
+        paint(ui, &p, rect, sound, hotkey.as_deref(), inactive, &response);
     }
     if response.clicked() {
         ctx.out.push(PageAction::PlaySound(sound.id));
     }
+    let response = if inactive {
+        response.on_hover_text(tr.tr("hotkey-inactive-hint"))
+    } else {
+        response
+    };
     response
         .on_hover_cursor(CursorIcon::PointingHand)
         .context_menu(|ui| menu(ui, ctx, sound, hotkey.as_deref(), removing));
 }
 
-/// What assistive technology reads after a tile's name: its hotkey, and that its file is
-/// missing. Empty when there is nothing to add.
-fn describe(tr: &Localizer, sound: &SoundView, hotkey: Option<&str>) -> String {
+/// What assistive technology reads after a tile's name: its hotkey, whether that works, and
+/// that its file is missing. Empty when there is nothing to add.
+fn describe(tr: &Localizer, sound: &SoundView, hotkey: Option<&str>, inactive: bool) -> String {
     let mut parts = Vec::new();
     if let Some(hotkey) = hotkey {
         parts.push(hotkey.to_owned());
+        if inactive {
+            parts.push(tr.tr("hotkey-inactive-hint").into_owned());
+        }
     }
     if sound.missing {
         parts.push(tr.tr("sound-missing").into_owned());
@@ -192,6 +204,7 @@ fn paint(
     rect: eframe::egui::Rect,
     sound: &SoundView,
     hotkey: Option<&str>,
+    inactive: bool,
     response: &eframe::egui::Response,
 ) {
     let painter = ui.painter();
@@ -241,13 +254,21 @@ fn paint(
         );
     }
     if let Some(hotkey) = hotkey {
-        painter.text(
-            inner.left_bottom(),
-            Align2::LEFT_BOTTOM,
-            hotkey,
-            TextStyle::Small.resolve(ui.style()),
-            p.text_muted,
-        );
+        // A hotkey that does not work is struck through, in the color of a warning.
+        let (color, strike) = if inactive {
+            (p.danger, Stroke::new(1.0, p.danger))
+        } else {
+            (p.text_muted, Stroke::NONE)
+        };
+        let format = TextFormat {
+            font_id: TextStyle::Small.resolve(ui.style()),
+            color,
+            strikethrough: strike,
+            ..TextFormat::default()
+        };
+        let galley = painter.layout_job(LayoutJob::single_section(hotkey.to_owned(), format));
+        let at = inner.left_bottom() - vec2(0.0, galley.size().y);
+        painter.galley(at, galley, color);
     }
 }
 

@@ -157,6 +157,16 @@ sound-failed = This sound couldn't be played. The music wasn't affected.
 sound-device-failed = The second device for sounds couldn't be used.
 hotkey-not-allowed = A hotkey needs Ctrl, Alt or Win, unless its key is an F key or a numpad key.
 hotkey-taken = This hotkey is already used in Aria.
+hotkey-unavailable = The system refused this hotkey, perhaps because another program uses it. It wasn't saved.
+# $count (Number) - how many hotkeys the system refused to register
+hotkeys-inactive = { $count ->
+    [one] { $count } hotkey doesn't work: the system refused it, perhaps because another program uses it.
+   *[other] { $count } hotkeys don't work: the system refused them, perhaps because other programs use them.
+}
+hotkey-inactive-hint = The system refused this hotkey, perhaps because another program uses it. It doesn't work now.
+hotkey-dialog-title = Set a hotkey
+hotkey-dialog-hint = Press the keys together. Escape cancels; Delete or Backspace clears the hotkey.
+hotkey-dialog-clear = Clear
 
 ## Local Music page
 

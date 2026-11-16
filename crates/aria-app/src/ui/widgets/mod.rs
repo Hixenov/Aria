@@ -2,6 +2,7 @@
 
 mod confirm_dialog;
 mod empty_state;
+mod hotkey_dialog;
 mod icon_button;
 mod name_dialog;
 mod nav_item;
@@ -13,6 +14,7 @@ pub mod track_menu;
 
 pub use confirm_dialog::{Confirm, confirm_dialog};
 pub use empty_state::{empty_state, empty_state_with};
+pub use hotkey_dialog::{HotkeyAnswer, HotkeyDialog};
 pub use icon_button::IconButton;
 pub use name_dialog::{NameAnswer, NameDialog};
 pub use nav_item::{NAV_ROW_HEIGHT, nav_item};
