@@ -20,14 +20,19 @@ use crate::{error::LoggingError, settings::LogLevel};
 /// Name of the environment variable that overrides the configured level.
 const ENV_VAR: &str = "ARIA_LOG";
 
+/// Holds the `wasapi` crate at `warn` whatever else is asked. It logs on every buffer of an
+/// exclusive stream, from the render thread, where nothing may reach the logger.
+const QUIET_ON_THE_AUDIO_THREAD: &str = "wasapi=warn";
+
 /// Builds the filter directive: the non-empty env override, else Aria's crates
-/// at `level` and everything else at `warn`.
+/// at `level` and everything else at `warn`. Either way [`QUIET_ON_THE_AUDIO_THREAD`] comes
+/// last, so it replaces any `wasapi` directive before it.
 pub fn filter_directive(level: LogLevel, env_override: Option<&str>) -> String {
     match env_override {
-        Some(value) if !value.is_empty() => value.to_owned(),
+        Some(value) if !value.is_empty() => format!("{value},{QUIET_ON_THE_AUDIO_THREAD}"),
         _ => {
             let lvl = level.as_filter();
-            format!("warn,aria_core={lvl},aria={lvl}")
+            format!("warn,aria_core={lvl},aria={lvl},{QUIET_ON_THE_AUDIO_THREAD}")
         }
     }
 }
@@ -100,18 +105,20 @@ fn start_filter(level: LogLevel, env_override: Option<&str>) -> Result<StartFilt
             rejected: None,
         });
     };
-    Ok(match EnvFilter::try_new(value) {
-        Ok(filter) => StartFilter {
-            filter,
-            env_overridden: true,
-            rejected: None,
+    Ok(
+        match EnvFilter::try_new(filter_directive(level, Some(value))) {
+            Ok(filter) => StartFilter {
+                filter,
+                env_overridden: true,
+                rejected: None,
+            },
+            Err(err) => StartFilter {
+                filter: from_level()?,
+                env_overridden: false,
+                rejected: Some((value.to_owned(), err.to_string())),
+            },
         },
-        Err(err) => StartFilter {
-            filter: from_level()?,
-            env_overridden: false,
-            rejected: Some((value.to_owned(), err.to_string())),
-        },
-    })
+    )
 }
 
 /// Installs the global subscriber. Logs to a daily-rotated file in `log_dir`
@@ -240,17 +247,47 @@ mod tests {
     fn directive_uses_level_when_no_env() {
         assert_eq!(
             filter_directive(LogLevel::Debug, None),
-            "warn,aria_core=debug,aria=debug"
+            "warn,aria_core=debug,aria=debug,wasapi=warn"
         );
     }
 
     #[test]
     fn directive_prefers_env() {
-        assert_eq!(filter_directive(LogLevel::Info, Some("trace")), "trace");
+        assert_eq!(
+            filter_directive(LogLevel::Info, Some("trace")),
+            "trace,wasapi=warn"
+        );
         assert_eq!(
             filter_directive(LogLevel::Info, Some("")),
-            "warn,aria_core=info,aria=info"
+            "warn,aria_core=info,aria=info,wasapi=warn"
         );
+    }
+
+    #[test]
+    fn wasapi_stays_at_warn_whatever_is_asked() {
+        let directives = [
+            filter_directive(LogLevel::Trace, None),
+            filter_directive(LogLevel::Info, Some("trace")),
+            filter_directive(LogLevel::Info, Some("wasapi=trace,aria=trace")),
+        ];
+        for directive in directives {
+            let filter = EnvFilter::try_new(&directive).unwrap();
+            let subscriber = tracing_subscriber::registry().with(filter);
+            tracing::subscriber::with_default(subscriber, || {
+                assert!(
+                    !tracing::enabled!(target: "wasapi::api", tracing::Level::TRACE),
+                    "{directive} lets wasapi trace through"
+                );
+                assert!(
+                    !tracing::enabled!(target: "wasapi::api", tracing::Level::INFO),
+                    "{directive} lets wasapi info through"
+                );
+                assert!(
+                    tracing::enabled!(target: "wasapi::api", tracing::Level::WARN),
+                    "{directive} silences wasapi warnings"
+                );
+            });
+        }
     }
 
     /// The filter built from `level` alone, as text.
@@ -265,7 +302,8 @@ mod tests {
         let start = start_filter(LogLevel::Info, Some("aria=trace")).unwrap();
         assert!(start.env_overridden);
         assert!(start.rejected.is_none());
-        assert_eq!(start.filter.to_string(), "aria=trace");
+        // The filter lists its directives in its own order.
+        assert_eq!(start.filter.to_string(), "wasapi=warn,aria=trace");
     }
 
     #[test]
