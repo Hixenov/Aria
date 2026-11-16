@@ -65,6 +65,7 @@ output. Only silence was ever written to the device, and nobody listened.
 | The volume slider is locked at 100 % with its tooltip; mute still works; turning the mode off brings back the saved volume | pending |
 | With exclusive mode refused (another program holds the device, or a Bluetooth headset), the slider is not locked, shows the saved volume and changes the level heard; when an exclusive output opens again it locks at 100 % | pending |
 | Unplug the exclusive device while a track plays, with nothing else to open: the paused track no longer shows "Bit-perfect" | pending |
+| After a refused exclusive open, free the device: Aria stays on the system mixer until the output is opened again (pause for more than 15 seconds, then play) | pending |
 | With another program holding the device exclusively, Aria falls back with a notice (or, if Windows refuses the shared stream as well, says so) and playback never stops because of the setting | pending |
 | Unplug the output device (or switch it off) while a track plays: playback goes on in the best mode left and a notice appears | pending |
 | A mono track is heard in both ears in exclusive mode | pending |
@@ -96,6 +97,8 @@ output. Only silence was ever written to the device, and nobody listened.
 | A virtual audio cable as the second device, used as the microphone of a voice chat program: the other side hears the sounds | pending |
 | A sound plays while exclusive mode is on: the indicator shows "Mixed with a sound" for that time and returns to "Bit-perfect" afterwards | pending |
 | A sound playing on your device is cut at a rate change in exclusive mode (stated limitation) | pending |
+| With exclusive mode on and no music playing, fire a sound while a browser video plays: the video goes silent and sounds again about 15 seconds after the last sound (stated behaviour) | pending |
+| The player's mute and volume leave sounds as they are (stated behaviour) | pending |
 
 ### Hotkeys
 
