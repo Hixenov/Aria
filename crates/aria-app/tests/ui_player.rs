@@ -763,6 +763,11 @@ fn every_row_and_heading_is_the_same_height() {
     assert_eq!(top("Song 4") - top("Song 3"), 96.0);
 }
 
+/// The bar's line for the 96 kHz FLAC of `locked_view` and the path named by `key`.
+fn line(key: &str) -> String {
+    format!("FLAC 24/96 · {}", en(key))
+}
+
 fn locked_view(output: Option<OutputPath>, locked: bool) -> PlayerView {
     PlayerView {
         output: output.map(|path| OutputState {
@@ -793,12 +798,14 @@ fn the_indicator_names_each_output_path() {
     for (path, key) in cases {
         let harness = bar_harness(locked_view(Some(path), true), 0);
         assert!(
-            harness.query_by_label(&en(key)).is_some(),
+            harness.query_by_label(&line(key)).is_some(),
             "{path:?} did not show {key}"
         );
-        assert!(harness.query_by_label("FLAC 24/96").is_some());
         for (_, other) in cases.iter().filter(|(_, other)| *other != key) {
-            assert!(harness.query_by_label(&en(other)).is_none(), "{other} too");
+            assert!(
+                harness.query_by_label(&line(other)).is_none(),
+                "{other} too"
+            );
         }
     }
 }
@@ -806,7 +813,11 @@ fn the_indicator_names_each_output_path() {
 #[test]
 fn shared_output_without_a_state_is_the_system_mixer() {
     let harness = bar_harness(locked_view(None, false), 0);
-    assert!(harness.query_by_label(&en("output-system-mixer")).is_some());
+    assert!(
+        harness
+            .query_by_label(&line("output-system-mixer"))
+            .is_some()
+    );
 }
 
 #[test]
@@ -820,8 +831,20 @@ fn exclusive_mode_before_the_engine_reports_shows_only_the_format() {
         "output-converted",
         "output-mixed",
     ] {
-        assert!(harness.query_by_label(&en(key)).is_none(), "{key} shown");
+        assert!(harness.query_by_label(&line(key)).is_none(), "{key} shown");
     }
+}
+
+#[test]
+fn the_indicator_tooltip_explains_the_path() {
+    let mut harness = bar_harness(locked_view(Some(OutputPath::BitPerfect), true), 0);
+    harness.get_by_label(&line("output-bit-perfect")).hover();
+    for _ in 0..10 {
+        harness.step();
+    }
+    let hint = en("output-bit-perfect-hint");
+    assert!(hint.contains("5 ms"), "the hint no longer names the fade");
+    assert!(harness.query_by_label(&hint).is_some(), "no tooltip");
 }
 
 #[test]

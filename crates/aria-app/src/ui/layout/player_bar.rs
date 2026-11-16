@@ -260,32 +260,42 @@ fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>, out: &mut Vec<PlayerAction>
     }
 }
 
+/// Between the format and the path on the bar's line.
+pub const LINE_SEPARATOR: &str = " · ";
+
 /// The file's format and how its sound reaches the device, as small text under the artist. The
 /// path has a tooltip saying what it means. Nothing is shown of a path the engine has not
 /// reported: while exclusive mode is on and no state has arrived, the format stands alone, and
 /// the system mixer is named only when exclusive mode is off.
 fn output_line(ui: &mut Ui, bar: &PlayerBar<'_>) {
     let p = bar.palette;
-    let format = bar.view.format.as_ref().map(format_label);
+    let format = bar
+        .view
+        .format
+        .as_ref()
+        .map(format_label)
+        .filter(|text| !text.is_empty());
     let path = path_key(bar.view);
     if format.is_none() && path.is_none() {
         return;
     }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = SPACE[0];
-        if let Some(format) = &format {
-            let text = RichText::new(format).small().color(p.text_muted);
-            ui.add(Label::new(text).selectable(false));
-        }
+    // One line that gives way to the heart with an ellipsis; the tooltip has all of it.
+    let name = path.map(|key| bar.tr.tr(key));
+    let parts: Vec<&str> = format
+        .as_deref()
+        .into_iter()
+        .chain(name.as_deref())
+        .collect();
+    let line = parts.join(LINE_SEPARATOR);
+    let text = RichText::new(&line).small().color(p.text_muted);
+    let label = Label::new(text)
+        .selectable(false)
+        .truncate()
+        .sense(Sense::hover());
+    ui.add(label).on_hover_ui(|ui| {
+        ui.label(&line);
         if let Some(key) = path {
-            if format.is_some() {
-                let dot = RichText::new("·").small().color(p.text_muted);
-                ui.add(Label::new(dot).selectable(false));
-            }
-            let text = RichText::new(bar.tr.tr(key)).small().color(p.text_muted);
-            let label = Label::new(text).selectable(false).sense(Sense::hover());
-            ui.add(label)
-                .on_hover_text(bar.tr.tr(&format!("{key}-hint")));
+            ui.label(RichText::new(bar.tr.tr(&format!("{key}-hint"))).color(p.text_muted));
         }
     });
 }
@@ -310,6 +320,14 @@ fn path_key(view: &PlayerView) -> Option<&'static str> {
 /// A file's format as the bar shows it: the codec, the depth for lossless files only (a lossy
 /// file's tags can report one that means nothing), and the rate in kHz. "FLAC 24/96", "MP3 44.1".
 pub fn format_label(format: &TrackFormat) -> String {
+    let codec = match &*format.codec {
+        "unknown" => String::new(),
+        codec => codec.to_uppercase(),
+    };
+    if format.sample_rate == 0 {
+        // A file whose rate could not be read: no "0/0", only what is known.
+        return codec;
+    }
     let (whole, part) = (format.sample_rate / 1_000, format.sample_rate % 1_000);
     let rate = if part == 0 {
         whole.to_string()
@@ -324,9 +342,10 @@ pub fn format_label(format: &TrackFormat) -> String {
         }
         _ => rate,
     };
-    match &*format.codec {
-        "unknown" => rate,
-        codec => format!("{} {rate}", codec.to_uppercase()),
+    if codec.is_empty() {
+        rate
+    } else {
+        format!("{codec} {rate}")
     }
 }
 
@@ -656,6 +675,13 @@ mod tests {
         assert_eq!(format("alac", 24, 192_000, Quality::HiRes), "ALAC 24/192");
         assert_eq!(format("mp3", 0, 44_100, Quality::Lossy), "MP3 44.1");
         assert_eq!(format("flac", 24, 88_200, Quality::HiRes), "FLAC 24/88.2");
+    }
+
+    #[test]
+    fn an_unreadable_rate_shows_no_junk() {
+        assert_eq!(format("flac", 24, 0, Quality::Lossless), "FLAC");
+        assert_eq!(format("unknown", 0, 0, Quality::Lossy), "");
+        assert_eq!(format("unknown", 0, 44_100, Quality::Lossy), "44.1");
     }
 
     #[test]

@@ -890,6 +890,8 @@ fn the_exclusive_switch_is_disabled_where_unsupported() {
     let label = en("settings-exclusive");
     let switch = harness.get_by_role_and_label(Role::CheckBox, &label);
     assert!(switch.accesskit_node().is_disabled());
+    switch.click();
+    harness.run();
     assert!(
         harness
             .query_by_label(&en("settings-exclusive-windows-only"))

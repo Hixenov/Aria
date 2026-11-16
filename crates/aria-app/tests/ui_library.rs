@@ -172,6 +172,17 @@ fn the_quality_column_shows_lossless_and_hi_res_badges() {
 }
 
 #[test]
+fn the_quality_badge_has_a_tooltip_with_codec_depth_and_rate() {
+    let mut harness = harness(quality_library());
+    harness.get_by_label(&en("quality-hi-res")).hover();
+    for _ in 0..10 {
+        harness.step();
+    }
+    let tip = format!("{} · FLAC 24/96", en("quality-hi-res"));
+    assert!(harness.query_by_label(&tip).is_some(), "no tooltip");
+}
+
+#[test]
 fn the_lossless_toggle_filters_the_table() {
     let mut harness = harness(quality_library());
     assert!(harness.query_by_label("Lossy song").is_some());

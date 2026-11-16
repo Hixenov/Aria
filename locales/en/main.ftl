@@ -235,7 +235,7 @@ playlist-track-count = { $count ->
 
 ## Output path, exclusive mode and quality
 output-bit-perfect = Bit-perfect
-output-bit-perfect-hint = The samples reach the device unchanged. A track change fades over 5 ms.
+output-bit-perfect-hint = The samples reach the device unchanged. Starting, pausing, resuming and seeking fade over 5 ms; gapless joins between tracks have no fade.
 output-resampled = Resampled
 output-resampled-hint = Exclusive output at a rate the track does not have, so the samples are resampled.
 output-converted = Converted

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use aria_core::playback_service::TrackFormat;
 use aria_library::{LibrarySnapshot, Quality};
 use eframe::egui::{Button, Label, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
@@ -11,6 +12,7 @@ use super::{
     view::{SortKey, TrackView},
 };
 use crate::ui::{
+    layout::player_bar::{LINE_SEPARATOR, format_label},
     theme::{
         Palette,
         fonts::{icon_font, semibold},
@@ -136,10 +138,30 @@ pub fn show(
                     );
                 });
                 row.col(|ui| cell(ui, &format_duration(track.duration_ms), muted));
-                row.col(|ui| match track.quality() {
-                    Quality::Lossy => {}
-                    Quality::Lossless => cell(ui, &tr.tr("quality-lossless"), muted),
-                    Quality::HiRes => cell(ui, &tr.tr("quality-hi-res"), p.accent),
+                row.col(|ui| {
+                    let (key, color) = match track.quality() {
+                        Quality::Lossy => return,
+                        Quality::Lossless => ("quality-lossless", muted),
+                        Quality::HiRes => ("quality-hi-res", p.accent),
+                    };
+                    let name = tr.tr(key);
+                    let format = TrackFormat {
+                        codec: Arc::clone(&track.codec),
+                        sample_rate: track.sample_rate,
+                        bits_per_sample: track.bits_per_sample,
+                        quality: track.quality(),
+                    };
+                    let label = Label::new(RichText::new(&*name).color(color))
+                        .truncate()
+                        .selectable(false)
+                        .sense(Sense::hover());
+                    // The column is narrow: the tooltip has the whole word, then the file's
+                    // codec, depth and rate.
+                    ui.add(label).on_hover_text(format!(
+                        "{name}{}{}",
+                        LINE_SEPARATOR,
+                        format_label(&format)
+                    ));
                 });
 
                 let response = row.response();
