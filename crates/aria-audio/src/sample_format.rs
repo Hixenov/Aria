@@ -122,17 +122,30 @@ fn kinds_for(source: SourceFormat) -> impl Iterator<Item = SampleKind> {
 /// Tries the order of spec 3.2: the source's own depth, 24 in 32, 32-bit, 16-bit, at the
 /// source's rate; then the same at the nearest supported rate. `rates` are the rates the
 /// device supports; `accepts` asks the device about one format. `None` when it takes none.
+///
+/// A mono source may also be played to both channels (spec 3.1 counts that as unchanged). For
+/// each depth it is asked for with one channel first and two channels second, before the next
+/// depth; so a mono 16-bit source at 44.1 kHz asks, in order: I16 mono, I16 stereo, I24In32
+/// mono, I24In32 stereo, I32 mono, I32 stereo, then the same at the nearest rate. Any other
+/// channel count is asked for only as it is.
 pub fn choose_format(
     source: SourceFormat,
     rates: &[u32],
     accepts: &mut dyn FnMut(DeviceFormat) -> bool,
 ) -> Option<DeviceFormat> {
+    let layouts: &[u16] = if source.channels == 1 {
+        &[1, 2]
+    } else {
+        std::slice::from_ref(&source.channels)
+    };
     let mut try_rate = |sample_rate: u32| {
         kinds_for(source)
-            .map(|kind| DeviceFormat {
-                sample_rate,
-                channels: source.channels,
-                kind,
+            .flat_map(|kind| {
+                layouts.iter().map(move |channels| DeviceFormat {
+                    sample_rate,
+                    channels: *channels,
+                    kind,
+                })
             })
             .find(|format| accepts(*format))
     };
@@ -428,6 +441,72 @@ mod tests {
 
         let (chosen, _) = choose(source(44_100, Some(16)), &[], &ALL_KINDS);
         assert_eq!(chosen, None);
+    }
+
+    #[test]
+    fn a_mono_source_on_a_stereo_only_device_opens_in_stereo() {
+        let mono = SourceFormat {
+            sample_rate: 44_100,
+            channels: 1,
+            bits: Some(16),
+            float: false,
+        };
+        let mut asked = Vec::new();
+        let chosen = choose_format(mono, &[44_100], &mut |format| {
+            asked.push(format);
+            format.channels == 2
+        });
+        assert_eq!(
+            chosen,
+            Some(DeviceFormat {
+                sample_rate: 44_100,
+                channels: 2,
+                kind: SampleKind::I16
+            })
+        );
+        let order: Vec<_> = asked.iter().map(|f| (f.kind, f.channels)).collect();
+        assert_eq!(order, [(SampleKind::I16, 1), (SampleKind::I16, 2)]);
+
+        // A device that takes mono gets mono; nothing else is asked.
+        let (chosen, asked) = choose(mono, &[44_100], &ALL_KINDS);
+        assert_eq!(chosen.map(|f| f.channels), Some(1));
+        assert_eq!(asked.len(), 1);
+
+        // Every depth tries both layouts before the rate gives way.
+        let mut asked = Vec::new();
+        let chosen = choose_format(mono, &[48_000], &mut |format| {
+            asked.push(format);
+            format.sample_rate == 48_000 && format.channels == 2
+        });
+        assert_eq!(
+            chosen,
+            Some(DeviceFormat {
+                sample_rate: 48_000,
+                channels: 2,
+                kind: SampleKind::I16
+            })
+        );
+        let order: Vec<_> = asked
+            .iter()
+            .map(|f| (f.sample_rate, f.kind, f.channels))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (44_100, SampleKind::I16, 1),
+                (44_100, SampleKind::I16, 2),
+                (44_100, SampleKind::I24In32, 1),
+                (44_100, SampleKind::I24In32, 2),
+                (44_100, SampleKind::I32, 1),
+                (44_100, SampleKind::I32, 2),
+                (48_000, SampleKind::I16, 1),
+                (48_000, SampleKind::I16, 2),
+            ]
+        );
+
+        // Stereo and wider sources are asked for only as they are.
+        let (_, asked) = choose(source(44_100, Some(16)), &[44_100], &[]);
+        assert!(asked.iter().all(|f| f.channels == 2));
     }
 
     #[test]
