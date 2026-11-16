@@ -9,7 +9,7 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: Phase 2c (lossless output and the soundboard), version 0.2.2 (pre-release)
+## Status: Phase 2c (lossless output and the soundboard), version 0.2.2 (release; parts not yet checked by hand, listed below)
 
 Version 0.2.2 adds an optional exclusive output on Windows, a Lossless / Hi-Res badge and filter in the library, and a soundboard with global hotkeys, on top of 0.2.1 (below). **Nobody has run 0.2.2 by hand and nobody has listened to it.** The agent that wrote it tested it with automated tests, and checked on one PC that WASAPI exclusive mode opens the default device and plays silence; no person has heard exclusive output, a sound, or a hotkey with the real app. Every line for a person in [docs/testing/phase2c-manual-check.md](docs/testing/phase2c-manual-check.md) is still pending. The Windows installer and `aria.exe` for 0.2.2 are built and tested separately before any release; this README does not claim they have been.
 

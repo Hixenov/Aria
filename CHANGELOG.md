@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.2.2] - unreleased (pre-release: Phase 2c, lossless output and the soundboard)
+## [0.2.2] - 2026-11-16 (Phase 2c, lossless output and the soundboard)
 
 Nobody has run this version by hand yet, and nobody has listened to it: see `docs/testing/phase2c-manual-check.md`, where every line for a person is still pending. The Windows installer and release `aria.exe` for 0.2.2 are not covered by this entry: they are built and tested separately before any release.
 
@@ -52,7 +52,7 @@ Nobody has run this version by hand yet, and nobody has listened to it: see `doc
 - The Russian and Armenian texts are not reviewed by a native speaker.
 - The limitations listed for 0.2.1 and 0.2.0 still apply.
 
-## [0.2.1] - unreleased (pre-release: Phase 2b, favorites, playlists, history)
+## [0.2.1] - 2026-11-11 (pre-release: Phase 2b, favorites, playlists, history)
 
 Nobody has run this version by hand yet: see `docs/testing/phase2b-manual-check.md`, where every line for a person is still pending.
 
