@@ -16,7 +16,7 @@ pub mod settings;
 
 // What `aria-app` needs from the crates below it, which it reaches only through this one.
 pub use aria_audio::{
-    ClockReading, CpalFactory, DeviceId, DeviceInfo, OutputFactory, OutputFormat, PlaybackClock,
+    ClockReading, DeviceId, DeviceInfo, OutputFactory, OutputFormat, PlaybackClock, SystemFactory,
     fake::FakeFactory,
 };
 pub use aria_library::{

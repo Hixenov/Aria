@@ -23,9 +23,9 @@ const SCRATCH_FRAMES: usize = 1024;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long opening may take in all, finding the device included. A driver can stick anywhere, and
 /// whoever opens an output has other work to get back to.
-const OPEN_WAIT: Duration = Duration::from_secs(7);
+pub(crate) const OPEN_WAIT: Duration = Duration::from_secs(7);
 /// How long dropping an output waits for the stream to close.
-const CLOSE_WAIT: Duration = Duration::from_secs(2);
+pub(crate) const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 /// Opens outputs through CPAL on the default host.
 pub struct CpalFactory;
@@ -232,7 +232,7 @@ impl Drop for CpalOutput {
 
 /// Join `thread` once `closed` hangs up. Returns false if that takes longer than `limit`, which
 /// leaves the thread to finish on its own, or if it panicked.
-fn join_within(thread: JoinHandle<()>, closed: &Receiver<()>, limit: Duration) -> bool {
+pub(crate) fn join_within(thread: JoinHandle<()>, closed: &Receiver<()>, limit: Duration) -> bool {
     if let Err(RecvTimeoutError::Timeout) = closed.recv_timeout(limit) {
         tracing::debug!("the audio stream did not close in time; leaving it");
         return false;

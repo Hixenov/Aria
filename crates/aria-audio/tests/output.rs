@@ -202,6 +202,91 @@ fn control_reports_the_device_and_fails_the_output() {
     assert!(!default.failed());
 }
 
+/// The real exclusive output. These hold the default device for a moment and write silence only.
+#[cfg(windows)]
+mod real_device {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use aria_audio::{Opened, SystemFactory};
+
+    use super::*;
+
+    fn describe(opened: &Opened) -> String {
+        format!(
+            "exclusive: {}, device: {:?}, output: {:?}",
+            opened.exclusive,
+            opened.device,
+            opened.output.format()
+        )
+    }
+
+    #[test]
+    #[ignore = "needs a real output device"]
+    fn the_default_device_opens_exclusively_and_plays_silence() {
+        let opened = SystemFactory.open(None, exclusive_for(CD)).unwrap();
+        println!("opened: {}", describe(&opened));
+        assert!(
+            opened.exclusive,
+            "the default device refused exclusive mode"
+        );
+        assert_eq!(opened.device.sample_rate, 44_100);
+
+        let mut output = opened.output;
+        let format = output.format();
+        let mut input = output.add_input(format.sample_rate as usize).unwrap();
+        let half_second = vec![0.0; format.sample_rate as usize / 2 * usize::from(format.channels)];
+        assert_eq!(input.write(&half_second), half_second.len());
+        thread::sleep(Duration::from_millis(700));
+
+        println!(
+            "written: {}, consumed: {}, failed: {}",
+            input.written(),
+            input.consumed(),
+            output.failed()
+        );
+        assert_eq!(input.consumed(), half_second.len() as u64);
+        assert!(!output.failed());
+        drop(input);
+        let closing = Instant::now();
+        drop(output);
+        let close_took = closing.elapsed();
+        println!("close took: {close_took:?}");
+        assert!(close_took < Duration::from_secs(2));
+
+        // Closed: the device can be held exclusively again.
+        let again = SystemFactory.open(None, exclusive_for(CD)).unwrap();
+        println!("reopened: {}", describe(&again));
+        assert!(again.exclusive);
+    }
+
+    #[test]
+    #[ignore = "needs a real output device"]
+    fn a_second_exclusive_open_on_the_same_device_falls_back() {
+        let first = SystemFactory.open(None, exclusive_for(CD)).unwrap();
+        println!("first: {}", describe(&first));
+        assert!(first.exclusive, "the default device refused exclusive mode");
+
+        // The exclusive attempt is refused and the factory falls back to a shared stream. But
+        // Windows refuses a shared stream too while another stream holds the device exclusively
+        // (AUDCLNT_E_DEVICE_IN_USE, 0x8889000A, -2004287478 as CPAL prints it), so on a real
+        // device the fallback can fail as well. Either way the second is never exclusive.
+        let second = SystemFactory.open(None, exclusive_for(CD));
+        match &second {
+            Ok(second) => {
+                println!("second: {}", describe(second));
+                assert!(!second.exclusive);
+            }
+            Err(error) => {
+                println!("second: error: {error}");
+                assert!(error.to_string().contains("-2004287478"), "{error}");
+            }
+        }
+        drop(second);
+        assert!(!first.output.failed());
+    }
+}
+
 #[test]
 fn list_devices_does_not_panic() {
     for kind in [DeviceKind::Input, DeviceKind::Output] {

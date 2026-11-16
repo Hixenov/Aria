@@ -25,7 +25,7 @@ use aria_app::{
     whole_ms,
 };
 use aria_core::{
-    CpalFactory,
+    SystemFactory,
     error::I18nError,
     i18n::{Localizer, os_language},
     logging::{self, LoggingHandle},
@@ -131,7 +131,7 @@ fn main() -> anyhow::Result<()> {
     }
     let services = BackendServices {
         library,
-        output: Box::new(CpalFactory),
+        output: Box::new(SystemFactory),
         settings: settings.clone().sanitized(),
     };
     let backend = match Backend::start(

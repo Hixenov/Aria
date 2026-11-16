@@ -23,7 +23,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-# Exclusive-mode WASAPI output (used from a later task).
+# The exclusive-mode WASAPI output.
 [target.'cfg(windows)'.dependencies]
 wasapi = { workspace = true }
 
