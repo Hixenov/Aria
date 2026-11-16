@@ -308,6 +308,11 @@ impl PlaybackService {
             EngineEvent::Stopped => self.stopped(),
             // Only sent in exclusive mode, which nothing here turns on.
             EngineEvent::Output(_) | EngineEvent::ExclusiveUnavailable => {}
+            // Only sent for sounds, which nothing here plays yet.
+            EngineEvent::SoundStarted { .. }
+            | EngineEvent::SoundEnded { .. }
+            | EngineEvent::SoundFailed { .. }
+            | EngineEvent::SoundDeviceFailed => {}
         }
     }
 

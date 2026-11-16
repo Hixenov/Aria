@@ -12,6 +12,7 @@ mod mp4;
 pub mod output;
 pub mod resample;
 pub mod sample_format;
+mod sounds;
 mod system_output;
 #[cfg(windows)]
 mod wasapi_output;
@@ -32,4 +33,5 @@ pub use sample_format::{
     DeviceFormat, OutputPath, OutputState, PathFacts, SampleKind, SourceFormat, choose_format,
     nearest_rate, output_path, write_samples,
 };
+pub use sounds::{SOUNDS_AT_ONCE, SoundRoute};
 pub use system_output::SystemFactory;

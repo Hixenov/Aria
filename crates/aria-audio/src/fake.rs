@@ -25,6 +25,8 @@ struct FactoryState {
     /// `None`: the factory's own channel count only.
     exclusive_channels: Option<Vec<u16>>,
     refuse_exclusive: bool,
+    /// Devices that never open, as unplugged ones would not.
+    missing: Vec<DeviceId>,
 }
 
 impl Default for FactoryState {
@@ -37,6 +39,7 @@ impl Default for FactoryState {
             exclusive_kinds: EXCLUSIVE_KINDS.to_vec(),
             exclusive_channels: None,
             refuse_exclusive: false,
+            missing: Vec::new(),
         }
     }
 }
@@ -92,9 +95,25 @@ impl FakeFactory {
         self.state().refuse_exclusive = refuse;
     }
 
+    /// Make every open of `device` fail from now on, as for a device that is not plugged in.
+    pub fn remove_device(&self, device: DeviceId) {
+        self.state().missing.push(device);
+    }
+
     /// A control for every output opened so far, oldest first.
     pub fn outputs(&self) -> Vec<FakeControl> {
         self.state().outputs.clone()
+    }
+
+    /// A control for every output opened so far on `device`, oldest first. `None` is the system
+    /// default.
+    pub fn outputs_on(&self, device: Option<&DeviceId>) -> Vec<FakeControl> {
+        self.state()
+            .outputs
+            .iter()
+            .filter(|output| output.shared.device.as_ref() == device)
+            .cloned()
+            .collect()
     }
 
     fn state(&self) -> MutexGuard<'_, FactoryState> {
@@ -134,6 +153,9 @@ impl OutputFactory for FakeFactory {
         if state.failures_left > 0 {
             state.failures_left -= 1;
             return Err(AudioError::Device("fake open failure".into()));
+        }
+        if let Some(device) = device.filter(|device| state.missing.contains(device)) {
+            return Err(AudioError::DeviceNotFound(device.0.clone()));
         }
         let shared_format = DeviceFormat {
             sample_rate: self.format.sample_rate,
