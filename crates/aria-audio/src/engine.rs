@@ -64,8 +64,8 @@ pub enum EngineCommand {
     SetGapless(bool),
     /// Ask for outputs that hold the device alone, at each track's own format. While an output is
     /// exclusive, the music plays at full level whatever the volume, unless the volume is zero,
-    /// which mutes. Tracks of one rate join as before; at a change of rate the output is opened
-    /// again once the track before has been heard out.
+    /// which mutes. Tracks of one rate join as before; at a change of rate, or a depth wider than
+    /// the output carries, the output is opened again once the track before has been heard out.
     SetExclusive(bool),
     /// Drop the track and what follows it.
     Stop,
@@ -265,18 +265,37 @@ struct Sink {
     exclusive: bool,
     /// The format the device runs at.
     device: DeviceFormat,
-    /// The rate of the track the output was opened for, if it was opened for one.
-    opened_for_rate: Option<u32>,
+    /// The track the output was opened for, if it was opened for one.
+    opened_for: Option<SourceFormat>,
 }
 
 impl Sink {
     /// Whether a track of `source` can follow on this output as it is. A shared output takes
-    /// any rate and resamples. An exclusive one keeps to the rate it was opened for, or that it
-    /// runs at.
+    /// anything and resamples. An exclusive one keeps to the rate it was opened for, or that it
+    /// runs at, and to integer depths its samples carry exactly.
     fn fits(&self, source: &SourceFormat) -> bool {
-        !self.exclusive
-            || self.opened_for_rate == Some(source.sample_rate)
-            || self.device.sample_rate == source.sample_rate
+        if !self.exclusive {
+            return true;
+        }
+        let rate_fits = self.opened_for.map(|opened| opened.sample_rate)
+            == Some(source.sample_rate)
+            || self.device.sample_rate == source.sample_rate;
+        rate_fits && !self.too_narrow_for(source)
+    }
+
+    /// Whether `source` is integer audio deeper than the output carries, and a new output might
+    /// carry it. If the output was opened for a track at least that deep, the device already
+    /// gave what it could, and opening again would only cost the gapless join.
+    fn too_narrow_for(&self, source: &SourceFormat) -> bool {
+        let Some(bits) = source.bits.filter(|_| !source.float) else {
+            return false;
+        };
+        let opened_bits = self
+            .opened_for
+            .filter(|opened| !opened.float)
+            .and_then(|opened| opened.bits)
+            .unwrap_or(0);
+        bits > self.device.kind.bits() && bits > opened_bits
     }
 }
 
@@ -627,14 +646,15 @@ impl Worker {
     }
 
     /// Close an output that cannot take a track of `info`, so that the next one opens at its
-    /// rate. Only for when nothing is queued: what the output still holds is cut off.
+    /// format. Only for when nothing is queued: what the output still holds is cut off.
     fn close_unfit_output(&mut self, info: &StreamInfo) -> bool {
         if self.output_fits(info) {
             return false;
         }
         tracing::debug!(
             rate = info.sample_rate,
-            "reopening the output at a new rate"
+            bits = ?info.bits_per_sample,
+            "reopening the output for a new format"
         );
         self.sink = None;
         self.pending.clear();
@@ -908,7 +928,7 @@ impl Worker {
                 format,
                 exclusive,
                 device,
-                opened_for_rate: source.map(|source| source.sample_rate),
+                opened_for: source,
             })
         });
         match sink {
@@ -1062,8 +1082,8 @@ impl Worker {
     /// Follow the feed with `track`, with no gap between them.
     fn join(&mut self, track: TrackRequest, decoder: TrackDecoder) {
         if !self.output_fits(decoder.info()) {
-            // An exclusive output plays one rate. This track waits until the last one has been
-            // heard out, and then starts on an output opened at its own rate.
+            // An exclusive output plays one rate, and depths up to its own. This track waits
+            // until the last one has been heard out, and then starts on an output opened for it.
             self.close_feed();
             self.waiting = Some((track, decoder));
             return;

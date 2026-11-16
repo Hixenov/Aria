@@ -1941,3 +1941,76 @@ fn shared_mode_behaves_as_before() {
     // Nothing about the output: with the mode off, the path is always the system mixer.
     assert_eq!(events, [whole_second(1), TrackEnded { token: 1 }, Stopped]);
 }
+
+fn tenth_second(token: u64) -> EngineEvent {
+    TrackStarted {
+        token,
+        duration_ms: Some(100),
+    }
+}
+
+#[test]
+fn a_wider_depth_reopens_the_output_between_tracks() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.factory
+        .set_exclusive_kinds(vec![SampleKind::I16, SampleKind::I24In32]);
+    rig.start_pair(track(1, "depth-16.flac"), track(2, "depth-24.flac"));
+
+    let first = rig.output(0);
+    assert_eq!(
+        first.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I16))
+    );
+    let (first_audio, mut events) =
+        rig.pull_until(&first, |event| *event == TrackEnded { token: 1 });
+    let second = rig.output(1);
+    assert!(first.is_closed());
+    assert_eq!(
+        second.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I24In32))
+    );
+    assert_eq!(rig.position_on(2), 0);
+    let (second_audio, heard) = rig.pull_to_stop(&second);
+    events.extend(heard);
+
+    assert_eq!(
+        without_states(&events),
+        [
+            tenth_second(1),
+            TrackEnded { token: 1 },
+            tenth_second(2),
+            TrackEnded { token: 2 },
+            Stopped,
+        ]
+    );
+    assert_eq!(
+        states(&events),
+        [CD_BIT_PERFECT, state(OutputPath::BitPerfect, 44_100, 24)]
+    );
+    assert_near(audible_frames(&first_audio), 4_410);
+    assert_near(audible_frames(&second_audio), 4_410);
+    assert_eq!(rig.factory.outputs().len(), 2);
+}
+
+#[test]
+fn a_narrower_depth_keeps_the_output() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.factory
+        .set_exclusive_kinds(vec![SampleKind::I16, SampleKind::I24In32]);
+    rig.start_pair(track(1, "depth-24.flac"), track(2, "depth-16.flac"));
+
+    let output = rig.output(0);
+    let audio = output.pull(4_410 * 2 + 1_000);
+
+    assert_eq!(
+        output.opened_as(),
+        (true, device_format(44_100, 2, SampleKind::I24In32))
+    );
+    let heard = trimmed(&audio);
+    assert_near(heard.len() / 2, 4_410 * 2);
+    assert!(longest_zero_run(heard) <= 2, "a gap at the join");
+    let (_, events) = rig.pull_to_stop(&output);
+    // 16 bits widen exactly into 24.
+    assert_eq!(states(&events), [state(OutputPath::BitPerfect, 44_100, 24)]);
+    assert_eq!(rig.factory.outputs().len(), 1);
+}

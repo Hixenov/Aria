@@ -202,7 +202,8 @@ pub struct PathFacts {
     pub device: DeviceFormat,
     /// The music gain is exactly 1.0.
     pub gain_is_unity: bool,
-    /// The track's channels reach the device as they are (mono to both counts as unchanged).
+    /// The caller passes the track's channels on as they are (mono to both counts as unchanged).
+    /// [`output_path`] also checks the channel counts, so a remix is never taken for unchanged.
     pub channels_unchanged: bool,
     pub sound_playing: bool,
 }
@@ -224,7 +225,9 @@ pub fn output_path(facts: PathFacts) -> OutputPath {
         // Unknown, or wider than 24 bits: `f32` cannot carry it exactly.
         _ => false,
     };
-    if !exact_depth || facts.source.float || !facts.channels_unchanged || !facts.gain_is_unity {
+    let (from, to) = (facts.source.channels, facts.device.channels);
+    let channels_unchanged = facts.channels_unchanged && (from == to || (from == 1 && to == 2));
+    if !exact_depth || facts.source.float || !channels_unchanged || !facts.gain_is_unity {
         return OutputPath::Converted;
     }
     OutputPath::BitPerfect
@@ -550,9 +553,9 @@ mod tests {
         let base = bit_perfect_facts();
         assert_eq!(output_path(base), OutputPath::BitPerfect);
 
-        use OutputPath::{Converted, MixedWithSound, Resampled, SystemMixer};
+        use OutputPath::{BitPerfect, Converted, MixedWithSound, Resampled, SystemMixer};
         type Flip = fn(&mut PathFacts);
-        let rows: [(&str, Flip, OutputPath); 9] = [
+        let rows: [(&str, Flip, OutputPath); 11] = [
             ("shared output", |f| f.exclusive = false, SystemMixer),
             (
                 "a sound playing",
@@ -576,6 +579,8 @@ mod tests {
                 |f| f.source.bits = Some(32),
                 Converted,
             ),
+            ("25 bits", |f| f.source.bits = Some(25), Converted),
+            ("24 bits", |f| f.source.bits = Some(24), BitPerfect),
             ("unknown depth", |f| f.source.bits = None, Converted),
             ("gain not unity", |f| f.gain_is_unity = false, Converted),
         ];
@@ -584,6 +589,44 @@ mod tests {
             flip(&mut facts);
             assert_eq!(output_path(facts), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn the_channel_counts_are_checked_whatever_the_caller_says() {
+        let mut facts = bit_perfect_facts();
+        // A 5.1 source on a stereo device is a remix, even if the caller calls it unchanged.
+        facts.source.channels = 6;
+        assert_eq!(output_path(facts), OutputPath::Converted, "6 to 2");
+
+        // Mono to both channels is unchanged, when the caller says so.
+        facts.source.channels = 1;
+        assert_eq!(output_path(facts), OutputPath::BitPerfect, "1 to 2");
+        facts.channels_unchanged = false;
+        assert_eq!(output_path(facts), OutputPath::Converted, "1 to 2, remixed");
+
+        // Mono to anything wider than stereo is not.
+        facts.channels_unchanged = true;
+        facts.device.channels = 6;
+        assert_eq!(output_path(facts), OutputPath::Converted, "1 to 6");
+    }
+
+    #[test]
+    fn samples_round_to_the_nearest_step() {
+        let i16_of = |sample: f32| {
+            let bytes = write_one(SampleKind::I16, sample);
+            i16::from_le_bytes([bytes[0], bytes[1]])
+        };
+        // Truncation would give 1, 1 and -1 here.
+        assert_eq!(i16_of(1.5 / 32_768.0), 2);
+        assert_eq!(i16_of(1.6 / 32_768.0), 2);
+        assert_eq!(i16_of(1.4 / 32_768.0), 1);
+        assert_eq!(i16_of(-1.5 / 32_768.0), -2);
+        assert_eq!(i16_of(-1.6 / 32_768.0), -2);
+        assert_eq!(i16_of(-1.4 / 32_768.0), -1);
+
+        let i24_of = |sample: f32| as_i32(&write_one(SampleKind::I24In32, sample)) >> 8;
+        assert_eq!(i24_of(1.5 / 8_388_608.0), 2);
+        assert_eq!(i24_of(-1.6 / 8_388_608.0), -2);
     }
 
     #[test]
