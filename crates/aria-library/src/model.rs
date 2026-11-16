@@ -49,8 +49,10 @@ pub enum Quality {
 }
 
 impl Track {
-    /// Lossless codecs are FLAC, ALAC, WAV and AIFF. CAF is listed too, but lofty cannot read
-    /// CAF files, so the scan never stores that codec and no CAF track is ever in the library.
+    /// Lossless codecs are FLAC, ALAC, WAV and AIFF. The scan names a WAV or AIFF file `wav` or
+    /// `aiff` only when its data is integer or float PCM; A-law, µ-law and other codings get
+    /// names of their own, which are lossy here. CAF is listed too, but lofty cannot read CAF
+    /// files, so the scan never stores that codec and no CAF track is ever in the library.
     pub fn quality(&self) -> Quality {
         if !matches!(&*self.codec, "flac" | "alac" | "wav" | "aiff" | "caf") {
             Quality::Lossy
@@ -125,6 +127,15 @@ mod tests {
             ("unknown", 0, 44_100, Quality::Lossy),
             ("mp4", 0, 44_100, Quality::Lossy),
             ("flac", 24, 96_000, Quality::HiRes),
+            ("aiff", 16, 44_100, Quality::Lossless),
+            // Float PCM is lossless; at 32 bits it is above 16.
+            ("wav", 32, 44_100, Quality::HiRes),
+            // WAV and AIFF data that is not PCM is named for its coding, and is lossy.
+            ("alaw", 8, 44_100, Quality::Lossy),
+            ("ulaw", 8, 44_100, Quality::Lossy),
+            ("adpcm", 4, 44_100, Quality::Lossy),
+            ("wav-compressed", 16, 44_100, Quality::Lossy),
+            ("aiff-compressed", 16, 44_100, Quality::Lossy),
         ];
         for (codec, bits, rate, want) in table {
             assert_eq!(

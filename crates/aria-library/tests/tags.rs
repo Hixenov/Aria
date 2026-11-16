@@ -418,6 +418,32 @@ fn aiff_reports_its_depth() {
 }
 
 #[test]
+fn wav_and_aiff_are_named_by_how_their_data_is_coded() {
+    // Integer and float PCM keep the container's name, which counts as lossless; A-law and
+    // µ-law are named for themselves, which counts as lossy.
+    for (name, codec) in [
+        ("depth-16.wav", "wav"),
+        ("float.wav", "wav"),
+        ("alaw.wav", "alaw"),
+        ("tone.aiff", "aiff"),
+        ("float.aiff", "aiff"),
+        ("mulaw.aiff", "ulaw"),
+    ] {
+        assert_eq!(&*ok(read_tags(&fixture(name))).codec, codec, "{name}");
+    }
+}
+
+#[test]
+fn an_adpcm_wav_is_not_readable_so_it_is_never_stored() {
+    // lofty refuses WAV data of other than whole bytes per sample (IMA ADPCM has 4 bits), so
+    // the scan skips the file and it never gets a badge.
+    assert!(matches!(
+        read_tags(&fixture("adpcm.wav")),
+        Err(LibraryError::Tags(_))
+    ));
+}
+
+#[test]
 fn caf_is_not_readable_so_it_is_never_stored() {
     // lofty has no CAF parser: the scan skips the file, and stores neither a codec nor a depth.
     assert!(matches!(

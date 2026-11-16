@@ -31,6 +31,14 @@ ff -f lavfi -i "$short" -ac 2 -c:a pcm_s16le depth-16.wav
 ff -f lavfi -i "$short" -ac 2 -sample_fmt s32 -c:a flac depth-24.flac
 ff -f lavfi -i "$short" -ac 2 -c:a pcm_s24le depth-24.wav
 
+# WAV and AIFF whose data is not integer PCM, for the codec the library stores: float PCM
+# (lossless) and A-law, mu-law and IMA ADPCM (lossy). Mono where it keeps a file small.
+ff -f lavfi -i "$short" -ac 1 -c:a pcm_f32le float.wav
+ff -f lavfi -i "$short" -ac 1 -c:a pcm_f32be float.aiff
+ff -f lavfi -i "$short" -ac 2 -c:a pcm_alaw alaw.wav
+ff -f lavfi -i "$short" -ac 2 -c:a pcm_mulaw mulaw.aiff
+ff -f lavfi -i "$short" -ac 2 -c:a adpcm_ima_wav adpcm.wav
+
 ff -f lavfi -i "$tone" -ac 2 -c:a libmp3lame -b:a 128k \
     -metadata title="Fixture Title" -metadata artist="Fixture Artist" \
     -metadata album="Fixture Album" -metadata track=3 tagged.mp3

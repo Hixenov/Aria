@@ -76,7 +76,7 @@ output. Only silence was ever written to the device, and nobody listened.
 | Check | Who |
 |-------|-----|
 | After starting 0.2.2 on a copy of a 0.2.1 data folder, the library is read again (a big library may take a while) and the Quality column fills in; folders, tracks, favorites, playlists, history and the saved queue are all still there | pending |
-| The Quality column shows "Lossless" for FLAC, ALAC, WAV and AIFF, "Hi-Res" above 48 kHz or above 16 bits, and nothing for MP3, AAC, Ogg and Opus; the tooltip gives codec, depth and rate | pending |
+| The Quality column shows "Lossless" for FLAC, ALAC, and PCM or float WAV and AIFF (nothing for an A-law or µ-law WAV), "Hi-Res" above 48 kHz or above 16 bits, and nothing for MP3, AAC, Ogg and Opus; the tooltip gives codec, depth and rate | pending |
 | "Lossless only" on the Tracks tab shows only lossless tracks | pending |
 | Russian "Без потерь" and Armenian "Առանց կորստի" fit in the 64 px column; the "Качество" header fits; the "Lossless only" checkbox in Russian and Armenian fits on a narrow window | pending |
 | The player-bar format line with a long text (for example a long codec and rate) does not overlap or get cut off | pending |

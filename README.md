@@ -31,7 +31,7 @@ Settings, Playback has an "Exclusive mode" switch (Windows only, off by default)
 - Where the next track needs a different sample rate, a wider bit depth than the open output carries, or more channels, the output is closed and opened again, with a short silence at that join. Tracks in the same format stay gapless.
 - The output thread runs at normal priority, so under heavy load there may be dropouts. Not checked.
 
-Library: every track now stores its bit depth. The track tables (Local Music and Liked) have a Quality column with a "Lossless" badge (FLAC, ALAC, WAV, AIFF) or a "Hi-Res" badge (lossless, and above 48 kHz or above 16 bits), and the Tracks tab has a "Lossless only" toggle. CAF files are skipped by the library scan (as in 0.2.1), so no CAF track appears in the library.
+Library: every track now stores its bit depth. The track tables (Local Music and Liked) have a Quality column with a "Lossless" badge (FLAC, ALAC, and WAV or AIFF whose data is integer or float PCM) or a "Hi-Res" badge (lossless, and above 48 kHz or above 16 bits), and the Tracks tab has a "Lossless only" toggle. CAF files are skipped by the library scan (as in 0.2.1), so no CAF track appears in the library. WAV and AIFF files coded as A-law, µ-law or another compression get no badge (the codec shows as "ALAW", "ULAW", "WAV-COMPRESSED" or "AIFF-COMPRESSED"); ADPCM WAV files are skipped by the scan, because lofty cannot read data of 4 bits per sample.
 
 ### Soundboard and voice chat
 
