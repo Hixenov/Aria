@@ -110,7 +110,8 @@ pub enum EngineEvent {
     Stopped,
     /// How the track being heard reaches the device, when that changes. Sent while exclusive mode
     /// is on, and once more after it is turned off, for the first shared output with a track on
-    /// it. With the mode off the path is always the system mixer, so nothing more is sent.
+    /// it. With the mode off the path is always the system mixer, so nothing more is sent. After
+    /// [`NoDevice`](Self::NoDevice) the next state is sent even if it is the same as the last.
     Output(OutputState),
     /// Exclusive mode was on, but the device would not be held, so a shared output was opened.
     /// Sent once for each output opened that way.
@@ -1064,6 +1065,11 @@ impl Worker {
     }
 
     fn lose_output(&mut self) {
+        // Whoever listens forgets the path when nothing is open, so the next output's state is
+        // sent even when it is the one before.
+        if self.exclusive {
+            self.last_output = None;
+        }
         self.set_playing(false);
         self.emit(EngineEvent::NoDevice);
     }

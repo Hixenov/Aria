@@ -2066,6 +2066,24 @@ fn turning_exclusive_back_on_reports_the_state_again() {
 }
 
 #[test]
+fn a_lost_exclusive_device_reports_the_state_again_when_an_output_opens() {
+    let rig = Rig::exclusive(STEREO_48K);
+    rig.start(track(1, "tone.flac"));
+    let first = rig.output(0);
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+
+    // The rebuild fails too, so nothing is open.
+    rig.factory.fail_open(1);
+    first.fail();
+    while rig.next_event() != NoDevice {}
+
+    // Whoever listens forgot the path with the device: the same state is news again.
+    rig.send(Play);
+    rig.output(1);
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+}
+
+#[test]
 fn a_stereo_track_after_a_mono_one_is_not_downmixed() {
     let rig = Rig::exclusive(STEREO_48K);
     rig.factory.set_exclusive_channels(vec![1, 2]);

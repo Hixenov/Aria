@@ -63,6 +63,8 @@ output. Only silence was ever written to the device, and nobody listened.
 | The player bar indicator in each state: "Bit-perfect" (a 16 or 24-bit FLAC), "Resampled" (a rate the device lacks, if you have one), "Converted" (an ALAC file, or a 32-bit float WAV), "Mixed with a sound" (while a sound plays), "System mixer" (exclusive mode off). The tooltip of each reads correctly | pending |
 | The gap at a rate change: a 44.1 kHz track followed by a 96 kHz one has a short silence between them, and the end of the first track is not cut; two tracks of the same rate join without a gap | pending |
 | The volume slider is locked at 100 % with its tooltip; mute still works; turning the mode off brings back the saved volume | pending |
+| With exclusive mode refused (another program holds the device, or a Bluetooth headset), the slider is not locked, shows the saved volume and changes the level heard; when an exclusive output opens again it locks at 100 % | pending |
+| Unplug the exclusive device while a track plays, with nothing else to open: the paused track no longer shows "Bit-perfect" | pending |
 | With another program holding the device exclusively, Aria falls back with a notice (or, if Windows refuses the shared stream as well, says so) and playback never stops because of the setting | pending |
 | Unplug the output device (or switch it off) while a track plays: playback goes on in the best mode left and a notice appears | pending |
 | A mono track is heard in both ears in exclusive mode | pending |

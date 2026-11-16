@@ -301,7 +301,8 @@ fn output_line(ui: &mut Ui, bar: &PlayerBar<'_>) {
 }
 
 /// The locale key naming how the current track reaches the device. `None` with nothing
-/// current, and while exclusive mode is on (the volume is locked) but the engine has not said.
+/// current, and while an exclusive output is being opened (the volume is locked) but the engine
+/// has not said how it turned out.
 fn path_key(view: &PlayerView) -> Option<&'static str> {
     view.current?;
     match view.output {
@@ -587,9 +588,8 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
 
     let (rect, _) = ui.allocate_exact_size(vec2(VOLUME_WIDTH, SEEK_ROW), Sense::hover());
     let label = tr.tr("player-volume");
-    // In exclusive mode the level is the device's: the bar shows full and cannot move.
     let locked = bar.view.volume_locked;
-    let volume = if locked { 1.0 } else { bar.settings.volume };
+    let volume = shown_volume(bar.view, bar.settings.volume);
     let scrub = Scrub {
         id: "aria_volume",
         rect,
@@ -627,6 +627,13 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     if ui.add(control).clicked() {
         out.push(PlayerAction::ToggleMute);
     }
+}
+
+/// The level the volume slider shows. While the device is held exclusively the level is the
+/// device's, so the slider shows full and cannot move; otherwise, after a refused exclusive open
+/// too, it shows the stored volume, which is the level heard.
+fn shown_volume(view: &PlayerView, stored: f32) -> f32 {
+    if view.volume_locked { 1.0 } else { stored }
 }
 
 /// Adds `control` disabled, with a tooltip naming it and the phase that brings it.
@@ -682,6 +689,41 @@ mod tests {
         assert_eq!(format("flac", 24, 0, Quality::Lossless), "FLAC");
         assert_eq!(format("unknown", 0, 0, Quality::Lossy), "");
         assert_eq!(format("unknown", 0, 44_100, Quality::Lossy), "44.1");
+    }
+
+    fn view(output: Option<OutputPath>, volume_locked: bool) -> PlayerView {
+        PlayerView {
+            current: Some(TrackId(1)),
+            output: output.map(|path| aria_core::OutputState {
+                path,
+                device_rate: 44_100,
+                device_bits: 16,
+            }),
+            volume_locked,
+            ..PlayerView::default()
+        }
+    }
+
+    #[test]
+    fn the_bar_follows_the_output_actually_opened() {
+        // An exclusive open on its way: no path yet, and the slider is the device's.
+        let opening = view(None, true);
+        assert_eq!(path_key(&opening), None);
+        assert_eq!(shown_volume(&opening, 0.3), 1.0);
+
+        // Refused, before the engine has said more: the system mixer, at the stored volume.
+        let refused = view(None, false);
+        assert_eq!(path_key(&refused), Some("output-system-mixer"));
+        assert_eq!(shown_volume(&refused, 0.3), 0.3);
+
+        let shared = view(Some(OutputPath::SystemMixer), false);
+        assert_eq!(path_key(&shared), Some("output-system-mixer"));
+        assert_eq!(shown_volume(&shared, 0.3), 0.3);
+
+        // Held exclusively again.
+        let held = view(Some(OutputPath::BitPerfect), true);
+        assert_eq!(path_key(&held), Some("output-bit-perfect"));
+        assert_eq!(shown_volume(&held, 0.3), 1.0);
     }
 
     #[test]

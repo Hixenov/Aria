@@ -26,7 +26,8 @@ use std::{
 };
 
 use aria_audio::{
-    DeviceId, EngineCommand, EngineEvent, EngineHandle, OutputState, PlaybackClock, TrackRequest,
+    DeviceId, EngineCommand, EngineEvent, EngineHandle, OutputPath, OutputState, PlaybackClock,
+    TrackRequest,
 };
 use aria_library::{LibrarySnapshot, Quality, QueueRecord, SoundId, Track, TrackId};
 
@@ -112,12 +113,15 @@ pub struct PlayerView {
     /// What comes next, at most [`UPCOMING_LIMIT`] tracks.
     pub upcoming: Vec<UpNext>,
     /// How the track being heard reaches the device, while exclusive mode is on and the engine has
-    /// said. `None` means the system mixer, or not known yet.
+    /// said. `None` means the system mixer, or not known yet: while `volume_locked` holds, an
+    /// exclusive output is being opened; otherwise the output is the system mixer.
     pub output: Option<OutputState>,
     /// The file of the current track, when its row is in the library.
     pub format: Option<TrackFormat>,
-    /// The volume slider has no effect: exclusive mode is on, and plays at full level. Mute still
-    /// works, and the stored volume is kept.
+    /// The volume slider has no effect: the device is held in exclusive mode, or is being opened
+    /// so, and plays at full level. Mute still works, and the stored volume is kept. After a
+    /// refused exclusive open the output is shared and plays at the stored volume, so the slider
+    /// is free again until an exclusive output opens.
     pub volume_locked: bool,
 }
 
@@ -211,6 +215,9 @@ pub struct PlaybackService {
     repeat: RepeatMode,
     /// What the engine last said of the output, while `exclusive` holds.
     output: Option<OutputState>,
+    /// The engine said exclusive mode was refused, and no exclusive output has opened since: the
+    /// output is shared, whether or not its state has come yet.
+    exclusive_refused: bool,
     /// The token of the track the last "exclusive mode unavailable" notice was shown for, so a
     /// track gets it once (0 when no track was loaded).
     unavailable_noticed: Option<u64>,
@@ -261,6 +268,7 @@ impl PlaybackService {
             shuffle: false,
             repeat: RepeatMode::Off,
             output: None,
+            exclusive_refused: false,
             unavailable_noticed: None,
             soundboard: Soundboard::default(),
             events: Vec::new(),
@@ -366,6 +374,9 @@ impl PlaybackService {
             EngineEvent::NoDevice if self.current.is_none() => self.notify(SOUND_FAILED),
             EngineEvent::NoDevice => {
                 self.playing = false;
+                // No output is open, so no path is shown until one opens and the engine says how
+                // the track reaches it.
+                self.output = None;
                 self.notify(NO_DEVICE);
                 self.publish();
             }
@@ -373,17 +384,29 @@ impl PlaybackService {
             EngineEvent::Output(state) => {
                 // One from before the mode went off may still be on its way.
                 if self.exclusive && self.output != Some(state) {
+                    if state.path != OutputPath::SystemMixer {
+                        // An exclusive output opened after all.
+                        self.exclusive_refused = false;
+                    }
                     self.output = Some(state);
                     self.publish();
                 }
             }
-            EngineEvent::ExclusiveUnavailable => {
+            EngineEvent::ExclusiveUnavailable if self.exclusive => {
                 let token = self.current.as_ref().map_or(0, |given| given.token);
-                if self.exclusive && self.unavailable_noticed != Some(token) {
+                if self.unavailable_noticed != Some(token) {
                     self.unavailable_noticed = Some(token);
                     self.notify(EXCLUSIVE_UNAVAILABLE);
                 }
+                // The output is shared now, and plays at the stored volume. What was said of an
+                // earlier output no longer holds.
+                if !self.exclusive_refused || self.output.is_some() {
+                    self.exclusive_refused = true;
+                    self.output = None;
+                    self.publish();
+                }
             }
+            EngineEvent::ExclusiveUnavailable => {}
             // A sound that finds no output at all is reported as `NoDevice`, above, and then
             // ends without a word, so it gives one notice.
             EngineEvent::SoundStarted { .. }
@@ -490,6 +513,7 @@ impl PlaybackService {
         if exclusive != self.exclusive {
             self.exclusive = exclusive;
             self.output = None;
+            self.exclusive_refused = false;
             // Turned on again, the mode may be refused again, and that is news for this track too.
             self.unavailable_noticed = None;
             self.engine.send(EngineCommand::SetExclusive(exclusive));
@@ -596,9 +620,21 @@ impl PlaybackService {
                 .current()
                 .and_then(|id| self.row(id))
                 .map(TrackFormat::of),
-            volume_locked: self.exclusive,
+            volume_locked: self.volume_locked(),
         };
         self.events.push(Event::Player(view));
+    }
+
+    /// Whether the volume slider is locked: exclusive mode is on, and the device is held
+    /// exclusively, or the engine has not said yet how the output it is opening turned out. After
+    /// a refused open, or on a shared output, the music plays at the stored volume, so the slider
+    /// shows and sets the level heard.
+    fn volume_locked(&self) -> bool {
+        self.exclusive
+            && match self.output {
+                Some(state) => state.path != OutputPath::SystemMixer,
+                None => !self.exclusive_refused,
+            }
     }
 
     fn queue_changed(&mut self) {
@@ -2660,6 +2696,117 @@ mod tests {
         });
         assert!(!rig.view().volume_locked);
         assert_eq!(rig.service.volume, 0.4);
+    }
+
+    /// A state the engine could report, on an output at the CD format.
+    fn reported(path: OutputPath) -> OutputState {
+        OutputState {
+            path,
+            device_rate: 44_100,
+            device_bits: 16,
+        }
+    }
+
+    #[test]
+    fn the_volume_is_locked_only_while_the_device_is_held_exclusively() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        // Nothing the engine reports is pumped: the test says what it reports.
+        let at_30 = |base: Settings| Settings {
+            volume: 0.3,
+            ..base
+        };
+        rig.settings(&at_30(exclusive()));
+        assert_eq!(
+            rig.view().volume_locked,
+            EXCLUSIVE_SUPPORTED,
+            "an exclusive open is on its way"
+        );
+        assert_eq!(rig.view().output, None);
+
+        // Refused: the music plays shared, at the stored volume, and the slider shows that.
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        assert!(!rig.view().volume_locked, "locked after a refusal");
+        assert_eq!(rig.view().output, None);
+        rig.engine(EngineEvent::Output(reported(OutputPath::SystemMixer)));
+        assert!(!rig.view().volume_locked);
+
+        // An exclusive output opens again, for another track or after a device change.
+        rig.engine(EngineEvent::Output(reported(OutputPath::BitPerfect)));
+        assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+        rig.engine(EngineEvent::Output(reported(OutputPath::Converted)));
+        assert_eq!(
+            rig.view().volume_locked,
+            EXCLUSIVE_SUPPORTED,
+            "converted, the device is still held"
+        );
+
+        // A shared output is never locked, notice or not.
+        rig.engine(EngineEvent::Output(reported(OutputPath::SystemMixer)));
+        assert!(!rig.view().volume_locked);
+
+        // Refused after an exclusive state: that state no longer holds.
+        rig.engine(EngineEvent::Output(reported(OutputPath::BitPerfect)));
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        assert_eq!(rig.view().output, None);
+        assert!(!rig.view().volume_locked);
+
+        // Off and on again, the mode is asked for afresh.
+        rig.settings(&at_30(Settings::default()));
+        assert!(!rig.view().volume_locked);
+        rig.settings(&at_30(exclusive()));
+        assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_refused_exclusive_open_frees_the_volume_until_an_exclusive_one_opens() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.factory.refuse_exclusive(true);
+        let settings = Settings {
+            volume: 0.3,
+            ..exclusive()
+        };
+        rig.settings(&settings);
+        rig.play(&[1], 0);
+        rig.wait_until("the shared state", |rig| {
+            rig.view()
+                .output
+                .is_some_and(|state| state.path == OutputPath::SystemMixer)
+        });
+        assert!(!rig.view().volume_locked);
+        assert_eq!(rig.notices("exclusive-unavailable").len(), 1);
+
+        // A device change reopens the output, and this time the device is held.
+        rig.factory.refuse_exclusive(false);
+        rig.settings(&Settings {
+            output_device: Some(DeviceId("dac".into())),
+            ..settings
+        });
+        rig.wait_until("the exclusive state", |rig| {
+            rig.view()
+                .output
+                .is_some_and(|state| state.path != OutputPath::SystemMixer)
+        });
+        assert!(rig.view().volume_locked);
+        assert!(rig.output().unwrap().opened_as().0);
+    }
+
+    #[test]
+    fn a_lost_device_leaves_no_path_behind() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        rig.settings(&exclusive());
+        rig.engine(EngineEvent::Output(reported(OutputPath::BitPerfect)));
+        assert_eq!(rig.view().output.is_some(), EXCLUSIVE_SUPPORTED);
+
+        rig.engine(EngineEvent::NoDevice);
+
+        assert_eq!(rig.view().output, None, "a paused track kept its path");
+        assert!(!rig.view().playing);
     }
 
     #[test]
