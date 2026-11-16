@@ -463,8 +463,14 @@ impl Worker {
                     Some(Command::RemoveSound(id)) => {
                         self.to_collections(LibraryRequest::RemoveSound(id));
                     }
+                    // Fired from the list the worker holds, so it never waits for the library.
                     Some(Command::PlaySound(id)) => {
-                        self.to_collections(LibraryRequest::PlaySound(id));
+                        if self.library.is_some() {
+                            self.playback.handle(Command::PlaySound(id));
+                            self.flush_playback();
+                        } else {
+                            self.emit([Event::Notice(library_service::UNAVAILABLE)]);
+                        }
                     }
                     Some(Command::ListDevices) => self.list_devices(),
                     // `None` means the handle was dropped: treat it as Shutdown.
@@ -588,7 +594,6 @@ impl Worker {
             LibraryEvent::Notice(notice) => self.emit([Event::Notice(notice)]),
             LibraryEvent::QueueLoaded(record) => self.playback.on_queue_loaded(record),
             LibraryEvent::Sounds(sounds) => self.playback.on_sounds(sounds),
-            LibraryEvent::FireSound(fired) => self.playback.play_sound(fired),
         }
         self.flush_playback();
     }
@@ -1186,6 +1191,67 @@ mod tests {
         drain_until_within(&handle, LIBRARY_MAX, |e| {
             soundboard(e).is_some_and(|board| board.sounds.is_empty())
         });
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    #[test]
+    fn a_sound_fires_while_the_library_is_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = sound_fixture(dir.path(), "horn.ogg");
+        let (release, gate) = mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        // The library thread stops inside the event that brings the sound, as one stuck in a scan
+        // or a slow read would. The event itself has gone out by then.
+        let link = link_with(dir.path(), move |event| {
+            if matches!(event, LibraryEvent::Sounds(sounds) if !sounds.is_empty()) {
+                let _ = gate.lock().unwrap().recv();
+            }
+        });
+        link.handle.send(LibraryRequest::AddSounds(vec![path]));
+        let (waker, _) = counting_waker();
+        let handle = Backend::spawn(None, Some(link), silent_playback(), waker, FAST).unwrap();
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds.len() == 1)
+        });
+        let id = soundboard(&events).unwrap().sounds[0].id;
+
+        handle.send(Command::PlaySound(id));
+        drain_until(&handle, |e| {
+            soundboard(e).is_some_and(|board| board.sounds[0].playing)
+        });
+        drop(release);
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    #[test]
+    fn a_missing_or_broken_sound_file_gives_its_own_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (waker, _) = counting_waker();
+        let handle =
+            Backend::start(None, services(Some(library_paths(dir.path()))), waker, FAST).unwrap();
+        let gone = dir.path().join("gone.ogg");
+        let broken = dir.path().join("broken.ogg");
+        fs::write(&broken, b"not audio").unwrap();
+        handle.send(Command::AddSounds(vec![gone, broken]));
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds.len() == 2)
+        });
+        let board = soundboard(&events).unwrap();
+        let (gone, broken) = (board.sounds[0].id, board.sounds[1].id);
+        let notice = |key| Event::Notice(Notice::new(NoticeLevel::Warning, key));
+
+        handle.send(Command::PlaySound(gone));
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            e.contains(&notice("sound-missing"))
+        });
+        handle.send(Command::PlaySound(broken));
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            e.contains(&notice("sound-failed"))
+        });
+        assert!(
+            !events.contains(&notice("sound-missing")),
+            "the file is there: {events:?}"
+        );
         assert!(handle.shutdown(LIBRARY_MAX));
     }
 

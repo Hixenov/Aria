@@ -246,7 +246,12 @@ fn lenient_hotkey<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Hotkey>, D::
     match Option::<Raw>::deserialize(d)? {
         None => Ok(None),
         Some(Raw::S(s)) => match s.parse::<Hotkey>() {
-            Ok(hotkey) => Ok(Some(hotkey)),
+            Ok(hotkey) if hotkey.is_allowed() => Ok(Some(hotkey)),
+            // A plain typing key, written into the file by hand, is never registered.
+            Ok(_) => {
+                tracing::warn!("ignoring a hotkey in the settings that is not allowed");
+                Ok(None)
+            }
             Err(_) => {
                 tracing::warn!("ignoring a hotkey in the settings that cannot be read");
                 Ok(None)
@@ -555,6 +560,19 @@ theme = \"dark\"",
         assert_eq!(s.theme, Theme::Dark, "the rest of the file still counts");
         let s: Settings = toml::from_str("stop_sounds_hotkey = 3").unwrap();
         assert_eq!(s.stop_sounds_hotkey, None);
+    }
+    #[test]
+    fn a_stop_hotkey_that_is_not_allowed_loads_as_none() {
+        for text in ["A", "Shift+A", "5"] {
+            let s: Settings = toml::from_str(&format!(
+                "stop_sounds_hotkey = \"{text}\"\ntheme = \"dark\""
+            ))
+            .unwrap();
+            assert_eq!(s.stop_sounds_hotkey, None, "{text}");
+            assert_eq!(s.theme, Theme::Dark);
+        }
+        let s: Settings = toml::from_str("stop_sounds_hotkey = \"F9\"").unwrap();
+        assert_eq!(s.stop_sounds_hotkey, Some("F9".parse().unwrap()));
     }
     #[test]
     fn a_0_2_0_settings_file_loads() {

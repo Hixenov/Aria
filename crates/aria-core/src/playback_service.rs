@@ -28,7 +28,7 @@ use std::{
 use aria_audio::{
     DeviceId, EngineCommand, EngineEvent, EngineHandle, OutputState, PlaybackClock, TrackRequest,
 };
-use aria_library::{LibrarySnapshot, Quality, QueueRecord, Track, TrackId};
+use aria_library::{LibrarySnapshot, Quality, QueueRecord, SoundId, Track, TrackId};
 
 use crate::{
     command::Command,
@@ -38,7 +38,7 @@ use crate::{
     notice::{Notice, NoticeLevel},
     player::{PreviousAction, Queue, RepeatMode, UpNext},
     settings::Settings,
-    soundboard::{FiredSound, SoundView, Soundboard},
+    soundboard::{SOUND_FAILED, Soundboard, StoredSound},
 };
 
 /// The shortest time between two saves of the queue.
@@ -310,15 +310,14 @@ impl PlaybackService {
             Command::Next => self.next(),
             Command::Previous => self.previous(),
             Command::Seek(position_ms) => self.seek(position_ms),
+            Command::PlaySound(id) => self.play_sound(id),
             Command::StopSounds => self.engine.send(EngineCommand::StopSounds),
-            // The library answers these, and its answers come back through `on_sounds` and
-            // `play_sound`.
+            // The library answers these, and its answers come back through `on_sounds`.
             Command::AddSounds(_)
             | Command::RenameSound { .. }
             | Command::SetSoundVolume { .. }
             | Command::SetSoundHotkey { .. }
             | Command::RemoveSound(_)
-            | Command::PlaySound(_)
             | Command::UpdateSettings(_)
             | Command::ResetSettings
             | Command::AddFolder(_)
@@ -362,6 +361,9 @@ impl PlaybackService {
             }
             EngineEvent::TrackFailed { token } => self.failed(token),
             EngineEvent::DeviceFellBack => self.notify(DEVICE_FALLBACK),
+            // With no track loaded, only a sound can have asked for the output. The music has
+            // nothing to pause, so the player is left as it is and the notice is the sound's.
+            EngineEvent::NoDevice if self.current.is_none() => self.notify(SOUND_FAILED),
             EngineEvent::NoDevice => {
                 self.playing = false;
                 self.notify(NO_DEVICE);
@@ -388,22 +390,23 @@ impl PlaybackService {
             | EngineEvent::SoundEnded { .. }
             | EngineEvent::SoundFailed { .. }
             | EngineEvent::SoundDeviceFailed => {
-                if let Some(event) = self.soundboard.on_engine(event) {
-                    self.events.push(event);
-                }
+                let reaction = self.soundboard.on_engine(event);
+                self.events.extend(reaction.event);
+                self.requests.extend(reaction.request);
             }
         }
     }
 
     /// Takes in the sounds the library sent, and shows them.
-    pub fn on_sounds(&mut self, sounds: Vec<SoundView>) {
+    pub fn on_sounds(&mut self, sounds: Vec<StoredSound>) {
         let state = self.soundboard.on_sounds(sounds);
         self.events.push(state);
     }
 
-    /// Plays a sound the library found, on the outputs the settings name.
-    pub fn play_sound(&mut self, fired: FiredSound) {
-        if let Some(command) = self.soundboard.play(fired) {
+    /// Plays a sound from its start, on the outputs the settings name, without asking the
+    /// library: its file and volume came with the last list. An unknown id changes nothing.
+    fn play_sound(&mut self, id: SoundId) {
+        if let Some(command) = self.soundboard.play(id) {
             self.engine.send(command);
         }
     }
@@ -1047,14 +1050,14 @@ mod tests {
         fake::{FakeControl, FakeFactory},
         testing::write_tone_wav,
     };
-    use aria_library::{FolderId, SoundId, Track};
+    use aria_library::{FolderId, Track};
     use tempfile::TempDir;
 
     use crate::{
         i18n::Localizer,
         player::RESTART_THRESHOLD_MS,
         settings::Language,
-        soundboard::{SoundTarget, SoundboardState},
+        soundboard::{SoundTarget, SoundView, SoundboardState},
     };
 
     use super::*;
@@ -1184,6 +1187,8 @@ mod tests {
         views: Vec<PlayerView>,
         /// The soundboard states shown, oldest first.
         boards: Vec<Arc<SoundboardState>>,
+        /// The sounds last handed to the service, as the library would.
+        stored: Vec<StoredSound>,
         requests: Vec<LibraryRequest>,
         /// When the fake device last took a chunk.
         last_pull: Cell<Option<Instant>>,
@@ -1205,6 +1210,7 @@ mod tests {
                 notices: Vec::new(),
                 views: Vec::new(),
                 boards: Vec::new(),
+                stored: Vec::new(),
                 requests: Vec::new(),
                 last_pull: Cell::new(None),
             }
@@ -3341,14 +3347,16 @@ mod tests {
             }
         }
 
-        /// A tone of `ms` milliseconds, as sound `id` with `gain`.
-        fn tone(&self, id: i64, ms: u64, gain: f32) -> FiredSound {
+        /// A tone of `ms` milliseconds, as sound `id` at `volume`.
+        fn tone(&self, id: i64, ms: u64, volume: f32) -> StoredSound {
             let path = self.dir.path().join(format!("{id}.wav"));
             write_tone_wav(&path, 44_100, 2, ms * 441 / 10, 440.0).unwrap();
-            FiredSound {
-                id: SoundId(id),
+            StoredSound {
+                view: SoundView {
+                    volume,
+                    ..sound_view(id)
+                },
                 path,
-                gain,
             }
         }
     }
@@ -3364,6 +3372,14 @@ mod tests {
         }
     }
 
+    /// Sound `id` with a file that is not there.
+    fn absent(id: i64) -> StoredSound {
+        StoredSound {
+            view: sound_view(id),
+            path: PathBuf::from(format!("absent-{id}.wav")),
+        }
+    }
+
     fn sounds_to(target: SoundTarget, device: Option<&DeviceId>) -> Settings {
         Settings {
             soundboard_target: target,
@@ -3372,18 +3388,38 @@ mod tests {
         }
     }
 
+    fn checked(id: i64, failed: bool) -> LibraryRequest {
+        LibraryRequest::CheckSound {
+            id: SoundId(id),
+            failed,
+        }
+    }
+
     impl Rig {
-        /// A service that knows of sounds 1 and 2.
+        /// A service that knows of sounds 1 and 2, whose files are not there.
         fn with_sounds() -> Self {
             let mut rig = Self::idle();
-            rig.service.on_sounds(vec![sound_view(1), sound_view(2)]);
-            rig.collect();
+            rig.list(vec![absent(1), absent(2)]);
             rig
         }
 
-        fn fire(&mut self, fired: FiredSound) {
-            self.service.play_sound(fired);
+        /// Hand the service the sounds, as the library would.
+        fn list(&mut self, sounds: Vec<StoredSound>) {
+            self.stored = sounds.clone();
+            self.service.on_sounds(sounds);
             self.collect();
+        }
+
+        /// Put `sound` in the list in place of the one with its id, then fire it.
+        fn fire(&mut self, sound: StoredSound) {
+            let id = sound.view.id;
+            let mut sounds = self.stored.clone();
+            match sounds.iter_mut().find(|stored| stored.view.id == id) {
+                Some(stored) => *stored = sound,
+                None => sounds.push(sound),
+            }
+            self.list(sounds);
+            self.send(Command::PlaySound(id));
         }
 
         fn board(&self) -> &SoundboardState {
@@ -3435,6 +3471,19 @@ mod tests {
         assert_eq!(rig.factory.outputs_on(Some(&cable)).len(), 1);
         assert!(rig.views.is_empty(), "sounds do not move the player");
         assert!(rig.notices.is_empty(), "{:?}", rig.notices);
+        assert!(rig.requests.is_empty(), "the library is not asked");
+    }
+
+    #[test]
+    fn an_unknown_sound_fires_nothing() {
+        let mut rig = Rig::with_sounds();
+        rig.send(Command::PlaySound(SoundId(99)));
+        // Leave room for the engine to report anything, were there anything.
+        thread::sleep(Duration::from_millis(50));
+        rig.pump();
+        assert!(rig.factory.outputs().is_empty());
+        assert!(rig.sounding().is_empty());
+        assert!(rig.notices.is_empty() && rig.requests.is_empty());
     }
 
     #[test]
@@ -3469,8 +3518,6 @@ mod tests {
         // As at startup: the settings come before anything plays.
         let mut rig = Rig::idle();
         rig.settings(&sounds_to(SoundTarget::Second, Some(&cable)));
-        rig.service.on_sounds(vec![sound_view(1)]);
-        rig.collect();
 
         rig.fire(sounds.tone(1, 3_000, 1.0));
         rig.wait_until("the sound", |rig| rig.sounding() == [1]);
@@ -3479,33 +3526,52 @@ mod tests {
         rig.settings(&sounds_to(SoundTarget::Second, Some(&other)));
         // The output on the old device closes, and the sound on it ends.
         rig.wait_until("the sound to be cut", |rig| rig.sounding().is_empty());
-        rig.fire(sounds.tone(1, 3_000, 1.0));
+        rig.send(Command::PlaySound(SoundId(1)));
         rig.wait_until("the sound again", |rig| rig.sounding() == [1]);
         assert_eq!(rig.factory.outputs_on(Some(&other)).len(), 1);
         assert_eq!(rig.factory.outputs_on(Some(&cable)).len(), 1, "no new one");
     }
 
     #[test]
-    fn a_sound_that_cannot_be_decoded_gives_a_notice() {
+    fn a_sound_that_fails_asks_the_library_why() {
         let sounds = Sounds::new();
         let path = sounds.dir.path().join("broken.wav");
         std::fs::write(&path, b"not audio").unwrap();
         let mut rig = Rig::with_sounds();
-        rig.fire(FiredSound {
-            id: SoundId(1),
+        rig.fire(StoredSound {
+            view: sound_view(1),
             path,
-            gain: 1.0,
         });
-        rig.wait_until("the notice", |rig| !rig.notices("sound-failed").is_empty());
+        rig.wait_until("the check", |rig| rig.requests.contains(&checked(1, true)));
+        // The library gives the notice, once it has looked at the file.
+        assert!(rig.notices.is_empty(), "{:?}", rig.notices);
         assert!(rig.sounding().is_empty());
         assert!(
             rig.factory.outputs().is_empty(),
             "nothing was opened for it"
         );
+
+        // A missing file fails the same way, without an output either.
+        rig.send(Command::PlaySound(SoundId(2)));
+        rig.wait_until("the second check", |rig| {
+            rig.requests.contains(&checked(2, true))
+        });
+        assert!(rig.factory.outputs().is_empty());
     }
 
     #[test]
-    fn a_sound_with_no_device_gives_one_notice() {
+    fn a_sound_shown_as_missing_that_plays_is_checked_again() {
+        let sounds = Sounds::new();
+        let mut rig = Rig::with_sounds();
+        let mut back = sounds.tone(1, 3_000, 1.0);
+        back.view.missing = true;
+        rig.fire(back);
+        rig.wait_until("the sound", |rig| rig.sounding() == [1]);
+        assert_eq!(rig.requests, [checked(1, false)]);
+    }
+
+    #[test]
+    fn a_sound_with_no_device_and_no_track_gives_the_sound_notice() {
         let sounds = Sounds::new();
         let mut rig = Rig::with_sounds();
         rig.factory.fail_open(2);
@@ -3515,8 +3581,25 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         rig.pump();
         let keys: Vec<&str> = rig.notices.iter().map(|notice| notice.key).collect();
-        assert_eq!(keys, ["playback-no-device"]);
+        assert_eq!(
+            keys,
+            ["sound-failed"],
+            "no music was paused, so the music notice would be untrue"
+        );
+        assert!(rig.views.is_empty(), "the player is not touched");
         assert!(rig.sounding().is_empty());
+    }
+
+    #[test]
+    fn no_device_with_a_track_loaded_is_still_the_music_notice() {
+        let music = Music::new().tone(1_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        rig.views.clear();
+        rig.engine(EngineEvent::NoDevice);
+        assert_eq!(rig.notices("playback-no-device").len(), 1);
+        assert!(rig.notices("sound-failed").is_empty());
+        assert!(!rig.view().playing);
     }
 
     #[test]
@@ -3546,6 +3629,10 @@ mod tests {
         rig.service.library_lost();
         rig.collect();
         assert!(rig.board().sounds.is_empty());
+        rig.send(Command::PlaySound(SoundId(1)));
+        thread::sleep(Duration::from_millis(50));
+        rig.pump();
+        assert!(rig.factory.outputs().is_empty(), "nothing is left to fire");
     }
 
     #[test]

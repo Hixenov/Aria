@@ -10,8 +10,8 @@
 //! scan to end, because the scanner holds a folder's rows across `on_batch` calls.
 //!
 //! The soundboard's sounds live here too. Their changes are served as collections are, and the
-//! files are checked for here, never on the UI thread: when the sounds are sent, and when one is
-//! fired.
+//! files are checked for here, never on the UI or worker thread: when the sounds are sent, and
+//! when the engine could not play one. Firing a sound does not come here at all.
 //!
 //! [`LibraryRequest::Shutdown`] reaches a running scan through a flag the handle shares with the
 //! thread. The requests sent before it are still served; the changes among them are applied, but
@@ -42,7 +42,10 @@ use crate::{
     hotkey::Hotkey,
     notice::{Notice, NoticeLevel},
     runtime::{DoneGuard, join_bounded},
-    soundboard::{self, FiredSound, SOUND_MISSING, SOUND_NAME_INVALID, SoundView, stored_hotkey},
+    soundboard::{
+        self, SOUND_FAILED, SOUND_MISSING, SOUND_NAME_INVALID, SoundView, StoredSound,
+        stored_hotkey,
+    },
 };
 
 /// Name of the library thread.
@@ -168,9 +171,10 @@ pub enum LibraryRequest {
     },
     /// Remove a sound.
     RemoveSound(SoundId),
-    /// Find a sound's file and answer with [`LibraryEvent::FireSound`], or with a notice if the
-    /// file is missing.
-    PlaySound(SoundId),
+    /// Look at a sound's file again. With `failed`, the engine could not play it, and a notice
+    /// says why: the file is missing, or it could not be played. Either way the sounds go out
+    /// again if the file's being there changed.
+    CheckSound { id: SoundId, failed: bool },
     /// Cancel any scan and stop the thread.
     Shutdown,
 }
@@ -190,11 +194,10 @@ pub enum LibraryEvent {
     Notice(Notice),
     /// The answer to [`LibraryRequest::LoadQueue`]; `None` when no queue could be read.
     QueueLoaded(Option<QueueRecord>),
-    /// The sounds as they now are, in their order, with `missing` checked and none playing. Sent
-    /// once the library is open and after every change to them, but not while it is disabled.
-    Sounds(Vec<SoundView>),
-    /// The answer to [`LibraryRequest::PlaySound`] for a sound whose file is there.
-    FireSound(FiredSound),
+    /// The sounds as they now are, in their order, with `missing` checked and none playing, and
+    /// the file of each. Sent once the library is open and after every change to them, but not
+    /// while it is disabled.
+    Sounds(Vec<StoredSound>),
 }
 
 /// Receives the thread's [`LibraryEvent`]s. It runs on the library thread and must not block.
@@ -321,8 +324,7 @@ fn serve_disabled(requests: &Receiver<LibraryRequest>, on_event: &OnEvent) {
             | LibraryRequest::RenameSound { .. }
             | LibraryRequest::SetSoundVolume { .. }
             | LibraryRequest::SetSoundHotkey { .. }
-            | LibraryRequest::RemoveSound(_)
-            | LibraryRequest::PlaySound(_) => on_event(LibraryEvent::Notice(UNAVAILABLE)),
+            | LibraryRequest::RemoveSound(_) => on_event(LibraryEvent::Notice(UNAVAILABLE)),
             _ => {}
         }
     }
@@ -511,17 +513,10 @@ impl Service {
                 // A play that cannot be recorded is not worth a notice; playback goes on.
                 Err(error) => tracing::warn!(%error, "a play could not be recorded"),
             },
-            LibraryRequest::AddSounds(paths) => match library.add_sounds(&paths) {
-                Ok(added) => {
-                    if added < paths.len() {
-                        self.emit(LibraryEvent::Notice(soundboard::sound_limit()));
-                    }
-                    if added > 0 {
-                        self.send_sounds(library);
-                    }
-                }
-                Err(error) => self.report_failure(&error),
-            },
+            LibraryRequest::AddSounds(paths) => {
+                let result = library.add_sounds(&paths);
+                self.finish_adding_sounds(library, paths.len(), result);
+            }
             LibraryRequest::RenameSound { id, name } => {
                 let result = library.rename_sound(id, &name);
                 self.finish_sound_change(library, result);
@@ -537,7 +532,7 @@ impl Service {
                 let result = library.remove_sound(id);
                 self.finish_sound_change(library, result);
             }
-            LibraryRequest::PlaySound(id) => self.play_sound(library, id),
+            LibraryRequest::CheckSound { id, failed } => self.check_sound(library, id, failed),
             LibraryRequest::Rescan => self.want_scan = true,
             LibraryRequest::Shutdown => self.stop(),
             LibraryRequest::AddFolder(path) => return Some(Change::AddFolder(path)),
@@ -569,6 +564,27 @@ impl Service {
             Ok(false) => tracing::debug!("a soundboard command named a sound that does not exist"),
             Err(LibraryError::InvalidSoundName) => {
                 self.emit(LibraryEvent::Notice(SOUND_NAME_INVALID));
+            }
+            Err(error) => self.report_failure(&error),
+        }
+    }
+
+    /// Reports what adding `given` sounds did: the new sounds if any were added, and a notice if
+    /// the limit left some out. A failed add was rolled back, so the UI keeps what it shows.
+    fn finish_adding_sounds(
+        &mut self,
+        library: &Library,
+        given: usize,
+        result: Result<usize, LibraryError>,
+    ) {
+        match result {
+            Ok(added) => {
+                if added < given {
+                    self.emit(LibraryEvent::Notice(soundboard::sound_limit()));
+                }
+                if added > 0 {
+                    self.send_sounds(library);
+                }
             }
             Err(error) => self.report_failure(&error),
         }
@@ -619,21 +635,17 @@ impl Service {
         self.finish_sound_change(library, result);
     }
 
-    /// Answers a sound fired with its file, or with a notice if the file is not there. If that
-    /// is news, the sounds go out again, so the tile shows it.
-    fn play_sound(&mut self, library: &Library, id: SoundId) {
+    /// Looks at a sound's file after the engine played it or failed to. For a failure (`failed`),
+    /// a notice says why. If the file's being there is news, the sounds go out again, so the tile
+    /// shows it.
+    fn check_sound(&mut self, library: &Library, id: SoundId, failed: bool) {
         let Some((sound, _)) = self.find_sound(library, id) else {
             return;
         };
         let missing = !sound.path.is_file();
-        if missing {
-            self.emit(LibraryEvent::Notice(SOUND_MISSING));
-        } else {
-            self.emit(LibraryEvent::FireSound(FiredSound {
-                id,
-                path: sound.path,
-                gain: sound.volume,
-            }));
+        if failed {
+            let notice = if missing { SOUND_MISSING } else { SOUND_FAILED };
+            self.emit(LibraryEvent::Notice(notice));
         }
         if missing != self.missing_sounds.contains(&id) {
             self.send_sounds(library);
@@ -650,23 +662,26 @@ impl Service {
             Ok(sounds) => sounds,
             Err(error) => return self.report_failure(&error),
         };
-        let views: Vec<SoundView> = sounds
+        let stored: Vec<StoredSound> = sounds
             .into_iter()
-            .map(|sound| SoundView {
-                id: sound.id,
-                missing: !sound.path.is_file(),
-                hotkey: stored_hotkey(sound.hotkey.as_deref()),
-                name: sound.name,
-                volume: sound.volume,
-                playing: false,
+            .map(|sound| StoredSound {
+                view: SoundView {
+                    id: sound.id,
+                    missing: !sound.path.is_file(),
+                    hotkey: stored_hotkey(sound.hotkey.as_deref()),
+                    name: sound.name,
+                    volume: sound.volume,
+                    playing: false,
+                },
+                path: sound.path,
             })
             .collect();
-        self.missing_sounds = views
+        self.missing_sounds = stored
             .iter()
-            .filter(|view| view.missing)
-            .map(|view| view.id)
+            .filter(|sound| sound.view.missing)
+            .map(|sound| sound.view.id)
             .collect();
-        self.emit(LibraryEvent::Sounds(views));
+        self.emit(LibraryEvent::Sounds(stored));
     }
 
     fn apply(&mut self, library: &mut Library, change: Change) {
@@ -1769,15 +1784,18 @@ mod tests {
         matches!(event, LibraryEvent::Sounds(_))
     }
 
-    fn is_fired(event: &LibraryEvent) -> bool {
-        matches!(event, LibraryEvent::FireSound(_))
-    }
-
-    fn sounds_of(event: LibraryEvent) -> Vec<SoundView> {
+    fn stored_of(event: LibraryEvent) -> Vec<StoredSound> {
         match event {
             LibraryEvent::Sounds(sounds) => sounds,
             other => panic!("not sounds: {other:?}"),
         }
+    }
+
+    fn sounds_of(event: LibraryEvent) -> Vec<SoundView> {
+        stored_of(event)
+            .into_iter()
+            .map(|sound| sound.view)
+            .collect()
     }
 
     fn count_sounds(log: &Log) -> usize {
@@ -1994,11 +2012,17 @@ mod tests {
         {
             let mut library = env.open();
             library
-                .add_sounds(&[sound_file(&env, "a.ogg"), sound_file(&env, "b.ogg")])
+                .add_sounds(&[
+                    sound_file(&env, "a.ogg"),
+                    sound_file(&env, "b.ogg"),
+                    sound_file(&env, "c.ogg"),
+                ])
                 .unwrap();
             let ids: Vec<SoundId> = library.sounds().unwrap().iter().map(|s| s.id).collect();
             library.set_sound_hotkey(ids[0], Some("Hyper+Q")).unwrap();
             library.set_sound_hotkey(ids[1], Some("")).unwrap();
+            // Read, but a plain typing key, so never registered.
+            library.set_sound_hotkey(ids[2], Some("Shift+A")).unwrap();
         }
         let (on_event, mut log) = recording();
         let handle = LibraryService::start(env.paths(), on_event).unwrap();
@@ -2009,61 +2033,77 @@ mod tests {
     }
 
     #[test]
-    fn playing_a_sound_sends_its_path_and_gain() {
+    fn the_sounds_carry_their_files_and_volumes() {
         let env = Env::new();
         let path = sound_file(&env, "a.ogg");
         let (handle, mut log) = started_for_sounds(&env);
         let id = add(&handle, &mut log, vec![path.clone()])[0].id;
         handle.send(LibraryRequest::SetSoundVolume { id, volume: 0.4 });
-        log.wait_for(is_sounds);
-        let before = count_sounds(&log);
-
-        handle.send(LibraryRequest::PlaySound(id));
-        let fired = log.wait_for(is_fired);
-        assert_eq!(
-            fired,
-            LibraryEvent::FireSound(FiredSound {
-                id,
-                path,
-                gain: 0.4
-            })
-        );
+        let stored = stored_of(log.wait_for(is_sounds));
+        assert_eq!(stored[0].path, path);
+        assert_eq!(stored[0].view.volume, 0.4);
         finish_sounds(handle, &mut log);
-        assert_eq!(count_sounds(&log), before, "nothing changed that shows");
     }
 
     #[test]
-    fn playing_a_missing_sound_gives_a_notice_and_sends_nothing() {
+    fn a_failed_sound_is_told_apart_as_missing_or_unplayable() {
         let env = Env::new();
         let gone = env.dir.path().join("gone.ogg");
-        let path = sound_file(&env, "a.ogg");
+        let broken = env.dir.path().join("broken.ogg");
+        fs::write(&broken, b"not audio").unwrap();
         let (handle, mut log) = started_for_sounds(&env);
-        let sounds = add(&handle, &mut log, vec![gone.clone(), path.clone()]);
+        let sounds = add(&handle, &mut log, vec![gone.clone(), broken.clone()]);
         assert!(sounds[0].missing && !sounds[1].missing);
-        let (gone_id, id) = (sounds[0].id, sounds[1].id);
+        let (gone_id, broken_id) = (sounds[0].id, sounds[1].id);
+        let failed = |id| LibraryRequest::CheckSound { id, failed: true };
         let before = count_sounds(&log);
 
-        handle.send(LibraryRequest::PlaySound(gone_id));
+        handle.send(failed(gone_id));
         log.wait_for(|e| notice_is(e, "sound-missing"));
+        handle.send(failed(broken_id));
+        log.wait_for(|e| notice_is(e, "sound-failed"));
         handle.send(LibraryRequest::LoadQueue);
         log.wait_for(is_queue);
-        assert_eq!(count_sounds(&log), before, "it was known to be missing");
+        assert_eq!(count_sounds(&log), before, "nothing changed that shows");
 
-        // A file that goes after the sounds were sent is found out when it is fired.
-        fs::remove_file(&path).unwrap();
-        handle.send(LibraryRequest::PlaySound(id));
-        let sounds = sounds_of(log.wait_for(is_sounds));
-        assert!(sounds[1].missing);
-        // And one that comes back plays, and shows again.
+        // A file that went after the sounds were sent is found out, and shows.
+        fs::remove_file(&broken).unwrap();
+        handle.send(failed(broken_id));
+        assert!(sounds_of(log.wait_for(is_sounds))[1].missing);
+        assert_eq!(log.notices("sound-missing").len(), 2);
+
+        // One that came back and played is checked without a notice, and shows again.
         fs::copy(fixture("tone.ogg"), &gone).unwrap();
-        handle.send(LibraryRequest::PlaySound(gone_id));
-        log.wait_for(is_fired);
-        let sounds = sounds_of(log.wait_for(is_sounds));
-        assert!(!sounds[0].missing);
+        handle.send(LibraryRequest::CheckSound {
+            id: gone_id,
+            failed: false,
+        });
+        assert!(!sounds_of(log.wait_for(is_sounds))[0].missing);
         finish_sounds(handle, &mut log);
         assert_eq!(log.notices("sound-missing").len(), 2);
-        let fired: Vec<_> = log.seen.iter().filter(|e| is_fired(e)).collect();
-        assert_eq!(fired.len(), 1, "only the file that is there was fired");
+        assert_eq!(log.notices("sound-failed").len(), 1);
+    }
+
+    #[test]
+    fn a_database_error_during_a_sound_command_gives_a_notice_and_no_list() {
+        let env = Env::new();
+        let library = env.open();
+        let (_requests, receiver) = crossbeam_channel::unbounded();
+        let (on_event, mut log) = recording();
+        let mut service = Service::new(receiver, Arc::default(), on_event);
+        let failed = || LibraryError::Io(std::io::Error::other("test write fails"));
+
+        service.finish_sound_change(&library, Err(failed()));
+        service.finish_adding_sounds(&library, 2, Err(failed()));
+        log.finish();
+        assert_eq!(
+            log.notices("library-action-failed").len(),
+            2,
+            "{:?}",
+            log.seen
+        );
+        assert_eq!(count_sounds(&log), 0, "the UI keeps what it shows");
+        assert!(log.notices("sound-limit").is_empty());
     }
 
     #[test]
@@ -2088,7 +2128,10 @@ mod tests {
                 stop: None,
             },
             LibraryRequest::RemoveSound(unknown),
-            LibraryRequest::PlaySound(unknown),
+            LibraryRequest::CheckSound {
+                id: unknown,
+                failed: true,
+            },
         ] {
             handle.send(request);
         }
@@ -2121,15 +2164,16 @@ mod tests {
                 stop: None,
             },
             LibraryRequest::RemoveSound(id),
-            LibraryRequest::PlaySound(id),
+            // Nobody clicked this one, so it is not answered.
+            LibraryRequest::CheckSound { id, failed: true },
         ] {
             handle.send(request);
         }
         finish_sounds(handle, &mut log);
         assert_eq!(
             log.notices("library-unavailable").len(),
-            7,
-            "the open, then 6"
+            6,
+            "the open, then 5"
         );
         assert_eq!(count_sounds(&log), 0);
     }

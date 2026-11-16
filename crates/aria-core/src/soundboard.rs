@@ -1,15 +1,24 @@
 //! The soundboard as the backend keeps it.
 //!
-//! The library thread owns the sounds. It sends them as [`SoundView`]s, with `missing` checked on
-//! that thread, after it opens and after every change, and it answers a sound fired with a
-//! [`FiredSound`] once it has found its file. The [`Soundboard`] on the backend worker adds which
-//! sounds are playing, as the engine reports them, and turns a fired sound into the engine's
-//! request.
+//! The library thread owns the sounds. It sends them as [`StoredSound`]s, with `missing` checked
+//! on that thread, after it opens and after every change. The [`Soundboard`] on the backend worker
+//! keeps each sound's file and volume from that list, so firing a sound goes straight to the
+//! engine and never waits for the library. It also marks which sounds are playing, as the engine
+//! reports them.
+//!
+//! The engine opens the file before any output, so a file that is gone plays nothing and leaves
+//! the music alone. Only when the engine says a sound failed does the worker ask the library to
+//! look at the file ([`LibraryRequest::CheckSound`]), which tells a missing file from one that
+//! cannot be played. The slow path is the failure, not the click.
 //!
 //! The engine's token for a sound is its [`SoundId`], so firing a sound that is playing starts it
 //! again.
 
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use aria_audio::{DeviceId, EngineCommand, EngineEvent, SoundRoute};
 use aria_library::{SOUNDS_MAX, SoundId};
@@ -18,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     event::Event,
     hotkey::Hotkey,
+    library_service::LibraryRequest,
     notice::{Notice, NoticeLevel},
     settings::Settings,
 };
@@ -86,20 +96,24 @@ impl SoundTarget {
     }
 }
 
-/// A sound the library found on disk, for the engine to play.
+/// A sound as the library sends it to the worker: what the UI shows, and the file it plays. The
+/// path stays on the backend; the UI gets only the [`SoundView`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct FiredSound {
-    pub id: SoundId,
+pub struct StoredSound {
+    pub view: SoundView,
     pub path: PathBuf,
-    /// The sound's volume, 0.0 to 1.0.
-    pub gain: f32,
 }
 
-/// A hotkey as stored by the library: text that is empty or not a hotkey counts as none.
+/// A hotkey as stored by the library: text that is empty or not a hotkey counts as none, and so
+/// does a hotkey that is not allowed, such as a plain letter written into the database by hand.
 pub(crate) fn stored_hotkey(text: Option<&str>) -> Option<Hotkey> {
     let text = text?;
-    match text.parse() {
-        Ok(hotkey) => Some(hotkey),
+    match text.parse::<Hotkey>() {
+        Ok(hotkey) if hotkey.is_allowed() => Some(hotkey),
+        Ok(_) => {
+            tracing::debug!("a stored hotkey that is not allowed is ignored");
+            None
+        }
         Err(_) => {
             if !text.trim().is_empty() {
                 tracing::debug!("a stored hotkey that cannot be read is ignored");
@@ -107,6 +121,14 @@ pub(crate) fn stored_hotkey(text: Option<&str>) -> Option<Hotkey> {
             None
         }
     }
+}
+
+/// What the soundboard makes of an engine event: a state or a notice for the UI, a request for the
+/// library, or both.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Reaction {
+    pub(crate) event: Option<Event>,
+    pub(crate) request: Option<LibraryRequest>,
 }
 
 /// Why `hotkey` may not be used, as the notice that says so, or `None` if it may. `taken` are the
@@ -140,6 +162,8 @@ fn sound_of(token: u64) -> Option<SoundId> {
 pub(crate) struct Soundboard {
     /// As the library last sent them; `playing` is filled in when the state is built.
     sounds: Vec<SoundView>,
+    /// The file and volume of each sound, from the same list.
+    sources: HashMap<SoundId, (PathBuf, f32)>,
     /// The sounds the engine says are playing.
     playing: HashSet<SoundId>,
     target: SoundTarget,
@@ -176,14 +200,19 @@ impl Soundboard {
     }
 
     /// Takes in the sounds the library sent, and returns the state to show.
-    pub(crate) fn on_sounds(&mut self, sounds: Vec<SoundView>) -> Event {
-        self.sounds = sounds;
+    pub(crate) fn on_sounds(&mut self, sounds: Vec<StoredSound>) -> Event {
+        self.sources = sounds
+            .iter()
+            .map(|sound| (sound.view.id, (sound.path.clone(), sound.view.volume)))
+            .collect();
+        self.sounds = sounds.into_iter().map(|sound| sound.view).collect();
         self.state()
     }
 
-    /// The library is gone: no sounds are left to show.
+    /// The library is gone: no sounds are left to show or to fire.
     pub(crate) fn clear(&mut self) -> Event {
         self.sounds.clear();
+        self.sources.clear();
         self.state()
     }
 
@@ -196,35 +225,65 @@ impl Soundboard {
         Some(self.state())
     }
 
-    /// The engine's request for a fired sound, on the outputs the settings name.
-    pub(crate) fn play(&self, fired: FiredSound) -> Option<EngineCommand> {
-        let Some(token) = token(fired.id) else {
-            tracing::debug!(id = fired.id.0, "a sound with an id no token can name");
+    /// The engine's request to play sound `id` from its file, at its volume, on the outputs the
+    /// settings name. An id the library did not send changes nothing.
+    pub(crate) fn play(&self, id: SoundId) -> Option<EngineCommand> {
+        let Some((path, gain)) = self.sources.get(&id) else {
+            tracing::debug!(id = id.0, "a sound that does not exist was fired");
+            return None;
+        };
+        let Some(token) = token(id) else {
+            tracing::debug!(id = id.0, "a sound with an id no token can name");
             return None;
         };
         Some(EngineCommand::PlaySound {
             token,
-            path: fired.path,
-            gain: fired.gain,
+            path: path.clone(),
+            gain: *gain,
             route: self.target.route(),
         })
     }
 
-    /// Acts on what the engine says of sounds: a new state when one starts or ends, a notice when
-    /// one fails. Other events are not for the soundboard.
-    pub(crate) fn on_engine(&mut self, event: EngineEvent) -> Option<Event> {
+    /// Acts on what the engine says of sounds:
+    /// - a start or an end gives a new state, if it changed what plays;
+    /// - a start of a sound shown as missing asks the library to look at its file again, since it
+    ///   is plainly there now;
+    /// - a failure asks the library to find out why, and to say so;
+    /// - a failing second device gives its notice.
+    ///
+    /// Other events are not for the soundboard.
+    pub(crate) fn on_engine(&mut self, event: EngineEvent) -> Reaction {
+        let check = |id, failed| Some(LibraryRequest::CheckSound { id, failed });
         match event {
             EngineEvent::SoundStarted { token } => {
-                let id = sound_of(token)?;
-                self.playing.insert(id).then(|| self.state())
+                let Some(id) = sound_of(token) else {
+                    return Reaction::default();
+                };
+                let shown_missing = self.sounds.iter().any(|s| s.id == id && s.missing);
+                Reaction {
+                    event: self.playing.insert(id).then(|| self.state()),
+                    request: if shown_missing {
+                        check(id, false)
+                    } else {
+                        None
+                    },
+                }
             }
-            EngineEvent::SoundEnded { token } => {
-                let id = sound_of(token)?;
-                self.playing.remove(&id).then(|| self.state())
-            }
-            EngineEvent::SoundFailed { .. } => Some(Event::Notice(SOUND_FAILED)),
-            EngineEvent::SoundDeviceFailed => Some(Event::Notice(SOUND_DEVICE_FAILED)),
-            _ => None,
+            EngineEvent::SoundEnded { token } => Reaction {
+                event: sound_of(token)
+                    .filter(|id| self.playing.remove(id))
+                    .map(|_| self.state()),
+                request: None,
+            },
+            EngineEvent::SoundFailed { token } => Reaction {
+                event: None,
+                request: sound_of(token).and_then(|id| check(id, true)),
+            },
+            EngineEvent::SoundDeviceFailed => Reaction {
+                event: Some(Event::Notice(SOUND_DEVICE_FAILED)),
+                request: None,
+            },
+            _ => Reaction::default(),
         }
     }
 
@@ -260,6 +319,18 @@ mod tests {
         }
     }
 
+    fn stored(id: i64, hotkey: Option<&str>) -> StoredSound {
+        StoredSound {
+            view: view(id, hotkey),
+            path: PathBuf::from(format!("{id}.ogg")),
+        }
+    }
+
+    fn shown(reaction: Reaction) -> Option<Event> {
+        assert_eq!(reaction.request, None, "{reaction:?}");
+        reaction.event
+    }
+
     fn state(event: Option<Event>) -> Arc<SoundboardState> {
         match event {
             Some(Event::Soundboard(state)) => state,
@@ -279,11 +350,14 @@ mod tests {
     #[test]
     fn a_fired_sound_becomes_a_request_with_its_path_gain_and_route() {
         let mut board = Soundboard::default();
-        let fired = FiredSound {
-            id: SoundId(7),
+        let horn = StoredSound {
+            view: SoundView {
+                volume: 0.25,
+                ..view(7, None)
+            },
             path: PathBuf::from("horn.ogg"),
-            gain: 0.25,
         };
+        board.on_sounds(vec![horn, stored(8, None)]);
         for (target, route) in [
             (SoundTarget::Mine, SoundRoute::Mine),
             (SoundTarget::Second, SoundRoute::Second),
@@ -294,7 +368,7 @@ mod tests {
                 ..Settings::default()
             });
             assert_eq!(
-                board.play(fired.clone()),
+                board.play(SoundId(7)),
                 Some(EngineCommand::PlaySound {
                     token: 7,
                     path: PathBuf::from("horn.ogg"),
@@ -303,6 +377,17 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn an_unknown_sound_is_not_fired() {
+        let mut board = Soundboard::default();
+        assert_eq!(board.play(SoundId(1)), None, "nothing was sent yet");
+        board.on_sounds(vec![stored(1, None)]);
+        assert_eq!(board.play(SoundId(2)), None);
+        assert!(board.play(SoundId(1)).is_some());
+        board.clear();
+        assert_eq!(board.play(SoundId(1)), None, "the library is gone");
     }
 
     #[test]
@@ -332,35 +417,80 @@ mod tests {
     #[test]
     fn starting_and_ending_mark_the_sound() {
         let mut board = Soundboard::default();
-        board.on_sounds(vec![view(1, None), view(2, None)]);
-        let started = state(board.on_engine(EngineEvent::SoundStarted { token: 2 }));
+        board.on_sounds(vec![stored(1, None), stored(2, None)]);
+        let started = state(shown(
+            board.on_engine(EngineEvent::SoundStarted { token: 2 }),
+        ));
         assert_eq!(playing(&started), [2]);
         // A restart changes nothing that shows.
         assert_eq!(
-            board.on_engine(EngineEvent::SoundStarted { token: 2 }),
+            shown(board.on_engine(EngineEvent::SoundStarted { token: 2 })),
             None
         );
-        let ended = state(board.on_engine(EngineEvent::SoundEnded { token: 2 }));
+        let ended = state(shown(board.on_engine(EngineEvent::SoundEnded { token: 2 })));
         assert!(playing(&ended).is_empty());
         // The end of a sound that played nowhere changes nothing either.
-        assert_eq!(board.on_engine(EngineEvent::SoundEnded { token: 1 }), None);
+        assert_eq!(
+            shown(board.on_engine(EngineEvent::SoundEnded { token: 1 })),
+            None
+        );
         // A failure leaves a sound playing under the same token alone.
         board.on_engine(EngineEvent::SoundStarted { token: 1 });
+        board.on_engine(EngineEvent::SoundFailed { token: 1 });
+        assert_eq!(playing(&state(Some(board.state()))), [1]);
+    }
+
+    #[test]
+    fn a_failure_asks_the_library_why() {
+        let mut board = Soundboard::default();
+        board.on_sounds(vec![stored(1, None)]);
         assert_eq!(
             board.on_engine(EngineEvent::SoundFailed { token: 1 }),
-            Some(Event::Notice(SOUND_FAILED))
+            Reaction {
+                event: None,
+                request: Some(LibraryRequest::CheckSound {
+                    id: SoundId(1),
+                    failed: true
+                }),
+            },
+            "the library gives the notice, once it knows whether the file is there"
         );
-        assert_eq!(playing(&state(Some(board.state()))), [1]);
+    }
+
+    #[test]
+    fn a_sound_shown_as_missing_that_starts_is_checked_again() {
+        let mut board = Soundboard::default();
+        let gone = StoredSound {
+            view: SoundView {
+                missing: true,
+                ..view(1, None)
+            },
+            path: PathBuf::from("1.ogg"),
+        };
+        board.on_sounds(vec![gone]);
+        assert!(board.play(SoundId(1)).is_some(), "it is tried all the same");
+        let reaction = board.on_engine(EngineEvent::SoundStarted { token: 1 });
+        assert_eq!(playing(&state(reaction.event)), [1]);
+        assert_eq!(
+            reaction.request,
+            Some(LibraryRequest::CheckSound {
+                id: SoundId(1),
+                failed: false
+            })
+        );
     }
 
     #[test]
     fn a_new_list_keeps_what_plays() {
         let mut board = Soundboard::default();
-        board.on_sounds(vec![view(1, None)]);
+        board.on_sounds(vec![stored(1, None)]);
         board.on_engine(EngineEvent::SoundStarted { token: 1 });
-        let renamed = SoundView {
-            name: "Horn".into(),
-            ..view(1, None)
+        let renamed = StoredSound {
+            view: SoundView {
+                name: "Horn".into(),
+                ..view(1, None)
+            },
+            path: PathBuf::from("1.ogg"),
         };
         let shown = state(Some(board.on_sounds(vec![renamed])));
         assert_eq!(shown.sounds[0].name, "Horn");
@@ -371,16 +501,16 @@ mod tests {
     fn the_device_failing_gives_a_notice() {
         let mut board = Soundboard::default();
         assert_eq!(
-            board.on_engine(EngineEvent::SoundDeviceFailed),
+            shown(board.on_engine(EngineEvent::SoundDeviceFailed)),
             Some(Event::Notice(SOUND_DEVICE_FAILED))
         );
-        assert_eq!(board.on_engine(EngineEvent::Stopped), None);
+        assert_eq!(board.on_engine(EngineEvent::Stopped), Reaction::default());
     }
 
     #[test]
     fn a_stop_hotkey_used_by_a_sound_is_refused() {
         let mut board = Soundboard::default();
-        board.on_sounds(vec![view(1, Some("Ctrl+F1")), view(2, None)]);
+        board.on_sounds(vec![stored(1, Some("Ctrl+F1")), stored(2, None)]);
         let with = |hotkey: Option<&str>| Settings {
             stop_sounds_hotkey: hotkey.map(key),
             ..Settings::default()
@@ -420,6 +550,14 @@ mod tests {
         assert_eq!(stored_hotkey(Some("")), None);
         assert_eq!(stored_hotkey(Some("Hyper+Q")), None);
         assert_eq!(stored_hotkey(Some("Ctrl+F1")), Some(key("Ctrl+F1")));
+    }
+
+    #[test]
+    fn a_stored_hotkey_that_is_not_allowed_is_none() {
+        for text in ["A", "Shift+A", "5"] {
+            assert_eq!(stored_hotkey(Some(text)), None, "{text}");
+        }
+        assert_eq!(stored_hotkey(Some("F5")), Some(key("F5")));
     }
 
     #[test]
