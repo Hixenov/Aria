@@ -78,6 +78,13 @@ pub fn list_devices(kind: DeviceKind) -> Result<Vec<DeviceInfo>, AudioError> {
         .collect())
 }
 
+/// The identifier of the system default output device, found without listing the others. It is
+/// made as [`list_devices`] makes it, so the two can be compared.
+pub(crate) fn default_output_id() -> Option<DeviceId> {
+    let device = cpal::default_host().default_output_device()?;
+    describe(&device).map(|(id, _)| id)
+}
+
 /// Find an output device, or the system default when `id` is `None`.
 pub(crate) fn find_output_device(
     host: &cpal::Host,

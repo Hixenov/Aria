@@ -67,4 +67,14 @@ pub trait OutputFactory: Send {
     /// A way to list the devices this factory opens, which can be kept after the factory has been
     /// handed to an engine.
     fn device_lister(&self) -> DeviceLister;
+
+    /// The system default output device, if there is one. Factories that can ask for it alone
+    /// should, as this one lists every device to find it.
+    fn default_device(&self) -> Option<DeviceId> {
+        let devices = (self.device_lister())().ok()?;
+        devices
+            .into_iter()
+            .find(|device| device.is_default)
+            .map(|device| device.id)
+    }
 }

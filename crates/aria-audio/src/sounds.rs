@@ -25,8 +25,9 @@ pub enum SoundRoute {
 /// The most sounds that play at once. Another one stops the one that started first.
 pub const SOUNDS_AT_ONCE: usize = 6;
 
-// The music's output holds one input for the music and one for each sound.
-const _: () = assert!(SOUNDS_AT_ONCE < MAX_INPUTS);
+// The music's output holds one input for the music, one for each sound, and one more for a sound
+// that is set up before the one it replaces lets go of its input.
+const _: () = assert!(SOUNDS_AT_ONCE + 2 <= MAX_INPUTS);
 
 /// One of the outputs a sound can play on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,19 +41,25 @@ pub(crate) enum Target {
 /// Inputs on one output that voices have finished with, kept for the next voice there.
 ///
 /// A dropped input stays in the mixer until it has faded out, and counts against
-/// [`MAX_INPUTS`] until then. Reusing inputs instead means an output never holds more than one
-/// input per sound that plays at once, however fast sounds are fired.
+/// [`MAX_INPUTS`] until then. Reusing inputs instead means an output holds no more inputs for
+/// sounds than [`SOUNDS_AT_ONCE`] plus the one being set up, however fast sounds are fired: a new
+/// input is made only when every input there is in use.
 #[derive(Default)]
 pub(crate) struct Spares(Vec<InputHandle>);
 
 impl Spares {
-    /// A free input on `output`: a spare one, or a new one holding one second.
+    /// A free input on `output`: a spare one that has finished fading out if there is one, as it
+    /// takes new audio at once, then any spare one, then a new one holding one second.
     fn take(
         &mut self,
         output: &mut dyn AudioOutput,
         format: OutputFormat,
     ) -> Result<InputHandle, AudioError> {
-        match self.0.pop() {
+        let ready = self.0.iter().position(|input| !input.clearing());
+        match ready
+            .map(|at| self.0.swap_remove(at))
+            .or_else(|| self.0.pop())
+        {
             Some(input) => Ok(input),
             None => output.add_input(format.sample_rate as usize),
         }

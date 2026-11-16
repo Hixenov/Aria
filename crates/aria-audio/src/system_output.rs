@@ -25,6 +25,10 @@ impl OutputFactory for SystemFactory {
         CpalFactory.device_lister()
     }
 
+    fn default_device(&self) -> Option<DeviceId> {
+        CpalFactory.default_device()
+    }
+
     fn open(
         &self,
         device: Option<&DeviceId>,

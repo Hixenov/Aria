@@ -121,12 +121,14 @@ pub enum EngineEvent {
     },
     /// A sound finished, was stopped, was pushed out by a newer one, or was cut off because the
     /// output it played on closed (as at a reopen for a new rate). Also sent for a sound that
-    /// played nowhere because no output it was meant for could be opened.
+    /// played nowhere because no output it was meant for could be opened, unless a sound under
+    /// the same token plays on, which ends later. Each start has exactly one end.
     SoundEnded {
         token: u64,
     },
-    /// The sound's file could not be opened or decoded. Nothing else changed: no output was
-    /// opened for it, and a sound playing under the same token plays on.
+    /// The sound could not be played: its file could not be opened or decoded, or it could not
+    /// be set up on any output. Other sounds, a sound playing under the same token, and the music
+    /// are left as they were. For a file that cannot be opened, no output is opened either.
     SoundFailed {
         token: u64,
     },
@@ -930,7 +932,12 @@ impl Worker {
 
     fn set_device(&mut self, device: Option<DeviceId>) {
         self.device = device;
-        if self.device.is_some() && self.device == self.sound_device {
+        let second_is_music = self.second.is_some()
+            && self
+                .sound_device
+                .as_ref()
+                .is_some_and(|second| self.is_music_device(second));
+        if second_is_music {
             // Sounds for the second device now play on the music's output, once.
             self.close_second_output();
         }
@@ -1343,24 +1350,18 @@ impl Worker {
                 return self.emit(EngineEvent::SoundFailed { token });
             }
         };
+        let playing = self.voices.iter().position(|voice| voice.token == token);
         let (on_music, on_second) = self.open_sound_outputs(route);
         if !on_music && !on_second {
-            return self.emit(EngineEvent::SoundEnded { token });
-        }
-        // A sound fired again starts over in its own place; a new one may push out the oldest.
-        if let Some(at) = self.voices.iter().position(|voice| voice.token == token) {
-            if let Some(old) = self.voices.remove(at) {
-                self.release(old);
+            // Played nowhere. A sound already playing under the token plays on, and ends later.
+            if playing.is_none() {
+                self.emit(EngineEvent::SoundEnded { token });
             }
-        } else if self.voices.len() >= SOUNDS_AT_ONCE
-            && let Some(oldest) = self.voices.pop_front()
-        {
-            let oldest_token = oldest.token;
-            self.release(oldest);
-            self.emit(EngineEvent::SoundEnded {
-                token: oldest_token,
-            });
+            return;
         }
+        // Set up before anything else changes, so that a sound that cannot play leaves the others
+        // as they were. Spares are taken first, so this needs a new input only when every input
+        // on the output is in use: one more than the sounds playing at most.
         let mut voice = Voice::new(token, decoder, gain);
         if on_music && let Some(sink) = &mut self.sink {
             let added = voice.add_part(
@@ -1387,6 +1388,20 @@ impl Worker {
         if !voice.has_parts() {
             return self.emit(EngineEvent::SoundFailed { token });
         }
+        // A sound fired again starts over, as the newest; a new one may push out the oldest.
+        if let Some(at) = playing {
+            if let Some(old) = self.voices.remove(at) {
+                self.release(old);
+            }
+        } else if self.voices.len() >= SOUNDS_AT_ONCE
+            && let Some(oldest) = self.voices.pop_front()
+        {
+            let oldest_token = oldest.token;
+            self.release(oldest);
+            self.emit(EngineEvent::SoundEnded {
+                token: oldest_token,
+            });
+        }
         self.voices.push_back(voice);
         self.emit(EngineEvent::SoundStarted { token });
     }
@@ -1409,19 +1424,22 @@ impl Worker {
         let Some(second) = &self.sound_device else {
             return false;
         };
-        if self.second.is_some() {
-            // It was another device when it was opened.
-            return true;
-        }
+        // An open second output was another device when it was opened, and is checked again
+        // whenever the music's device changes.
+        self.second.is_some() || !self.is_music_device(second)
+    }
+
+    /// Whether `device` is the one the music plays on.
+    ///
+    /// With the music on the system default, this asks the factory for the default device. That
+    /// happens for every sound for the second device while the second output is closed (so for
+    /// every one while the second device is the default, or cannot be opened), and at every
+    /// change of the music's device while it is open. The system factory answers with one query
+    /// of the default endpoint rather than a listing of every device.
+    fn is_music_device(&self, device: &DeviceId) -> bool {
         match &self.device {
-            Some(music) => music != second,
-            // The music is on the system default. Listing can take a while, but only happens
-            // when the second output is about to open.
-            None => !(self.factory.device_lister())().is_ok_and(|devices| {
-                devices
-                    .iter()
-                    .any(|device| device.is_default && device.id == *second)
-            }),
+            Some(music) => music == device,
+            None => self.factory.default_device().as_ref() == Some(device),
         }
     }
 

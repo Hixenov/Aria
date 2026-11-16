@@ -9,7 +9,9 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample};
 
-use crate::device::{DeviceId, DeviceKind, device_error, find_output_device, list_devices};
+use crate::device::{
+    DeviceId, DeviceKind, default_output_id, device_error, find_output_device, list_devices,
+};
 use crate::error::AudioError;
 use crate::mixer::{InputHandle, Mixer, MixerControl};
 use crate::output::{
@@ -33,6 +35,10 @@ pub struct CpalFactory;
 impl OutputFactory for CpalFactory {
     fn device_lister(&self) -> DeviceLister {
         Arc::new(|| list_devices(DeviceKind::Output))
+    }
+
+    fn default_device(&self) -> Option<DeviceId> {
+        default_output_id()
     }
 
     /// Always shared: CPAL opens no exclusive streams, so `request` changes nothing. The device

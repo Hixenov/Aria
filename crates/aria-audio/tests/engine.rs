@@ -2546,9 +2546,10 @@ fn firing_a_playing_sound_restarts_it() {
 
     // Ended once, at the end of the second start.
     assert_eq!(sound_events(&events), [SoundEnded { token: 1 }]);
-    // The fade out of what was queued, then the whole sound from its start, not the rest of it.
-    let fade = SECOND * FADE_MS as usize / 1_000;
-    assert_near(audible_frames(&again), fade + 11_025);
+    // The whole sound from its start, not the rest of it. It begins at once, while what was
+    // queued fades out under it; waiting for that fade would add its 5 ms.
+    let audible = audible_frames(&again);
+    assert!(audible.abs_diff(11_025) <= 10, "{audible} frames heard");
     let (heard, file) = (sounding(&again, 2), sounding(&decode_all(&sound), 2));
     let tail = 2 * 10_000;
     assert!(
@@ -2709,4 +2710,120 @@ fn the_second_output_closes_after_its_grace() {
 
     wait_until("the second output to close", || second.is_closed());
     assert_eq!(rig.factory.outputs().len(), 1, "the music's output opened");
+}
+
+/// After the events so far, no other sound event is waiting: the next one is the failure of a
+/// sound that cannot be opened, sent now.
+fn assert_no_more_sound_events(rig: &Rig, dir: &Path) {
+    rig.send(play_sound(
+        99,
+        &dir.join("missing.wav"),
+        1.0,
+        SoundRoute::Mine,
+    ));
+    assert_eq!(rig.next_sound_event(), SoundFailed { token: 99 });
+}
+
+#[test]
+fn a_sound_takes_a_spare_input_that_is_free_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let sound = quarter_sound(dir.path());
+    let long = sound_file(dir.path(), "long", 44_100, 2 * SECOND as u64, 440.0);
+    let rig = Rig::new(STEREO_44K);
+    rig.send(play_sound(1, &long, 1.0, SoundRoute::Mine));
+    rig.send(play_sound(2, &sound, 1.0, SoundRoute::Mine));
+    let output = rig.output(0);
+    assert_eq!(rig.next_sound_event(), SoundStarted { token: 1 });
+    assert_eq!(rig.next_sound_event(), SoundStarted { token: 2 });
+    // The short sound is heard out, so its input is free at once.
+    output.pull(SECOND / 2);
+    assert_eq!(rig.next_sound_event(), SoundEnded { token: 2 });
+    // The long one's input still has to fade out what it holds.
+    rig.send(StopSounds);
+    assert_eq!(rig.next_sound_event(), SoundEnded { token: 1 });
+
+    rig.send(play_sound(3, &sound, 1.0, SoundRoute::Mine));
+    assert_eq!(rig.next_sound_event(), SoundStarted { token: 3 });
+    let heard = output.pull(4_410);
+
+    // On the free input it is heard straight away, not after the fade.
+    assert_near(audible_frames(&heard), 4_410);
+    assert_eq!(rig.factory.outputs().len(), 1);
+}
+
+#[test]
+fn a_sound_cut_by_a_device_change_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let long = sound_file(dir.path(), "long", 44_100, 2 * SECOND as u64, 660.0);
+    let rig = Rig::new(STEREO_44K);
+    rig.send(play_sound(1, &long, 1.0, SoundRoute::Mine));
+    let first = rig.output(0);
+    assert_eq!(rig.next_sound_event(), SoundStarted { token: 1 });
+
+    rig.send(SetDevice(Some(DeviceId("headphones".into()))));
+
+    assert_eq!(rig.next_sound_event(), SoundEnded { token: 1 });
+    wait_until("the output to close", || first.is_closed());
+    assert_no_more_sound_events(&rig, dir.path());
+}
+
+#[test]
+fn moving_the_music_onto_the_second_device_plays_sounds_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let sound = quarter_sound(dir.path());
+    let long = sound_file(dir.path(), "long", 44_100, 2 * SECOND as u64, 660.0);
+    let headphones = DeviceId("headphones".into());
+    let rig = Rig::new(STEREO_44K);
+    // The second device is the system default.
+    rig.factory.set_devices(vec![DeviceInfo {
+        id: second_device(),
+        name: "Speakers".into(),
+        is_default: true,
+    }]);
+    rig.send(SetDevice(Some(headphones.clone())));
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(play_sound(1, &long, 1.0, SoundRoute::Both));
+    assert_eq!(rig.next_sound_event(), SoundStarted { token: 1 });
+    let mine = rig.output_on(Some(&headphones));
+    let second = rig.output_on(Some(&second_device()));
+
+    // The music moves to the system default, the second device.
+    rig.send(SetDevice(None));
+
+    // Cut off both outputs, so it ends once.
+    assert_eq!(rig.next_sound_event(), SoundEnded { token: 1 });
+    wait_until("the second output to close", || second.is_closed());
+    assert!(mine.is_closed());
+    rig.send(play_sound(2, &sound, 1.0, SoundRoute::Both));
+    let output = rig.output_on(None);
+    assert_eq!(rig.next_sound_event(), SoundStarted { token: 2 });
+    let (audio, _) = rig.pull_until(&output, |event| *event == SoundEnded { token: 2 });
+    assert_heard_exactly(&audio, &decode_all(&sound), 2, &sound);
+    assert_eq!(
+        rig.factory.outputs_on(Some(&second_device())).len(),
+        1,
+        "the second device opened again"
+    );
+    assert_no_more_sound_events(&rig, dir.path());
+}
+
+#[test]
+fn a_repeat_that_plays_nowhere_leaves_the_first_with_one_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let long = sound_file(dir.path(), "long", 44_100, 2 * SECOND as u64, 660.0);
+    let rig = Rig::new(STEREO_44K);
+    rig.factory.remove_device(second_device());
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(play_sound(1, &long, 1.0, SoundRoute::Mine));
+    let output = rig.output(0);
+    assert_eq!(rig.next_sound_event(), SoundStarted { token: 1 });
+
+    rig.send(play_sound(1, &long, 1.0, SoundRoute::Second));
+    assert_eq!(rig.next_sound_event(), SoundDeviceFailed);
+
+    // The first start plays on, and ends once.
+    assert!(peak(&output.pull(CHUNK_FRAMES)) > 0.4, "the sound stopped");
+    rig.send(StopSounds);
+    assert_eq!(rig.next_sound_event(), SoundEnded { token: 1 });
+    assert_no_more_sound_events(&rig, dir.path());
 }
