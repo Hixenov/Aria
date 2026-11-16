@@ -262,15 +262,16 @@ mod real_device {
 
     #[test]
     #[ignore = "needs a real output device"]
-    fn a_second_exclusive_open_on_the_same_device_falls_back() {
+    fn a_second_exclusive_open_is_never_exclusive() {
         let first = SystemFactory.open(None, exclusive_for(CD)).unwrap();
         println!("first: {}", describe(&first));
         assert!(first.exclusive, "the default device refused exclusive mode");
 
         // The exclusive attempt is refused and the factory falls back to a shared stream. But
         // Windows refuses a shared stream too while another stream holds the device exclusively
-        // (AUDCLNT_E_DEVICE_IN_USE, 0x8889000A, -2004287478 as CPAL prints it), so on a real
-        // device the fallback can fail as well. Either way the second is never exclusive.
+        // (AUDCLNT_E_DEVICE_IN_USE), which CPAL reports as `ErrorKind::DeviceBusy` and the output
+        // as `AudioError::DeviceBusy`. So the second open is either shared or busy, and never
+        // exclusive.
         let second = SystemFactory.open(None, exclusive_for(CD));
         match &second {
             Ok(second) => {
@@ -278,8 +279,8 @@ mod real_device {
                 assert!(!second.exclusive);
             }
             Err(error) => {
-                println!("second: error: {error}");
-                assert!(error.to_string().contains("-2004287478"), "{error}");
+                println!("second: error: {error:?}");
+                assert!(matches!(error, AudioError::DeviceBusy), "{error:?}");
             }
         }
         drop(second);

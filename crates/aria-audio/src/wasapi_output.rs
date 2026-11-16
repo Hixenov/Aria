@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
 
 use wasapi::{
@@ -62,7 +62,10 @@ pub(crate) fn open(
     let device = device.cloned();
     let flags = Arc::new(Flags::default());
     let thread_flags = Arc::clone(&flags);
-    let (opened_tx, opened_rx) = mpsc::channel();
+    // A rendezvous: a send completes only when `open` takes it. Once `open` has given up waiting
+    // and dropped the receiver, the thread's send fails, so it never plays on a stream nobody
+    // can stop; it closes the stream and frees the device instead.
+    let (opened_tx, opened_rx) = mpsc::sync_channel(0);
     let (closed_tx, closed) = mpsc::channel::<()>();
     let thread = thread::Builder::new()
         .name("aria-audio-exclusive".into())
@@ -72,8 +75,8 @@ pub(crate) fn open(
             run(device.as_ref(), source, &thread_flags, &opened_tx);
         })
         .map_err(device_error)?;
-    // On a timeout the thread is left behind. If it ever finishes opening, nobody is listening,
-    // and it closes the stream again.
+    // On a timeout the thread is left behind. If it ever finishes opening, its send fails, and
+    // it closes the stream again.
     let (device_format, control) = opened_rx.recv_timeout(OPEN_WAIT).map_err(|e| match e {
         RecvTimeoutError::Timeout => {
             AudioError::Device("the exclusive output took too long to open".into())
@@ -105,7 +108,7 @@ fn run(
     device: Option<&DeviceId>,
     source: Option<SourceFormat>,
     flags: &Flags,
-    opened: &Sender<OpenResult>,
+    opened: &SyncSender<OpenResult>,
 ) {
     if let Err(error) = wasapi::initialize_mta().ok() {
         let _ = opened.send(Err(device_error(error)));
@@ -159,6 +162,23 @@ fn find_device(enumerator: &DeviceEnumerator, id: Option<&DeviceId>) -> Result<D
     }
 }
 
+/// `KSAUDIO_SPEAKER_MONO`: one channel, front centre.
+const SPEAKER_MONO: u32 = 0x4;
+/// `KSAUDIO_SPEAKER_STEREO`: front left and front right.
+const SPEAKER_STEREO: u32 = 0x3;
+
+/// The speaker positions to ask for with `channels`. Mono and stereo get the masks Windows
+/// defines for them: the crate's default for one channel is front left alone, which a device
+/// held exclusively, with no system mixer in between, may play on the left only. Wider layouts
+/// keep the crate's default.
+fn channel_mask(channels: u16) -> Option<u32> {
+    match channels {
+        1 => Some(SPEAKER_MONO),
+        2 => Some(SPEAKER_STEREO),
+        _ => None,
+    }
+}
+
 /// The WASAPI description of `format`.
 fn wave_format(format: DeviceFormat) -> WaveFormat {
     let (store, valid) = match format.kind {
@@ -172,7 +192,7 @@ fn wave_format(format: DeviceFormat) -> WaveFormat {
         SampleType::Int,
         format.sample_rate as usize,
         usize::from(format.channels),
-        None,
+        channel_mask(format.channels),
     )
 }
 
@@ -204,11 +224,11 @@ fn pick_format(client: &AudioClient, source: SourceFormat) -> Option<(DeviceForm
     Some((format, chosen?))
 }
 
-/// The rates of [`RATES`] at which the device takes `source`'s channels, or stereo for a mono
-/// source, in any integer kind.
+/// The rates of [`RATES`] at which the device takes `source`'s channels, or for a mono source
+/// stereo or mono (asked in that order, as [`choose_format`] does), in any integer kind.
 fn supported_rates(client: &AudioClient, source: SourceFormat) -> Vec<u32> {
     let layouts: &[u16] = if source.channels == 1 {
-        &[1, 2]
+        &[2, 1]
     } else {
         std::slice::from_ref(&source.channels)
     };
@@ -399,5 +419,48 @@ impl Drop for WasapiOutput {
         if let Some(thread) = self.thread.take() {
             join_within(thread, &self.closed, CLOSE_WAIT);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn format(channels: u16, kind: SampleKind) -> DeviceFormat {
+        DeviceFormat {
+            sample_rate: 44_100,
+            channels,
+            kind,
+        }
+    }
+
+    #[test]
+    fn mono_and_stereo_are_asked_for_with_their_speaker_masks() {
+        let mono = wave_format(format(1, SampleKind::I16));
+        assert_eq!(mono.get_nchannels(), 1);
+        assert_eq!(mono.get_dwchannelmask(), 0x4, "front centre");
+        assert_eq!(mono.get_blockalign(), 2);
+
+        let stereo = wave_format(format(2, SampleKind::I24In32));
+        assert_eq!(stereo.get_nchannels(), 2);
+        assert_eq!(stereo.get_dwchannelmask(), 0x3, "front left and right");
+        assert_eq!(stereo.get_bitspersample(), 32);
+        assert_eq!(stereo.get_validbitspersample(), 24);
+        assert_eq!(stereo.get_blockalign(), 8);
+        assert_eq!(stereo.get_samplespersec(), 44_100);
+
+        let wide = wave_format(format(2, SampleKind::I32));
+        assert_eq!(wide.get_bitspersample(), 32);
+        assert_eq!(wide.get_validbitspersample(), 32);
+    }
+
+    #[test]
+    fn wider_layouts_keep_the_default_mask() {
+        assert_eq!(channel_mask(6), None);
+        // The crate's default: one bit per channel.
+        assert_eq!(
+            wave_format(format(6, SampleKind::I16)).get_dwchannelmask(),
+            0x3F
+        );
     }
 }

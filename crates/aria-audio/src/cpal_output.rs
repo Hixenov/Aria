@@ -155,8 +155,18 @@ fn open_stream(
             "unsupported sample format: {other}"
         ))),
     }?;
-    stream.play().map_err(device_error)?;
+    stream.play().map_err(stream_error)?;
     Ok((stream, format, control))
+}
+
+/// A stream that could not be built or started. A device another stream holds is told apart, so
+/// the caller can see it is busy rather than broken.
+fn stream_error(error: cpal::Error) -> AudioError {
+    if error.kind() == ErrorKind::DeviceBusy {
+        AudioError::DeviceBusy
+    } else {
+        device_error(error)
+    }
 }
 
 fn build_stream<T>(
@@ -181,7 +191,7 @@ where
     let on_error = move |error: cpal::Error| health.record(&error);
     device
         .build_output_stream(config, on_data, on_error, Some(OPEN_TIMEOUT))
-        .map_err(device_error)
+        .map_err(stream_error)
 }
 
 /// Whether an error leaves the stream dead, so the output must be replaced.
@@ -268,6 +278,18 @@ mod tests {
         assert!(!join_within(thread, &closed, Duration::from_millis(20)));
 
         drop(release);
+    }
+
+    #[test]
+    fn a_busy_device_is_told_apart() {
+        assert!(matches!(
+            stream_error(ErrorKind::DeviceBusy.into()),
+            AudioError::DeviceBusy
+        ));
+        assert!(matches!(
+            stream_error(ErrorKind::BackendError.into()),
+            AudioError::Device(_)
+        ));
     }
 
     #[test]

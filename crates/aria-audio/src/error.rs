@@ -20,6 +20,9 @@ pub enum AudioError {
     /// The output device failed.
     #[error("audio device error: {0}")]
     Device(String),
+    /// Another stream holds the device, for example exclusively, so it cannot be opened now.
+    #[error("audio device in use")]
+    DeviceBusy,
     /// There is no output device.
     #[error("no audio output device")]
     NoDevice,
