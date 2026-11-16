@@ -985,9 +985,12 @@ impl AriaApp {
 }
 
 impl eframe::App for AriaApp {
-    /// Runs before every [`Self::ui`], and alone while the window is minimized.
-    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.fire_hotkeys();
+    /// Runs before every [`Self::ui`], and alone while the window is minimized. So the
+    /// backend's events (a new soundboard list, replaced settings) are taken in and the hotkeys
+    /// synced here too: an Aria started minimized registers its hotkeys without a drawn frame.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drain_events(ctx);
+        self.run_hotkeys(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2048,6 +2051,72 @@ mod tests {
         // The notice does not blame other programs.
         let keys: Vec<&str> = app.toasts.notices().map(|notice| notice.key).collect();
         assert_eq!(keys, ["hotkeys-unavailable"]);
+    }
+
+    #[test]
+    fn a_window_never_drawn_still_takes_in_events_and_syncs_its_hotkeys() {
+        // Started minimized, eframe runs only `logic`: no frame is ever drawn here.
+        let woke = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woke);
+        let waker: Waker = Arc::new(move || flag.store(true, Ordering::SeqCst));
+        let services = BackendServices {
+            library: None,
+            output: Box::new(FakeFactory::new(OutputFormat {
+                sample_rate: 48_000,
+                channels: 2,
+            })),
+            settings: Settings::default(),
+        };
+        let backend = Backend::start(None, services, waker, BackendConfig::default())
+            .expect("the backend starts");
+        let deps = AppDeps {
+            backend: Some(backend),
+            ..AppDeps::none()
+        };
+        let settings = Settings {
+            language: Some(Language::En),
+            stop_sounds_hotkey: Some(key("F9")),
+            ..Settings::default()
+        };
+        let localizer = Localizer::new(Language::En).expect("the English locale loads");
+        let mut app = AriaApp::new(settings, localizer, deps, vec![]);
+        let fake = crate::hotkeys::fake::Fake::default();
+        app.hotkeys = Hotkeys::new(Box::new(fake.clone()));
+        app.hotkeys_available = true;
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(fake.registered(), [key("F9")].into());
+
+        // A new soundboard list: its hotkeys are registered, and fire, with nothing drawn.
+        let sounds = vec![keyed(1, "Airhorn", "Ctrl+F1")];
+        app.handle_event(
+            &ctx,
+            Event::Soundboard(Arc::new(SoundboardState { sounds })),
+        );
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(fake.registered(), [key("F9"), key("Ctrl+F1")].into());
+        fake.press(key("Ctrl+F1"));
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(plays_sent(&app, 1), 1);
+
+        // The backend's events are taken in by `logic` too: settings it replaced (here the
+        // defaults, after a reset) drop the hotkey of "Stop all".
+        woke.store(false, Ordering::SeqCst);
+        app.send(Command::ResetSettings);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !woke.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(woke.load(Ordering::SeqCst), "the backend did not answer");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.settings().stop_sounds_hotkey.is_some() && Instant::now() < deadline {
+            eframe::App::logic(&mut app, &ctx, &mut frame);
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.settings().stop_sounds_hotkey, None);
+        assert_eq!(fake.registered(), [key("Ctrl+F1")].into());
     }
 
     #[test]
