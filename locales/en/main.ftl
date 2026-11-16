@@ -145,6 +145,7 @@ playback-track-failed = Couldn't play { $title }, so it was skipped.
 playback-stopped-after-failures = Playback stopped because several tracks in a row couldn't be played.
 playback-device-fallback = The audio device isn't available, so Aria switched to another one.
 playback-no-device = No audio device is available, so playback is paused.
+exclusive-unavailable = Exclusive mode isn't available on this device right now, so Aria is using the system mixer.
 
 ## Local Music page
 

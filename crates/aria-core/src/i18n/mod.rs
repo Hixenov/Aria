@@ -330,6 +330,7 @@ mod tests {
         "playback-stopped-after-failures",
         "playback-device-fallback",
         "playback-no-device",
+        "exclusive-unavailable",
         "error-startup-title",
         "error-startup-window",
         "home-recent",

@@ -81,6 +81,9 @@ fn view(current: Option<i64>, playing: bool, duration_ms: u64) -> PlayerView {
         playing,
         duration_ms,
         upcoming: Vec::new(),
+        output: None,
+        format: None,
+        volume_locked: false,
     }
 }
 

@@ -25,8 +25,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aria_audio::{DeviceId, EngineCommand, EngineEvent, EngineHandle, PlaybackClock, TrackRequest};
-use aria_library::{LibrarySnapshot, QueueRecord, Track, TrackId};
+use aria_audio::{
+    DeviceId, EngineCommand, EngineEvent, EngineHandle, OutputState, PlaybackClock, TrackRequest,
+};
+use aria_library::{LibrarySnapshot, Quality, QueueRecord, Track, TrackId};
 
 use crate::{
     command::Command,
@@ -67,6 +69,33 @@ const DEVICE_FALLBACK: Notice = Notice::new(NoticeLevel::Warning, "playback-devi
 /// No output could be opened.
 const NO_DEVICE: Notice = Notice::new(NoticeLevel::Error, "playback-no-device");
 
+/// Whether this platform has the exclusive output. Off Windows the setting is kept but does
+/// nothing: the engine is never asked for it and the volume is never locked.
+pub const EXCLUSIVE_SUPPORTED: bool = cfg!(windows);
+
+/// Exclusive mode was asked for, but the device would not be held.
+const EXCLUSIVE_UNAVAILABLE: Notice = Notice::new(NoticeLevel::Warning, "exclusive-unavailable");
+
+/// The file of a track, as the library knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackFormat {
+    pub codec: Arc<str>,
+    pub sample_rate: u32,
+    pub bits_per_sample: u16,
+    pub quality: Quality,
+}
+
+impl TrackFormat {
+    fn of(track: &Track) -> Self {
+        Self {
+            codec: Arc::clone(&track.codec),
+            sample_rate: track.sample_rate,
+            bits_per_sample: track.bits_per_sample,
+            quality: track.quality(),
+        }
+    }
+}
+
 /// What the UI shows of the player. The position comes from the clock.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PlayerView {
@@ -80,6 +109,14 @@ pub struct PlayerView {
     pub duration_ms: u64,
     /// What comes next, at most [`UPCOMING_LIMIT`] tracks.
     pub upcoming: Vec<UpNext>,
+    /// How the track being heard reaches the device, while exclusive mode is on and the engine has
+    /// said. `None` means the system mixer, or not known yet.
+    pub output: Option<OutputState>,
+    /// The file of the current track, when its row is in the library.
+    pub format: Option<TrackFormat>,
+    /// The volume slider has no effect: exclusive mode is on, and plays at full level. Mute still
+    /// works, and the stored volume is kept.
+    pub volume_locked: bool,
 }
 
 /// A track handed to the engine, under the token that names it there.
@@ -166,8 +203,15 @@ pub struct PlaybackService {
     volume: f32,
     device: Option<DeviceId>,
     gapless: bool,
+    /// Exclusive mode, as far as this platform has it.
+    exclusive: bool,
     shuffle: bool,
     repeat: RepeatMode,
+    /// What the engine last said of the output, while `exclusive` holds.
+    output: Option<OutputState>,
+    /// The token of the track the last "exclusive mode unavailable" notice was shown for, so a
+    /// track gets it once (0 when no track was loaded).
+    unavailable_noticed: Option<u64>,
     /// For the UI, until the worker takes them.
     events: Vec<Event>,
     /// For the library, until the worker takes them.
@@ -208,8 +252,11 @@ impl PlaybackService {
             volume: 1.0,
             device: None,
             gapless: true,
+            exclusive: false,
             shuffle: false,
             repeat: RepeatMode::Off,
+            output: None,
+            unavailable_noticed: None,
             events: Vec::new(),
             requests: Vec::new(),
         }
@@ -306,8 +353,20 @@ impl PlaybackService {
                 self.publish();
             }
             EngineEvent::Stopped => self.stopped(),
-            // Only sent in exclusive mode, which nothing here turns on.
-            EngineEvent::Output(_) | EngineEvent::ExclusiveUnavailable => {}
+            EngineEvent::Output(state) => {
+                // One from before the mode went off may still be on its way.
+                if self.exclusive && self.output != Some(state) {
+                    self.output = Some(state);
+                    self.publish();
+                }
+            }
+            EngineEvent::ExclusiveUnavailable => {
+                let token = self.current.as_ref().map_or(0, |given| given.token);
+                if self.exclusive && self.unavailable_noticed != Some(token) {
+                    self.unavailable_noticed = Some(token);
+                    self.notify(EXCLUSIVE_UNAVAILABLE);
+                }
+            }
             // Only sent for sounds, which nothing here plays yet.
             EngineEvent::SoundStarted { .. }
             | EngineEvent::SoundEnded { .. }
@@ -377,6 +436,13 @@ impl PlaybackService {
             self.gapless = settings.gapless;
             self.engine
                 .send(EngineCommand::SetGapless(settings.gapless));
+        }
+        let exclusive = settings.exclusive_output && EXCLUSIVE_SUPPORTED;
+        if exclusive != self.exclusive {
+            self.exclusive = exclusive;
+            self.output = None;
+            self.engine.send(EngineCommand::SetExclusive(exclusive));
+            self.publish();
         }
         if settings.shuffle != self.shuffle || settings.repeat != self.repeat {
             self.shuffle = settings.shuffle;
@@ -467,6 +533,13 @@ impl PlaybackService {
             playing: self.playing,
             duration_ms: self.duration_ms(),
             upcoming: self.queue.upcoming(UPCOMING_LIMIT),
+            output: self.output,
+            format: self
+                .queue
+                .current()
+                .and_then(|id| self.row(id))
+                .map(TrackFormat::of),
+            volume_locked: self.exclusive,
         };
         self.events.push(Event::Player(view));
     }
@@ -2356,6 +2429,168 @@ mod tests {
         });
         assert_eq!(rig.announced_track(), None, "repeat is off again");
         assert!(rig.service.shuffle);
+    }
+
+    // Exclusive output.
+
+    fn exclusive() -> Settings {
+        Settings {
+            exclusive_output: true,
+            ..Settings::default()
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn turning_exclusive_on_tells_the_engine() {
+        let music = Music::new().tone(300).tone(300);
+        let mut rig = Rig::with(&music);
+        rig.settings(&exclusive());
+        rig.play(&[1], 0);
+        rig.wait_until("an output", |rig| rig.output().is_some());
+        assert!(rig.output().unwrap().opened_as().0, "opened exclusively");
+
+        rig.settings(&Settings::default());
+        rig.play(&[2], 0);
+        rig.wait_until("a shared output", |rig| rig.factory.outputs().len() > 1);
+        assert!(!rig.output().unwrap().opened_as().0, "opened shared again");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_setting_is_sent_at_startup() {
+        let music = Music::new().tone(300);
+        let mut rig = Rig::idle();
+        rig.settings(&exclusive());
+        rig.service.on_snapshot(music.snapshot());
+        rig.service.on_queue_loaded(None);
+        rig.collect();
+        rig.play(&[1], 0);
+        rig.wait_until("an output", |rig| rig.output().is_some());
+        assert!(rig.output().unwrap().opened_as().0);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn exclusive_is_never_asked_for_off_windows() {
+        let music = Music::new().tone(300);
+        let mut rig = Rig::with(&music);
+        rig.settings(&exclusive());
+        rig.play(&[1], 0);
+        rig.wait_until("an output", |rig| rig.output().is_some());
+        assert!(!rig.output().unwrap().opened_as().0);
+        assert!(!rig.view().volume_locked);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_output_state_reaches_the_player_view() {
+        let music = Music::new().tone(300);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        assert_eq!(
+            rig.view().output,
+            None,
+            "nothing is said while exclusive is off"
+        );
+
+        rig.settings(&exclusive());
+        rig.play(&[1], 0);
+        rig.wait_until("an output state", |rig| rig.view().output.is_some());
+        let state = rig.view().output.unwrap();
+        assert_eq!(state.device_rate, 44_100);
+
+        rig.settings(&Settings::default());
+        assert_eq!(rig.view().output, None, "the state goes with the mode");
+        // One that was already on its way is not taken.
+        rig.engine(EngineEvent::Output(state));
+        assert_eq!(rig.view().output, None);
+    }
+
+    #[test]
+    fn the_format_comes_from_the_library_track() {
+        let mut music = Music::new().tone(300).tone(300);
+        music.tracks[0].codec = Arc::from("flac");
+        music.tracks[0].sample_rate = 96_000;
+        music.tracks[0].bits_per_sample = 24;
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2], 0);
+        assert_eq!(
+            rig.view().format,
+            Some(TrackFormat {
+                codec: Arc::from("flac"),
+                sample_rate: 96_000,
+                bits_per_sample: 24,
+                quality: Quality::HiRes,
+            })
+        );
+        rig.send(Command::Next);
+        let second = rig.view().format.clone().unwrap();
+        assert_eq!(second.quality, Quality::Lossy);
+        assert_eq!(&*second.codec, "pcm");
+    }
+
+    #[test]
+    fn exclusive_unavailable_gives_one_notice_per_track() {
+        let music = Music::new().tone(3_000).tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.settings(&exclusive());
+        rig.play(&[1, 2], 0);
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        if EXCLUSIVE_SUPPORTED {
+            assert_eq!(rig.notices("exclusive-unavailable").len(), 1);
+            let notice = &rig.notices("exclusive-unavailable")[0];
+            assert_eq!(notice.level, NoticeLevel::Warning);
+
+            rig.send(Command::Next);
+            rig.engine(EngineEvent::ExclusiveUnavailable);
+            rig.engine(EngineEvent::ExclusiveUnavailable);
+            assert_eq!(rig.notices("exclusive-unavailable").len(), 2);
+        } else {
+            assert!(rig.notices("exclusive-unavailable").is_empty());
+        }
+    }
+
+    #[test]
+    fn every_language_has_the_exclusive_notice() {
+        let notice = EXCLUSIVE_UNAVAILABLE;
+        for language in [Language::En, Language::Ru, Language::Hy] {
+            let text = Localizer::new(language)
+                .unwrap()
+                .tr_args(notice.key, &notice.fluent_args())
+                .into_owned();
+            assert!(!text.is_empty() && text != notice.key, "{language:?}");
+        }
+    }
+
+    #[test]
+    fn volume_is_locked_only_while_exclusive_is_on() {
+        let music = Music::new().tone(300);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        assert!(!rig.view().volume_locked);
+
+        rig.settings(&Settings {
+            volume: 0.4,
+            ..exclusive()
+        });
+        assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+        assert_eq!(rig.service.volume, 0.4, "the stored volume is not touched");
+
+        rig.settings(&Settings {
+            volume: 0.4,
+            muted: true,
+            ..exclusive()
+        });
+        assert_eq!(rig.service.volume, 0.0, "mute still reaches the engine");
+
+        rig.settings(&Settings {
+            volume: 0.4,
+            ..Settings::default()
+        });
+        assert!(!rig.view().volume_locked);
+        assert_eq!(rig.service.volume, 0.4);
     }
 
     #[test]

@@ -19,6 +19,7 @@ const SIDEBAR_DEFAULT: f32 = 220.0;
 const VOLUME_DEFAULT: f32 = 1.0;
 const GAPLESS_DEFAULT: bool = true;
 const HISTORY_ENABLED_DEFAULT: bool = true;
+const EXCLUSIVE_OUTPUT_DEFAULT: bool = false;
 
 /// UI language.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -222,6 +223,11 @@ fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::E
     lenient(d, HISTORY_ENABLED_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::exclusive_output`].
+fn lenient_exclusive_output<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, EXCLUSIVE_OUTPUT_DEFAULT)
+}
+
 /// Persisted user settings.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -267,6 +273,9 @@ pub struct Settings {
     /// Whether plays are recorded. Plays already stored stay when it is switched off.
     #[serde(deserialize_with = "lenient_history_enabled")]
     pub history_enabled: bool,
+    /// Whether the device is held alone, at each track's own format. Only Windows has this.
+    #[serde(deserialize_with = "lenient_exclusive_output")]
+    pub exclusive_output: bool,
 }
 
 impl Default for Settings {
@@ -288,6 +297,7 @@ impl Default for Settings {
             output_device: None,
             gapless: GAPLESS_DEFAULT,
             history_enabled: HISTORY_ENABLED_DEFAULT,
+            exclusive_output: EXCLUSIVE_OUTPUT_DEFAULT,
         }
     }
 }
@@ -426,6 +436,28 @@ mod tests {
         assert_eq!(s.theme, Theme::Dark, "the rest of the file still counts");
         let s: Settings = toml::from_str("history_enabled = false").unwrap();
         assert!(!s.history_enabled);
+    }
+    #[test]
+    fn an_old_settings_file_loads_with_exclusive_off() {
+        let s: Settings = toml::from_str(
+            "theme = \"dark\"
+volume = 0.5",
+        )
+        .unwrap();
+        assert!(!s.exclusive_output);
+        assert!(!Settings::default().exclusive_output);
+        let s: Settings = toml::from_str("exclusive_output = true").unwrap();
+        assert!(s.exclusive_output);
+    }
+    #[test]
+    fn a_bad_exclusive_value_falls_back_to_off() {
+        let s: Settings = toml::from_str(
+            "exclusive_output = \"yes\"
+theme = \"dark\"",
+        )
+        .unwrap();
+        assert!(!s.exclusive_output);
+        assert_eq!(s.theme, Theme::Dark, "the rest of the file still counts");
     }
     #[test]
     fn a_0_2_0_settings_file_loads() {

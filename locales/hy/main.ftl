@@ -147,6 +147,7 @@ playback-track-failed = Չհաջողվեց նվագարկել «{ $title }» ե�
 playback-stopped-after-failures = Նվագարկումը դադարեցվել է, քանի որ մի քանի երգ անընդմեջ չհաջողվեց նվագարկել։
 playback-device-fallback = Աուդիոսարքը հասանելի չէ, ուստի Aria-ն անցել է մեկ այլ սարքի։
 playback-no-device = Հասանելի աուդիոսարք չկա, ուստի նվագարկումը դադարեցված է։
+exclusive-unavailable = Բացառիկ ռեժիմն այս սարքում այս պահին հասանելի չէ, ուստի Aria-ն օգտագործում է համակարգային միքսերը։
 
 ## Local Music page
 
