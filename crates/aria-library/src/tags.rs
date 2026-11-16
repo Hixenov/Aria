@@ -4,8 +4,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Arc;
 
-use lofty::config::{GlobalOptions, apply_global_options};
+use lofty::config::{GlobalOptions, ParseOptions, apply_global_options};
 use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
+use lofty::iff::aiff::{AiffCompressionType, AiffFile};
+use lofty::iff::wav::{WavFile, WavFormat};
+use lofty::mp4::{Mp4Codec, Mp4File};
 use lofty::picture::PictureType;
 use lofty::probe::Probe;
 use lofty::tag::{Accessor, Tag};
@@ -27,6 +30,8 @@ pub struct TrackTags {
     pub duration_ms: u64,
     pub sample_rate: u32,
     pub channels: u16,
+    /// Bits per sample; 0 when the format has none (MP3, AAC) or lofty does not report one.
+    pub bits_per_sample: u16,
     pub codec: Arc<str>,
     /// Raw bytes of the embedded cover; pictures over `MAX_IMAGE_BYTES` are dropped.
     pub picture: Option<Vec<u8>>,
@@ -49,10 +54,91 @@ pub fn read_tags(path: &Path) -> Result<TrackTags, LibraryError> {
         tracing::debug!(path = %path.display(), "tag parser panicked");
         Err(LibraryError::Tags("the tag parser failed".into()))
     })?;
-    Ok(from_tagged(path, &parsed))
+    let codec = match parsed.file_type() {
+        FileType::Mp4 => match read_mp4_codec(path) {
+            Some(Mp4Codec::ALAC) => "alac",
+            Some(Mp4Codec::AAC) => "aac",
+            _ => "mp4",
+        },
+        FileType::Wav => read_wav_codec(path),
+        FileType::Aiff => read_aiff_codec(path),
+        other => codec_name(other),
+    };
+    Ok(from_tagged(path, &parsed, codec))
 }
 
-fn from_tagged(path: &Path, file: &TaggedFile) -> TrackTags {
+/// Reads the file at `path` once more as an `F`, properties only, and takes `what` from it.
+/// `None` when that fails.
+fn read_again<F: AudioFile, T>(path: &Path, what: impl FnOnce(&F) -> T) -> Option<T> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        let options = ParseOptions::new().read_tags(false).read_cover_art(false);
+        F::read_from(&mut file, options)
+            .ok()
+            .map(|parsed| what(&parsed))
+    }))
+    .unwrap_or(None)
+}
+
+/// The codec inside an MP4 container, read from its sample description. `None` when it cannot
+/// be read, which leaves the codec as plain `mp4`.
+fn read_mp4_codec(path: &Path) -> Option<Mp4Codec> {
+    let codec = read_again(path, |mp4: &Mp4File| mp4.properties().codec());
+    if codec.is_none() {
+        tracing::debug!("the MP4 codec could not be read; the codec stays mp4");
+    }
+    codec.flatten()
+}
+
+/// The codec of a WAV file, from its format tag. Integer and float PCM are `wav`, which counts
+/// as lossless; A-law, µ-law and ADPCM are named for themselves, and any other coding is
+/// `wav-compressed`, all lossy. lofty has read the header once already, so a second read
+/// fails only if the file changed in between; it then stays `wav`.
+fn read_wav_codec(path: &Path) -> &'static str {
+    match read_again(path, |wav: &WavFile| *wav.properties().format()) {
+        Some(WavFormat::PCM | WavFormat::IEEE_FLOAT) => "wav",
+        Some(WavFormat::Other(0x0006)) => "alaw",
+        Some(WavFormat::Other(0x0007)) => "ulaw",
+        // Microsoft and IMA ADPCM.
+        Some(WavFormat::Other(0x0002 | 0x0011)) => "adpcm",
+        Some(WavFormat::Other(_)) => "wav-compressed",
+        None => {
+            tracing::debug!("the WAV format could not be read again; the codec stays wav");
+            "wav"
+        }
+    }
+}
+
+/// The codec of an AIFF or AIFC file, from its compression type. Plain AIFF and AIFC holding
+/// integer or float PCM are `aiff`, which counts as lossless; A-law and µ-law are named for
+/// themselves, and any other compression is `aiff-compressed`, all lossy. As for WAV, a second
+/// read that fails leaves `aiff`.
+fn read_aiff_codec(path: &Path) -> &'static str {
+    let compression = read_again(path, |aiff: &AiffFile| {
+        aiff.properties().compression_type().cloned()
+    });
+    match compression {
+        Some(
+            None
+            | Some(
+                AiffCompressionType::None
+                | AiffCompressionType::sowt
+                | AiffCompressionType::fl32
+                | AiffCompressionType::fl64
+                | AiffCompressionType::FL32,
+            ),
+        ) => "aiff",
+        Some(Some(AiffCompressionType::alaw | AiffCompressionType::ALAW)) => "alaw",
+        Some(Some(AiffCompressionType::ulaw | AiffCompressionType::ULAW)) => "ulaw",
+        Some(Some(_)) => "aiff-compressed",
+        None => {
+            tracing::debug!("the AIFF format could not be read again; the codec stays aiff");
+            "aiff"
+        }
+    }
+}
+
+fn from_tagged(path: &Path, file: &TaggedFile, codec: &str) -> TrackTags {
     let tag = file.primary_tag().or_else(|| file.first_tag());
     let props = file.properties();
     let text = |value: Option<std::borrow::Cow<'_, str>>| -> Option<Arc<str>> {
@@ -86,7 +172,8 @@ fn from_tagged(path: &Path, file: &TaggedFile) -> TrackTags {
         duration_ms: u64::try_from(props.duration().as_millis()).unwrap_or(u64::MAX),
         sample_rate: props.sample_rate().unwrap_or(0),
         channels: props.channels().map_or(0, u16::from),
-        codec: Arc::from(codec_name(file.file_type())),
+        bits_per_sample: props.bit_depth().map_or(0, u16::from),
+        codec: Arc::from(codec),
         picture: tag.and_then(pick_picture),
     }
 }
@@ -113,6 +200,8 @@ fn pick_picture(tag: &Tag) -> Option<Vec<u8>> {
     Some(data.to_vec())
 }
 
+/// The codec of a file whose type alone names it. MP4, WAV and AIFF are read more closely in
+/// [`read_tags`].
 fn codec_name(file_type: FileType) -> &'static str {
     match file_type {
         FileType::Aac => "aac",

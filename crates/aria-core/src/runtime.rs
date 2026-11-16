@@ -403,6 +403,7 @@ impl Worker {
             tokio::select! {
                 cmd = commands.recv() => match cmd {
                     Some(Command::UpdateSettings(settings)) => {
+                        let settings = self.vetted(settings);
                         (self.volume, self.muted) = (settings.volume, settings.muted);
                         self.playback.on_settings(&settings);
                         self.flush_playback();
@@ -446,6 +447,31 @@ impl Worker {
                         self.to_collections(LibraryRequest::MoveInPlaylist { playlist, from, to });
                     }
                     Some(Command::ClearHistory) => self.to_collections(LibraryRequest::ClearHistory),
+                    Some(Command::AddSounds(paths)) => {
+                        self.to_collections(LibraryRequest::AddSounds(paths));
+                    }
+                    Some(Command::RenameSound { id, name }) => {
+                        self.to_collections(LibraryRequest::RenameSound { id, name });
+                    }
+                    Some(Command::SetSoundVolume { id, volume }) => {
+                        self.to_collections(LibraryRequest::SetSoundVolume { id, volume });
+                    }
+                    Some(Command::SetSoundHotkey { id, hotkey }) => {
+                        let stop = self.playback.stop_hotkey();
+                        self.to_collections(LibraryRequest::SetSoundHotkey { id, hotkey, stop });
+                    }
+                    Some(Command::RemoveSound(id)) => {
+                        self.to_collections(LibraryRequest::RemoveSound(id));
+                    }
+                    // Fired from the list the worker holds, so it never waits for the library.
+                    Some(Command::PlaySound(id)) => {
+                        if self.library.is_some() {
+                            self.playback.handle(Command::PlaySound(id));
+                            self.flush_playback();
+                        } else {
+                            self.emit([Event::Notice(library_service::UNAVAILABLE)]);
+                        }
+                    }
                     Some(Command::ListDevices) => self.list_devices(),
                     // `None` means the handle was dropped: treat it as Shutdown.
                     Some(Command::Shutdown) | None => break,
@@ -547,6 +573,7 @@ impl Worker {
 
     /// Like [`to_library`](Self::to_library), but a request that finds no library is answered
     /// with the "library unavailable" notice, so the click that caused it is not lost silently.
+    /// Collections and the soundboard go this way.
     fn to_collections(&self, request: LibraryRequest) {
         if self.library.is_some() {
             self.to_library(request);
@@ -566,8 +593,23 @@ impl Worker {
             LibraryEvent::Progress(progress) => self.emit([Event::ScanProgress(progress)]),
             LibraryEvent::Notice(notice) => self.emit([Event::Notice(notice)]),
             LibraryEvent::QueueLoaded(record) => self.playback.on_queue_loaded(record),
+            LibraryEvent::Sounds(sounds) => self.playback.on_sounds(sounds),
         }
         self.flush_playback();
+    }
+
+    /// `settings` with a "Stop all" hotkey that may not be used put back as it was. The notice
+    /// says why, and the UI is given the settings as they now are.
+    fn vetted(&self, settings: Settings) -> Settings {
+        let Some(notice) = self.playback.stop_hotkey_refusal(&settings) else {
+            return settings;
+        };
+        let kept = Settings {
+            stop_sounds_hotkey: self.playback.stop_hotkey(),
+            ..settings
+        };
+        self.emit([Event::Notice(notice), Event::SettingsReplaced(kept.clone())]);
+        kept
     }
 
     /// The library thread died. It can tell nobody, so this ends any scan it left showing and
@@ -723,16 +765,18 @@ mod tests {
     };
 
     use aria_audio::{DeviceId, DeviceInfo, OutputFormat, fake::FakeFactory};
-    use aria_library::{FolderId, TrackId};
+    use aria_library::{FolderId, SoundId, TrackId};
 
     use super::*;
     use crate::{
         command::Command,
         error::SettingsError,
         event::Event,
+        hotkey::Hotkey,
         notice::{Notice, NoticeLevel},
         playback_service::PlayerView,
         settings::{Settings, Theme, store::SettingsStore},
+        soundboard::SoundboardState,
     };
 
     const FAST: BackendConfig = BackendConfig {
@@ -1088,6 +1132,200 @@ mod tests {
         };
         drain_until_within(&handle, LIBRARY_MAX, |e| e.iter().any(named));
         assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    // Soundboard.
+
+    fn soundboard(events: &[Event]) -> Option<&SoundboardState> {
+        events.iter().rev().find_map(|event| match event {
+            Event::Soundboard(state) => Some(state.as_ref()),
+            _ => None,
+        })
+    }
+
+    fn hotkey(text: &str) -> Hotkey {
+        text.parse().unwrap()
+    }
+
+    fn sound_fixture(dir: &Path, name: &str) -> PathBuf {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../aria-audio/tests/fixtures/tone.ogg");
+        let path = dir.join(name);
+        fs::copy(fixture, &path).unwrap();
+        path
+    }
+
+    /// A backend with a library holding one sound, the factory it plays on, and the sound's id.
+    fn with_a_sound(dir: &Path, sink: Option<Box<dyn SettingsSink>>) -> (BackendHandle, SoundId) {
+        let (waker, _) = counting_waker();
+        let handle = Backend::start(sink, services(Some(library_paths(dir))), waker, FAST).unwrap();
+        handle.send(Command::AddSounds(vec![sound_fixture(dir, "horn.ogg")]));
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds.len() == 1)
+        });
+        let id = soundboard(&events).unwrap().sounds[0].id;
+        (handle, id)
+    }
+
+    #[test]
+    fn sound_commands_come_back_as_soundboard_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, id) = with_a_sound(dir.path(), None);
+
+        handle.send(Command::SetSoundVolume { id, volume: 0.5 });
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds[0].volume == 0.5)
+        });
+        handle.send(Command::PlaySound(id));
+        let playing = |e: &[Event]| soundboard(e).is_some_and(|board| board.sounds[0].playing);
+        let events = drain_until_within(&handle, LIBRARY_MAX, playing);
+        assert!(
+            !events.iter().any(|e| matches!(e, Event::Player(_))),
+            "a sound does not move the player: {events:?}"
+        );
+        handle.send(Command::StopSounds);
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| !board.sounds[0].playing)
+        });
+        handle.send(Command::RemoveSound(id));
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds.is_empty())
+        });
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    #[test]
+    fn a_sound_fires_while_the_library_is_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = sound_fixture(dir.path(), "horn.ogg");
+        let (release, gate) = mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        // The library thread stops inside the event that brings the sound, as one stuck in a scan
+        // or a slow read would. The event itself has gone out by then.
+        let link = link_with(dir.path(), move |event| {
+            if matches!(event, LibraryEvent::Sounds(sounds) if !sounds.is_empty()) {
+                let _ = gate.lock().unwrap().recv();
+            }
+        });
+        link.handle.send(LibraryRequest::AddSounds(vec![path]));
+        let (waker, _) = counting_waker();
+        let handle = Backend::spawn(None, Some(link), silent_playback(), waker, FAST).unwrap();
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds.len() == 1)
+        });
+        let id = soundboard(&events).unwrap().sounds[0].id;
+
+        handle.send(Command::PlaySound(id));
+        drain_until(&handle, |e| {
+            soundboard(e).is_some_and(|board| board.sounds[0].playing)
+        });
+        drop(release);
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    #[test]
+    fn a_missing_or_broken_sound_file_gives_its_own_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (waker, _) = counting_waker();
+        let handle =
+            Backend::start(None, services(Some(library_paths(dir.path()))), waker, FAST).unwrap();
+        let gone = dir.path().join("gone.ogg");
+        let broken = dir.path().join("broken.ogg");
+        fs::write(&broken, b"not audio").unwrap();
+        handle.send(Command::AddSounds(vec![gone, broken]));
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds.len() == 2)
+        });
+        let board = soundboard(&events).unwrap();
+        let (gone, broken) = (board.sounds[0].id, board.sounds[1].id);
+        let notice = |key| Event::Notice(Notice::new(NoticeLevel::Warning, key));
+
+        handle.send(Command::PlaySound(gone));
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            e.contains(&notice("sound-missing"))
+        });
+        handle.send(Command::PlaySound(broken));
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            e.contains(&notice("sound-failed"))
+        });
+        assert!(
+            !events.contains(&notice("sound-missing")),
+            "the file is there: {events:?}"
+        );
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    #[test]
+    fn a_stop_hotkey_used_by_a_sound_is_refused_when_the_settings_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sink, saved) = recording_sink(0);
+        let (handle, id) = with_a_sound(dir.path(), Some(sink));
+        handle.send(Command::SetSoundHotkey {
+            id,
+            hotkey: Some(hotkey("Ctrl+F1")),
+        });
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds[0].hotkey.is_some())
+        });
+
+        let wanted = Settings {
+            theme: Theme::Dark,
+            stop_sounds_hotkey: Some(hotkey("Ctrl+F1")),
+            ..Settings::default()
+        };
+        handle.send(Command::UpdateSettings(wanted));
+        let kept = with_theme(Theme::Dark);
+        let taken = Event::Notice(Notice::new(NoticeLevel::Warning, "hotkey-taken"));
+        drain_until(&handle, |e| {
+            e.contains(&taken) && e.contains(&Event::SettingsReplaced(kept.clone()))
+        });
+        // A free one is taken as it is.
+        let free = Settings {
+            stop_sounds_hotkey: Some(hotkey("Ctrl+F2")),
+            ..kept.clone()
+        };
+        handle.send(Command::UpdateSettings(free.clone()));
+        assert!(handle.shutdown(LIBRARY_MAX));
+        assert_eq!(saved.lock().unwrap().last(), Some(&free));
+    }
+
+    #[test]
+    fn a_sound_hotkey_equal_to_stop_all_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, id) = with_a_sound(dir.path(), None);
+        handle.send(Command::UpdateSettings(Settings {
+            stop_sounds_hotkey: Some(hotkey("Ctrl+F2")),
+            ..Settings::default()
+        }));
+        handle.send(Command::SetSoundHotkey {
+            id,
+            hotkey: Some(hotkey("Ctrl+F2")),
+        });
+        let taken = Event::Notice(Notice::new(NoticeLevel::Warning, "hotkey-taken"));
+        drain_until_within(&handle, LIBRARY_MAX, |e| e.contains(&taken));
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
+    #[test]
+    fn sound_commands_without_a_library_give_the_unavailable_notice() {
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
+        let id = SoundId(1);
+        handle.send(Command::AddSounds(vec!["horn.ogg".into()]));
+        handle.send(Command::RenameSound {
+            id,
+            name: "Horn".into(),
+        });
+        handle.send(Command::SetSoundVolume { id, volume: 0.5 });
+        handle.send(Command::SetSoundHotkey { id, hotkey: None });
+        handle.send(Command::RemoveSound(id));
+        handle.send(Command::PlaySound(id));
+        // Stop all needs no library, and has nothing to say.
+        handle.send(Command::StopSounds);
+        let unavailable = |e: &[Event]| e.iter().filter(|e| **e == library_unavailable()).count();
+        let events = drain_until(&handle, |e| unavailable(e) == 6);
+        assert!(handle.shutdown(MAX));
+        assert_eq!(unavailable(&events), 6, "{events:?}");
     }
 
     #[test]

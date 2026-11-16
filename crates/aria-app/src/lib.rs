@@ -5,9 +5,12 @@ use std::time::Duration;
 pub mod app;
 pub mod artwork;
 mod folders;
+mod hotkeys;
 pub mod nav;
 mod shortcuts;
 pub mod ui;
+
+pub use hotkeys::SystemHotkeys;
 
 /// Application name, shown as the sidebar wordmark.
 pub const APP_NAME: &str = "Aria";

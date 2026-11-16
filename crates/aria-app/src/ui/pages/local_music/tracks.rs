@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use aria_library::LibrarySnapshot;
+use aria_core::playback_service::TrackFormat;
+use aria_library::{LibrarySnapshot, Quality};
 use eframe::egui::{Button, Label, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 
@@ -11,6 +12,7 @@ use super::{
     view::{SortKey, TrackView},
 };
 use crate::ui::{
+    layout::player_bar::{LINE_SEPARATOR, format_label},
     theme::{
         Palette,
         fonts::{icon_font, semibold},
@@ -28,6 +30,8 @@ const HEART_WIDTH: f32 = 32.0;
 const NUMBER_WIDTH: f32 = 48.0;
 /// Width of the duration column.
 const DURATION_WIDTH: f32 = 80.0;
+/// Width of the quality column.
+const QUALITY_WIDTH: f32 = 64.0;
 /// Starting width of the title and artist columns.
 const TEXT_WIDTH: f32 = 260.0;
 /// Narrowest a text column gets.
@@ -78,6 +82,7 @@ pub fn show(
         )
         .column(Column::remainder().at_least(MIN_TEXT_WIDTH).clip(true))
         .column(Column::exact(DURATION_WIDTH))
+        .column(Column::exact(QUALITY_WIDTH))
         .header(ROW_HEIGHT, |mut header| {
             header.col(|_| {});
             header.col(|ui| {
@@ -98,6 +103,11 @@ pub fn show(
                     }
                 });
             }
+            header.col(|ui| {
+                ui.add(Label::new(
+                    RichText::new(tr.tr("local-col-quality")).color(p.text_muted),
+                ));
+            });
         })
         .body(|body| {
             body.rows(ROW_HEIGHT, rows.len(), |mut row| {
@@ -128,6 +138,31 @@ pub fn show(
                     );
                 });
                 row.col(|ui| cell(ui, &format_duration(track.duration_ms), muted));
+                row.col(|ui| {
+                    let (key, color) = match track.quality() {
+                        Quality::Lossy => return,
+                        Quality::Lossless => ("quality-lossless", muted),
+                        Quality::HiRes => ("quality-hi-res", p.accent),
+                    };
+                    let name = tr.tr(key);
+                    let format = TrackFormat {
+                        codec: Arc::clone(&track.codec),
+                        sample_rate: track.sample_rate,
+                        bits_per_sample: track.bits_per_sample,
+                        quality: track.quality(),
+                    };
+                    let label = Label::new(RichText::new(&*name).color(color))
+                        .truncate()
+                        .selectable(false)
+                        .sense(Sense::hover());
+                    // The column is narrow: the tooltip has the whole word, then the file's
+                    // codec, depth and rate.
+                    ui.add(label).on_hover_text(format!(
+                        "{name}{}{}",
+                        LINE_SEPARATOR,
+                        format_label(&format)
+                    ));
+                });
 
                 let response = row.response();
                 if response.double_clicked() {

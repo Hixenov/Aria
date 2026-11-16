@@ -4,7 +4,8 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use symphonia::core::audio::sample::Sample as _;
+use symphonia::core::audio::GenericAudioBufferRef;
+use symphonia::core::audio::sample::{Sample as _, SampleFormat};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS;
 use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
@@ -46,6 +47,10 @@ pub struct StreamInfo {
     pub total_frames: Option<u64>,
     /// Short codec name, such as `flac`.
     pub codec: String,
+    /// Bits per decoded sample, when the file says (lossy formats do not).
+    pub bits_per_sample: Option<u16>,
+    /// The decoder produces floating-point samples (float PCM, and the lossy codecs).
+    pub float: bool,
 }
 
 /// Decodes one audio file, block by block.
@@ -139,11 +144,28 @@ impl TrackDecoder {
         } else {
             track.num_frames
         };
+        let bits_per_sample = decoder
+            .codec_params()
+            .bits_per_sample
+            .or(params.bits_per_sample)
+            .and_then(|b| u16::try_from(b).ok())
+            .filter(|b| *b > 0);
+        // Demuxers rarely fill in the sample format, so the decoder's own buffer type, which
+        // exists before the first packet, says what it produces.
+        let float = matches!(
+            params.sample_format,
+            Some(SampleFormat::F32 | SampleFormat::F64)
+        ) || matches!(
+            decoder.last_decoded(),
+            GenericAudioBufferRef::F32(_) | GenericAudioBufferRef::F64(_)
+        );
         let info = StreamInfo {
             sample_rate,
             channels,
             total_frames: edit.map(|e| e.length).or(declared),
             codec: decoder.codec_info().short_name.to_string(),
+            bits_per_sample,
+            float,
         };
         let (track_id, time_base) = (track.id, track.time_base);
         let pts_offset = if params.codec == CODEC_ID_OPUS {

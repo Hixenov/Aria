@@ -77,6 +77,13 @@ impl Toasts {
         self.next_id += 1;
     }
 
+    /// Shows `notice` in place of every toast with the same key, whatever their arguments: a
+    /// count that changed shows once, with the new count.
+    pub fn push_replacing(&mut self, notice: Notice, now: f64) {
+        self.toasts.retain(|toast| toast.notice.key != notice.key);
+        self.push(notice, now);
+    }
+
     /// Removes the toasts whose time is up at `now`.
     pub fn expire(&mut self, now: f64) {
         self.toasts

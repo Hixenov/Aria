@@ -25,16 +25,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aria_audio::{DeviceId, EngineCommand, EngineEvent, EngineHandle, PlaybackClock, TrackRequest};
-use aria_library::{LibrarySnapshot, QueueRecord, Track, TrackId};
+use aria_audio::{
+    DeviceId, EngineCommand, EngineEvent, EngineHandle, OutputPath, OutputState, PlaybackClock,
+    TrackRequest,
+};
+use aria_library::{LibrarySnapshot, Quality, QueueRecord, SoundId, Track, TrackId};
 
 use crate::{
     command::Command,
     event::Event,
+    hotkey::Hotkey,
     library_service::LibraryRequest,
     notice::{Notice, NoticeLevel},
     player::{PreviousAction, Queue, RepeatMode, UpNext},
     settings::Settings,
+    soundboard::{SOUND_FAILED, Soundboard, StoredSound},
 };
 
 /// The shortest time between two saves of the queue.
@@ -67,6 +72,33 @@ const DEVICE_FALLBACK: Notice = Notice::new(NoticeLevel::Warning, "playback-devi
 /// No output could be opened.
 const NO_DEVICE: Notice = Notice::new(NoticeLevel::Error, "playback-no-device");
 
+/// Whether this platform has the exclusive output. Off Windows the setting is kept but does
+/// nothing: the engine is never asked for it and the volume is never locked.
+pub const EXCLUSIVE_SUPPORTED: bool = cfg!(windows);
+
+/// Exclusive mode was asked for, but the device would not be held.
+const EXCLUSIVE_UNAVAILABLE: Notice = Notice::new(NoticeLevel::Warning, "exclusive-unavailable");
+
+/// The file of a track, as the library knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackFormat {
+    pub codec: Arc<str>,
+    pub sample_rate: u32,
+    pub bits_per_sample: u16,
+    pub quality: Quality,
+}
+
+impl TrackFormat {
+    fn of(track: &Track) -> Self {
+        Self {
+            codec: Arc::clone(&track.codec),
+            sample_rate: track.sample_rate,
+            bits_per_sample: track.bits_per_sample,
+            quality: track.quality(),
+        }
+    }
+}
+
 /// What the UI shows of the player. The position comes from the clock.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PlayerView {
@@ -80,6 +112,17 @@ pub struct PlayerView {
     pub duration_ms: u64,
     /// What comes next, at most [`UPCOMING_LIMIT`] tracks.
     pub upcoming: Vec<UpNext>,
+    /// How the track being heard reaches the device, while exclusive mode is on and the engine has
+    /// said. `None` means the system mixer, or not known yet: while `volume_locked` holds, an
+    /// exclusive output is being opened; otherwise the output is the system mixer.
+    pub output: Option<OutputState>,
+    /// The file of the current track, when its row is in the library.
+    pub format: Option<TrackFormat>,
+    /// The volume slider has no effect: the device is held in exclusive mode, or is being opened
+    /// so, and plays at full level. Mute still works, and the stored volume is kept. After a
+    /// refused exclusive open the output is shared and plays at the stored volume, so the slider
+    /// is free again until an exclusive output opens.
+    pub volume_locked: bool,
 }
 
 /// A track handed to the engine, under the token that names it there.
@@ -163,11 +206,28 @@ pub struct PlaybackService {
     /// The engine thread has died, so nothing will ever play.
     engine_gone: bool,
     // What the settings last said. These start as the engine and the queue do.
+    /// The volume the engine was last told: see [`engine_volume`](Self::engine_volume).
     volume: f32,
+    /// The volume in the settings, kept while the lock is on and used again when it lifts.
+    stored_volume: f32,
+    muted: bool,
     device: Option<DeviceId>,
     gapless: bool,
+    /// Exclusive mode, as far as this platform has it.
+    exclusive: bool,
     shuffle: bool,
     repeat: RepeatMode,
+    /// What the engine last said of the output, while `exclusive` holds.
+    output: Option<OutputState>,
+    /// The engine said exclusive mode was refused, and no exclusive output has opened since: the
+    /// output is shared, whether or not its state has come yet.
+    exclusive_refused: bool,
+    /// The token of the track the last "exclusive mode unavailable" notice was shown for, so a
+    /// track gets it once (0 when no track was loaded).
+    unavailable_noticed: Option<u64>,
+    /// The sounds, which of them play, and where they go. Sounds share the engine with the music
+    /// but nothing else: they never touch the queue or the player.
+    soundboard: Soundboard,
     /// For the UI, until the worker takes them.
     events: Vec<Event>,
     /// For the library, until the worker takes them.
@@ -206,10 +266,17 @@ impl PlaybackService {
             last_save: None,
             engine_gone: false,
             volume: 1.0,
+            stored_volume: 1.0,
+            muted: false,
             device: None,
             gapless: true,
+            exclusive: false,
             shuffle: false,
             repeat: RepeatMode::Off,
+            output: None,
+            exclusive_refused: false,
+            unavailable_noticed: None,
+            soundboard: Soundboard::default(),
             events: Vec::new(),
             requests: Vec::new(),
         }
@@ -257,7 +324,15 @@ impl PlaybackService {
             Command::Next => self.next(),
             Command::Previous => self.previous(),
             Command::Seek(position_ms) => self.seek(position_ms),
-            Command::UpdateSettings(_)
+            Command::PlaySound(id) => self.play_sound(id),
+            Command::StopSounds => self.engine.send(EngineCommand::StopSounds),
+            // The library answers these, and its answers come back through `on_sounds`.
+            Command::AddSounds(_)
+            | Command::RenameSound { .. }
+            | Command::SetSoundVolume { .. }
+            | Command::SetSoundHotkey { .. }
+            | Command::RemoveSound(_)
+            | Command::UpdateSettings(_)
             | Command::ResetSettings
             | Command::AddFolder(_)
             | Command::RemoveFolder(_)
@@ -300,13 +375,83 @@ impl PlaybackService {
             }
             EngineEvent::TrackFailed { token } => self.failed(token),
             EngineEvent::DeviceFellBack => self.notify(DEVICE_FALLBACK),
+            // With no track loaded, only a sound can have asked for the output. The music has
+            // nothing to pause, so the player is left as it is and the notice is the sound's.
+            EngineEvent::NoDevice if self.current.is_none() => self.notify(SOUND_FAILED),
             EngineEvent::NoDevice => {
                 self.playing = false;
+                // No output is open, so no path is shown until one opens and the engine says how
+                // the track reaches it.
+                self.output = None;
                 self.notify(NO_DEVICE);
                 self.publish();
+                self.sync_volume();
             }
             EngineEvent::Stopped => self.stopped(),
+            EngineEvent::Output(state) => {
+                // One from before the mode went off may still be on its way.
+                if self.exclusive && self.output != Some(state) {
+                    if state.path != OutputPath::SystemMixer {
+                        // An exclusive output opened after all.
+                        self.exclusive_refused = false;
+                    }
+                    self.output = Some(state);
+                    self.publish();
+                    self.sync_volume();
+                }
+            }
+            EngineEvent::ExclusiveUnavailable if self.exclusive => {
+                let token = self.current.as_ref().map_or(0, |given| given.token);
+                if self.unavailable_noticed != Some(token) {
+                    self.unavailable_noticed = Some(token);
+                    self.notify(EXCLUSIVE_UNAVAILABLE);
+                }
+                // The output is shared now, and plays at the stored volume. What was said of an
+                // earlier output no longer holds.
+                if !self.exclusive_refused || self.output.is_some() {
+                    self.exclusive_refused = true;
+                    self.output = None;
+                    self.publish();
+                    self.sync_volume();
+                }
+            }
+            EngineEvent::ExclusiveUnavailable => {}
+            // A sound that finds no output at all is reported as `NoDevice`, above, and then
+            // ends without a word, so it gives one notice.
+            EngineEvent::SoundStarted { .. }
+            | EngineEvent::SoundEnded { .. }
+            | EngineEvent::SoundFailed { .. }
+            | EngineEvent::SoundDeviceFailed => {
+                let reaction = self.soundboard.on_engine(event);
+                self.events.extend(reaction.event);
+                self.requests.extend(reaction.request);
+            }
         }
+    }
+
+    /// Takes in the sounds the library sent, and shows them.
+    pub fn on_sounds(&mut self, sounds: Vec<StoredSound>) {
+        let state = self.soundboard.on_sounds(sounds);
+        self.events.push(state);
+    }
+
+    /// Plays a sound from its start, on the outputs the settings name, without asking the
+    /// library: its file and volume came with the last list. An unknown id changes nothing.
+    fn play_sound(&mut self, id: SoundId) {
+        if let Some(command) = self.soundboard.play(id) {
+            self.engine.send(command);
+        }
+    }
+
+    /// The hotkey of "Stop all", as the settings last said, for checking a sound's against.
+    pub fn stop_hotkey(&self) -> Option<Hotkey> {
+        self.soundboard.stop_hotkey()
+    }
+
+    /// Why the "Stop all" hotkey in `settings` may not be used, as the notice that says so, or
+    /// `None` if it may, or is the one in effect.
+    pub fn stop_hotkey_refusal(&self, settings: &Settings) -> Option<Notice> {
+        self.soundboard.stop_hotkey_refusal(settings)
     }
 
     /// Takes in a new snapshot. The queue loses what is gone, but the playing track plays on even
@@ -350,17 +495,16 @@ impl PlaybackService {
         self.restore = Restore::Done;
         self.play_after_restore = false;
         self.on_snapshot(Arc::default());
+        let state = self.soundboard.clear();
+        self.events.push(state);
     }
 
     /// Applies the settings that concern playback. Only what changed goes on, because setting a
     /// device, even the same one, rebuilds the output.
     pub fn on_settings(&mut self, settings: &Settings) {
         self.history = settings.history_enabled;
-        let volume = if settings.muted { 0.0 } else { settings.volume };
-        if volume != self.volume {
-            self.volume = volume;
-            self.engine.send(EngineCommand::SetVolume(volume));
-        }
+        self.stored_volume = settings.volume;
+        self.muted = settings.muted;
         if settings.output_device != self.device {
             self.device.clone_from(&settings.output_device);
             let device = settings.output_device.clone();
@@ -370,6 +514,21 @@ impl PlaybackService {
             self.gapless = settings.gapless;
             self.engine
                 .send(EngineCommand::SetGapless(settings.gapless));
+        }
+        let exclusive = settings.exclusive_output && EXCLUSIVE_SUPPORTED;
+        if exclusive != self.exclusive {
+            self.exclusive = exclusive;
+            self.output = None;
+            self.exclusive_refused = false;
+            // Turned on again, the mode may be refused again, and that is news for this track too.
+            self.unavailable_noticed = None;
+            self.engine.send(EngineCommand::SetExclusive(exclusive));
+            self.publish();
+        }
+        // After the mode, which the lock follows.
+        self.sync_volume();
+        if let Some(command) = self.soundboard.on_settings(settings) {
+            self.engine.send(command);
         }
         if settings.shuffle != self.shuffle || settings.repeat != self.repeat {
             self.shuffle = settings.shuffle;
@@ -386,6 +545,9 @@ impl PlaybackService {
         self.playing = false;
         self.notify(NO_DEVICE);
         self.publish();
+        if let Some(state) = self.soundboard.silence() {
+            self.events.push(state);
+        }
     }
 
     /// The worker's regular call: ends a run of failures once a track has played long enough,
@@ -460,8 +622,51 @@ impl PlaybackService {
             playing: self.playing,
             duration_ms: self.duration_ms(),
             upcoming: self.queue.upcoming(UPCOMING_LIMIT),
+            output: self.output,
+            format: self
+                .queue
+                .current()
+                .and_then(|id| self.row(id))
+                .map(TrackFormat::of),
+            volume_locked: self.volume_locked(),
         };
         self.events.push(Event::Player(view));
+    }
+
+    /// The volume the engine plays the music at. Muted, nothing. While the slider is locked it
+    /// shows 100 %, and that is what is heard: an exclusive output plays any volume above 0 at
+    /// full level, and a stored 0 is sent as 1.0, so it is not silent. A stored volume above 0 is
+    /// sent as it is, so that an output that turns out shared before the engine says so plays at
+    /// the stored level, not at full. Unlocked, the stored volume.
+    fn engine_volume(&self) -> f32 {
+        if self.muted {
+            0.0
+        } else if self.volume_locked() && self.stored_volume <= 0.0 {
+            1.0
+        } else {
+            self.stored_volume
+        }
+    }
+
+    /// Tells the engine the volume to play at, when it has changed.
+    fn sync_volume(&mut self) {
+        let volume = self.engine_volume();
+        if volume != self.volume {
+            self.volume = volume;
+            self.engine.send(EngineCommand::SetVolume(volume));
+        }
+    }
+
+    /// Whether the volume slider is locked: exclusive mode is on, and the device is held
+    /// exclusively, or the engine has not said yet how the output it is opening turned out. After
+    /// a refused open, or on a shared output, the music plays at the stored volume, so the slider
+    /// shows and sets the level heard.
+    fn volume_locked(&self) -> bool {
+        self.exclusive
+            && match self.output {
+                Some(state) => state.path != OutputPath::SystemMixer,
+                None => !self.exclusive_refused,
+            }
     }
 
     fn queue_changed(&mut self) {
@@ -916,7 +1121,12 @@ mod tests {
     use aria_library::{FolderId, Track};
     use tempfile::TempDir;
 
-    use crate::{i18n::Localizer, player::RESTART_THRESHOLD_MS, settings::Language};
+    use crate::{
+        i18n::Localizer,
+        player::RESTART_THRESHOLD_MS,
+        settings::Language,
+        soundboard::{SoundTarget, SoundView, SoundboardState},
+    };
 
     use super::*;
 
@@ -975,6 +1185,7 @@ mod tests {
                 duration_ms,
                 sample_rate: 44_100,
                 channels: 2,
+                bits_per_sample: 0,
                 codec: Arc::from("pcm"),
                 artwork: None,
                 added_at: 0,
@@ -1042,6 +1253,10 @@ mod tests {
         engine_events: Receiver<EngineEvent>,
         notices: Vec<Notice>,
         views: Vec<PlayerView>,
+        /// The soundboard states shown, oldest first.
+        boards: Vec<Arc<SoundboardState>>,
+        /// The sounds last handed to the service, as the library would.
+        stored: Vec<StoredSound>,
         requests: Vec<LibraryRequest>,
         /// When the fake device last took a chunk.
         last_pull: Cell<Option<Instant>>,
@@ -1062,6 +1277,8 @@ mod tests {
                 engine_events,
                 notices: Vec::new(),
                 views: Vec::new(),
+                boards: Vec::new(),
+                stored: Vec::new(),
                 requests: Vec::new(),
                 last_pull: Cell::new(None),
             }
@@ -1084,6 +1301,7 @@ mod tests {
                 match event {
                     Event::Notice(notice) => self.notices.push(notice),
                     Event::Player(view) => self.views.push(view),
+                    Event::Soundboard(board) => self.boards.push(board),
                     other => panic!("the service does not send {other:?}"),
                 }
             }
@@ -2350,6 +2568,317 @@ mod tests {
         assert!(rig.service.shuffle);
     }
 
+    // Exclusive output.
+
+    fn exclusive() -> Settings {
+        Settings {
+            exclusive_output: true,
+            ..Settings::default()
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn turning_exclusive_on_tells_the_engine() {
+        let music = Music::new().tone(300).tone(300);
+        let mut rig = Rig::with(&music);
+        rig.settings(&exclusive());
+        rig.play(&[1], 0);
+        rig.wait_until("an output", |rig| rig.output().is_some());
+        assert!(rig.output().unwrap().opened_as().0, "opened exclusively");
+
+        rig.settings(&Settings::default());
+        rig.play(&[2], 0);
+        rig.wait_until("a shared output", |rig| rig.factory.outputs().len() > 1);
+        assert!(!rig.output().unwrap().opened_as().0, "opened shared again");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_setting_is_sent_at_startup() {
+        let music = Music::new().tone(300);
+        let mut rig = Rig::idle();
+        rig.settings(&exclusive());
+        rig.service.on_snapshot(music.snapshot());
+        rig.service.on_queue_loaded(None);
+        rig.collect();
+        rig.play(&[1], 0);
+        rig.wait_until("an output", |rig| rig.output().is_some());
+        assert!(rig.output().unwrap().opened_as().0);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn exclusive_is_never_asked_for_off_windows() {
+        let music = Music::new().tone(300);
+        let mut rig = Rig::with(&music);
+        rig.settings(&exclusive());
+        rig.play(&[1], 0);
+        rig.wait_until("an output", |rig| rig.output().is_some());
+        assert!(!rig.output().unwrap().opened_as().0);
+        assert!(!rig.view().volume_locked);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_output_state_reaches_the_player_view() {
+        let music = Music::new().tone(300);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        assert_eq!(
+            rig.view().output,
+            None,
+            "nothing is said while exclusive is off"
+        );
+
+        rig.settings(&exclusive());
+        rig.play(&[1], 0);
+        rig.wait_until("an output state", |rig| rig.view().output.is_some());
+        let state = rig.view().output.unwrap();
+        assert_eq!(state.device_rate, 44_100);
+
+        rig.settings(&Settings::default());
+        assert_eq!(rig.view().output, None, "the state goes with the mode");
+        // One that was already on its way is not taken.
+        rig.engine(EngineEvent::Output(state));
+        assert_eq!(rig.view().output, None);
+    }
+
+    #[test]
+    fn the_format_comes_from_the_library_track() {
+        let mut music = Music::new().tone(300).tone(300);
+        music.tracks[0].codec = Arc::from("flac");
+        music.tracks[0].sample_rate = 96_000;
+        music.tracks[0].bits_per_sample = 24;
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2], 0);
+        assert_eq!(
+            rig.view().format,
+            Some(TrackFormat {
+                codec: Arc::from("flac"),
+                sample_rate: 96_000,
+                bits_per_sample: 24,
+                quality: Quality::HiRes,
+            })
+        );
+        rig.send(Command::Next);
+        let second = rig.view().format.clone().unwrap();
+        assert_eq!(second.quality, Quality::Lossy);
+        assert_eq!(&*second.codec, "pcm");
+    }
+
+    #[test]
+    fn exclusive_unavailable_gives_one_notice_per_track() {
+        let music = Music::new().tone(3_000).tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.settings(&exclusive());
+        rig.play(&[1, 2], 0);
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        if EXCLUSIVE_SUPPORTED {
+            assert_eq!(rig.notices("exclusive-unavailable").len(), 1);
+            let notice = &rig.notices("exclusive-unavailable")[0];
+            assert_eq!(notice.level, NoticeLevel::Warning);
+
+            rig.send(Command::Next);
+            rig.engine(EngineEvent::ExclusiveUnavailable);
+            rig.engine(EngineEvent::ExclusiveUnavailable);
+            assert_eq!(rig.notices("exclusive-unavailable").len(), 2);
+        } else {
+            assert!(rig.notices("exclusive-unavailable").is_empty());
+        }
+    }
+
+    #[test]
+    fn every_language_has_the_exclusive_notice() {
+        let notice = EXCLUSIVE_UNAVAILABLE;
+        for language in [Language::En, Language::Ru, Language::Hy] {
+            let text = Localizer::new(language)
+                .unwrap()
+                .tr_args(notice.key, &notice.fluent_args())
+                .into_owned();
+            assert!(!text.is_empty() && text != notice.key, "{language:?}");
+        }
+    }
+
+    #[test]
+    fn volume_is_locked_only_while_exclusive_is_on() {
+        let music = Music::new().tone(300);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        assert!(!rig.view().volume_locked);
+
+        rig.settings(&Settings {
+            volume: 0.4,
+            ..exclusive()
+        });
+        assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+        assert_eq!(rig.service.volume, 0.4, "the stored volume is not touched");
+
+        rig.settings(&Settings {
+            volume: 0.4,
+            muted: true,
+            ..exclusive()
+        });
+        assert_eq!(rig.service.volume, 0.0, "mute still reaches the engine");
+
+        rig.settings(&Settings {
+            volume: 0.4,
+            ..Settings::default()
+        });
+        assert!(!rig.view().volume_locked);
+        assert_eq!(rig.service.volume, 0.4);
+    }
+
+    /// A state the engine could report, on an output at the CD format.
+    fn reported(path: OutputPath) -> OutputState {
+        OutputState {
+            path,
+            device_rate: 44_100,
+            device_bits: 16,
+        }
+    }
+
+    #[test]
+    fn the_volume_is_locked_only_while_the_device_is_held_exclusively() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        // Nothing the engine reports is pumped: the test says what it reports.
+        let at_30 = |base: Settings| Settings {
+            volume: 0.3,
+            ..base
+        };
+        rig.settings(&at_30(exclusive()));
+        assert_eq!(
+            rig.view().volume_locked,
+            EXCLUSIVE_SUPPORTED,
+            "an exclusive open is on its way"
+        );
+        assert_eq!(rig.view().output, None);
+
+        // Refused: the music plays shared, at the stored volume, and the slider shows that.
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        assert!(!rig.view().volume_locked, "locked after a refusal");
+        assert_eq!(rig.view().output, None);
+        rig.engine(EngineEvent::Output(reported(OutputPath::SystemMixer)));
+        assert!(!rig.view().volume_locked);
+
+        // An exclusive output opens again, for another track or after a device change.
+        rig.engine(EngineEvent::Output(reported(OutputPath::BitPerfect)));
+        assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+        rig.engine(EngineEvent::Output(reported(OutputPath::Converted)));
+        assert_eq!(
+            rig.view().volume_locked,
+            EXCLUSIVE_SUPPORTED,
+            "converted, the device is still held"
+        );
+
+        // A shared output is never locked, notice or not.
+        rig.engine(EngineEvent::Output(reported(OutputPath::SystemMixer)));
+        assert!(!rig.view().volume_locked);
+
+        // Refused after an exclusive state: that state no longer holds.
+        rig.engine(EngineEvent::Output(reported(OutputPath::BitPerfect)));
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        assert_eq!(rig.view().output, None);
+        assert!(!rig.view().volume_locked);
+
+        // Off and on again, the mode is asked for afresh.
+        rig.settings(&at_30(Settings::default()));
+        assert!(!rig.view().volume_locked);
+        rig.settings(&at_30(exclusive()));
+        assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+    }
+
+    #[test]
+    fn a_locked_volume_plays_at_the_level_it_shows() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        let at_0 = |base: Settings| Settings {
+            volume: 0.0,
+            muted: false,
+            ..base
+        };
+        rig.settings(&at_0(Settings::default()));
+        assert_eq!(rig.service.volume, 0.0, "unlocked, the stored 0");
+        // What a locked bar shows, 100 %, is heard: a stored 0 does not silence it.
+        let locked = if EXCLUSIVE_SUPPORTED { 1.0 } else { 0.0 };
+        rig.settings(&at_0(exclusive()));
+        assert_eq!(rig.view().volume_locked, EXCLUSIVE_SUPPORTED);
+        assert_eq!(rig.service.volume, locked);
+        // Mute still silences.
+        rig.settings(&Settings {
+            muted: true,
+            ..at_0(exclusive())
+        });
+        assert_eq!(rig.service.volume, 0.0);
+        rig.settings(&at_0(exclusive()));
+        assert_eq!(rig.service.volume, locked);
+
+        // A refused open lifts the lock: the stored 0 again, and the slider shows it.
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        assert!(!rig.view().volume_locked);
+        assert_eq!(rig.service.volume, 0.0);
+        // An exclusive output locks it again.
+        rig.engine(EngineEvent::Output(reported(OutputPath::BitPerfect)));
+        assert_eq!(rig.service.volume, locked);
+        // The mode off: the stored 0, which the lock never changed.
+        rig.settings(&at_0(Settings::default()));
+        assert_eq!(rig.service.volume, 0.0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_refused_exclusive_open_frees_the_volume_until_an_exclusive_one_opens() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.factory.refuse_exclusive(true);
+        let settings = Settings {
+            volume: 0.3,
+            ..exclusive()
+        };
+        rig.settings(&settings);
+        rig.play(&[1], 0);
+        rig.wait_until("the shared state", |rig| {
+            rig.view()
+                .output
+                .is_some_and(|state| state.path == OutputPath::SystemMixer)
+        });
+        assert!(!rig.view().volume_locked);
+        assert_eq!(rig.notices("exclusive-unavailable").len(), 1);
+
+        // A device change reopens the output, and this time the device is held.
+        rig.factory.refuse_exclusive(false);
+        rig.settings(&Settings {
+            output_device: Some(DeviceId("dac".into())),
+            ..settings
+        });
+        rig.wait_until("the exclusive state", |rig| {
+            rig.view()
+                .output
+                .is_some_and(|state| state.path != OutputPath::SystemMixer)
+        });
+        assert!(rig.view().volume_locked);
+        assert!(rig.output().unwrap().opened_as().0);
+    }
+
+    #[test]
+    fn a_lost_device_leaves_no_path_behind() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        rig.settings(&exclusive());
+        rig.engine(EngineEvent::Output(reported(OutputPath::BitPerfect)));
+        assert_eq!(rig.view().output.is_some(), EXCLUSIVE_SUPPORTED);
+
+        rig.engine(EngineEvent::NoDevice);
+
+        assert_eq!(rig.view().output, None, "a paused track kept its path");
+        assert!(!rig.view().playing);
+    }
+
     #[test]
     fn unchanged_settings_change_nothing() {
         let music = Music::new().tone(3_000);
@@ -3005,5 +3534,332 @@ mod tests {
         assert!(rig.view().playing);
         assert!(rig.upcoming().is_empty());
         rig.run_until("the stop", stopped);
+    }
+
+    #[test]
+    fn turning_exclusive_off_and_on_lets_the_notice_come_again() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.settings(&exclusive());
+        rig.play(&[1], 0);
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        rig.settings(&Settings::default());
+        rig.settings(&exclusive());
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        let expected = if EXCLUSIVE_SUPPORTED { 2 } else { 0 };
+        assert_eq!(rig.notices("exclusive-unavailable").len(), expected);
+    }
+
+    // Soundboard.
+
+    /// Sound files, in a folder of their own.
+    struct Sounds {
+        dir: TempDir,
+    }
+
+    impl Sounds {
+        fn new() -> Self {
+            Self {
+                dir: tempfile::tempdir().unwrap(),
+            }
+        }
+
+        /// A tone of `ms` milliseconds, as sound `id` at `volume`.
+        fn tone(&self, id: i64, ms: u64, volume: f32) -> StoredSound {
+            let path = self.dir.path().join(format!("{id}.wav"));
+            write_tone_wav(&path, 44_100, 2, ms * 441 / 10, 440.0).unwrap();
+            StoredSound {
+                view: SoundView {
+                    volume,
+                    ..sound_view(id)
+                },
+                path,
+            }
+        }
+    }
+
+    fn sound_view(id: i64) -> SoundView {
+        SoundView {
+            id: SoundId(id),
+            name: format!("Sound {id}"),
+            volume: 1.0,
+            hotkey: None,
+            missing: false,
+            playing: false,
+        }
+    }
+
+    /// Sound `id` with a file that is not there.
+    fn absent(id: i64) -> StoredSound {
+        StoredSound {
+            view: sound_view(id),
+            path: PathBuf::from(format!("absent-{id}.wav")),
+        }
+    }
+
+    fn sounds_to(target: SoundTarget, device: Option<&DeviceId>) -> Settings {
+        Settings {
+            soundboard_target: target,
+            soundboard_device: device.cloned(),
+            ..Settings::default()
+        }
+    }
+
+    fn checked(id: i64, failed: bool) -> LibraryRequest {
+        LibraryRequest::CheckSound {
+            id: SoundId(id),
+            failed,
+        }
+    }
+
+    impl Rig {
+        /// A service that knows of sounds 1 and 2, whose files are not there.
+        fn with_sounds() -> Self {
+            let mut rig = Self::idle();
+            rig.list(vec![absent(1), absent(2)]);
+            rig
+        }
+
+        /// Hand the service the sounds, as the library would.
+        fn list(&mut self, sounds: Vec<StoredSound>) {
+            self.stored = sounds.clone();
+            self.service.on_sounds(sounds);
+            self.collect();
+        }
+
+        /// Put `sound` in the list in place of the one with its id, then fire it.
+        fn fire(&mut self, sound: StoredSound) {
+            let id = sound.view.id;
+            let mut sounds = self.stored.clone();
+            match sounds.iter_mut().find(|stored| stored.view.id == id) {
+                Some(stored) => *stored = sound,
+                None => sounds.push(sound),
+            }
+            self.list(sounds);
+            self.send(Command::PlaySound(id));
+        }
+
+        fn board(&self) -> &SoundboardState {
+            self.boards.last().unwrap()
+        }
+
+        fn sounding(&self) -> Vec<i64> {
+            self.boards.last().map_or_else(Vec::new, |board| {
+                board
+                    .sounds
+                    .iter()
+                    .filter(|sound| sound.playing)
+                    .map(|sound| sound.id.0)
+                    .collect()
+            })
+        }
+    }
+
+    #[test]
+    fn the_sounds_the_library_sends_are_shown() {
+        let rig = Rig::with_sounds();
+        assert_eq!(rig.boards.len(), 1);
+        assert_eq!(rig.board().sounds, [sound_view(1), sound_view(2)]);
+        assert!(rig.views.is_empty(), "the player is not touched");
+    }
+
+    #[test]
+    fn playing_a_sound_sends_its_path_gain_and_route() {
+        let sounds = Sounds::new();
+        let cable = DeviceId("cable".into());
+        let mut rig = Rig::with_sounds();
+        rig.settings(&sounds_to(SoundTarget::Second, Some(&cable)));
+
+        rig.fire(sounds.tone(1, 3_000, 0.5));
+        rig.wait_until("the sound to start", |rig| rig.sounding() == [1]);
+        // Only the second device opened: the music's output was not needed.
+        let outputs = rig.factory.outputs();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].device(), Some(cable.clone()));
+
+        rig.settings(&sounds_to(SoundTarget::Both, Some(&cable)));
+        rig.fire(sounds.tone(2, 3_000, 1.0));
+        rig.wait_until("the second sound", |rig| rig.sounding().len() == 2);
+        assert_eq!(
+            rig.factory.outputs_on(None).len(),
+            1,
+            "the music's device too"
+        );
+        assert_eq!(rig.factory.outputs_on(Some(&cable)).len(), 1);
+        assert!(rig.views.is_empty(), "sounds do not move the player");
+        assert!(rig.notices.is_empty(), "{:?}", rig.notices);
+        assert!(rig.requests.is_empty(), "the library is not asked");
+    }
+
+    #[test]
+    fn an_unknown_sound_fires_nothing() {
+        let mut rig = Rig::with_sounds();
+        rig.send(Command::PlaySound(SoundId(99)));
+        // Leave room for the engine to report anything, were there anything.
+        thread::sleep(Duration::from_millis(50));
+        rig.pump();
+        assert!(rig.factory.outputs().is_empty());
+        assert!(rig.sounding().is_empty());
+        assert!(rig.notices.is_empty() && rig.requests.is_empty());
+    }
+
+    #[test]
+    fn playing_marks_the_sound_and_ending_unmarks_it() {
+        let sounds = Sounds::new();
+        let mut rig = Rig::with_sounds();
+        rig.fire(sounds.tone(2, 100, 1.0));
+        rig.wait_until("the sound to start", |rig| rig.sounding() == [2]);
+        assert!(!rig.board().sounds[0].playing);
+
+        rig.run_until("the sound to end", |rig| rig.sounding().is_empty());
+        assert_eq!(rig.board().sounds.len(), 2);
+        assert!(rig.views.is_empty(), "sounds do not move the player");
+    }
+
+    #[test]
+    fn stop_sounds_reaches_the_engine() {
+        let sounds = Sounds::new();
+        let mut rig = Rig::with_sounds();
+        rig.fire(sounds.tone(1, 5_000, 1.0));
+        rig.fire(sounds.tone(2, 5_000, 1.0));
+        rig.wait_until("both sounds", |rig| rig.sounding().len() == 2);
+
+        rig.send(Command::StopSounds);
+        rig.wait_until("the sounds to stop", |rig| rig.sounding().is_empty());
+    }
+
+    #[test]
+    fn the_sound_device_is_sent_at_startup_and_on_change() {
+        let sounds = Sounds::new();
+        let (cable, other) = (DeviceId("cable".into()), DeviceId("other".into()));
+        // As at startup: the settings come before anything plays.
+        let mut rig = Rig::idle();
+        rig.settings(&sounds_to(SoundTarget::Second, Some(&cable)));
+
+        rig.fire(sounds.tone(1, 3_000, 1.0));
+        rig.wait_until("the sound", |rig| rig.sounding() == [1]);
+        assert_eq!(rig.factory.outputs_on(Some(&cable)).len(), 1);
+
+        rig.settings(&sounds_to(SoundTarget::Second, Some(&other)));
+        // The output on the old device closes, and the sound on it ends.
+        rig.wait_until("the sound to be cut", |rig| rig.sounding().is_empty());
+        rig.send(Command::PlaySound(SoundId(1)));
+        rig.wait_until("the sound again", |rig| rig.sounding() == [1]);
+        assert_eq!(rig.factory.outputs_on(Some(&other)).len(), 1);
+        assert_eq!(rig.factory.outputs_on(Some(&cable)).len(), 1, "no new one");
+    }
+
+    #[test]
+    fn a_sound_that_fails_asks_the_library_why() {
+        let sounds = Sounds::new();
+        let path = sounds.dir.path().join("broken.wav");
+        std::fs::write(&path, b"not audio").unwrap();
+        let mut rig = Rig::with_sounds();
+        rig.fire(StoredSound {
+            view: sound_view(1),
+            path,
+        });
+        rig.wait_until("the check", |rig| rig.requests.contains(&checked(1, true)));
+        // The library gives the notice, once it has looked at the file.
+        assert!(rig.notices.is_empty(), "{:?}", rig.notices);
+        assert!(rig.sounding().is_empty());
+        assert!(
+            rig.factory.outputs().is_empty(),
+            "nothing was opened for it"
+        );
+
+        // A missing file fails the same way, without an output either.
+        rig.send(Command::PlaySound(SoundId(2)));
+        rig.wait_until("the second check", |rig| {
+            rig.requests.contains(&checked(2, true))
+        });
+        assert!(rig.factory.outputs().is_empty());
+    }
+
+    #[test]
+    fn a_sound_shown_as_missing_that_plays_is_checked_again() {
+        let sounds = Sounds::new();
+        let mut rig = Rig::with_sounds();
+        let mut back = sounds.tone(1, 3_000, 1.0);
+        back.view.missing = true;
+        rig.fire(back);
+        rig.wait_until("the sound", |rig| rig.sounding() == [1]);
+        assert_eq!(rig.requests, [checked(1, false)]);
+    }
+
+    #[test]
+    fn a_sound_with_no_device_and_no_track_gives_the_sound_notice() {
+        let sounds = Sounds::new();
+        let mut rig = Rig::with_sounds();
+        rig.factory.fail_open(2);
+        rig.fire(sounds.tone(1, 3_000, 1.0));
+        rig.wait_until("the notice", |rig| !rig.notices.is_empty());
+        // Leave room for a second notice to arrive, were there one.
+        thread::sleep(Duration::from_millis(50));
+        rig.pump();
+        let keys: Vec<&str> = rig.notices.iter().map(|notice| notice.key).collect();
+        assert_eq!(
+            keys,
+            ["sound-failed"],
+            "no music was paused, so the music notice would be untrue"
+        );
+        assert!(rig.views.is_empty(), "the player is not touched");
+        assert!(rig.sounding().is_empty());
+    }
+
+    #[test]
+    fn no_device_with_a_track_loaded_is_still_the_music_notice() {
+        let music = Music::new().tone(1_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        rig.views.clear();
+        rig.engine(EngineEvent::NoDevice);
+        assert_eq!(rig.notices("playback-no-device").len(), 1);
+        assert!(rig.notices("sound-failed").is_empty());
+        assert!(!rig.view().playing);
+    }
+
+    #[test]
+    fn the_second_device_failing_gives_a_notice() {
+        let sounds = Sounds::new();
+        let cable = DeviceId("cable".into());
+        let mut rig = Rig::with_sounds();
+        rig.factory.remove_device(cable.clone());
+        rig.settings(&sounds_to(SoundTarget::Second, Some(&cable)));
+        rig.fire(sounds.tone(1, 3_000, 1.0));
+        rig.wait_until("the notice", |rig| {
+            !rig.notices("sound-device-failed").is_empty()
+        });
+        assert!(
+            rig.sounding().is_empty(),
+            "with Second only, it plays nowhere"
+        );
+        assert!(
+            rig.notices("playback-no-device").is_empty(),
+            "the music is fine"
+        );
+    }
+
+    #[test]
+    fn a_lost_library_empties_the_soundboard() {
+        let mut rig = Rig::with_sounds();
+        rig.service.library_lost();
+        rig.collect();
+        assert!(rig.board().sounds.is_empty());
+        rig.send(Command::PlaySound(SoundId(1)));
+        thread::sleep(Duration::from_millis(50));
+        rig.pump();
+        assert!(rig.factory.outputs().is_empty(), "nothing is left to fire");
+    }
+
+    #[test]
+    fn the_stop_hotkey_is_the_one_in_the_settings() {
+        let mut rig = Rig::with_sounds();
+        let hotkey: Hotkey = "Ctrl+F12".parse().unwrap();
+        rig.settings(&Settings {
+            stop_sounds_hotkey: Some(hotkey),
+            ..Settings::default()
+        });
+        assert_eq!(rig.service.stop_hotkey(), Some(hotkey));
     }
 }

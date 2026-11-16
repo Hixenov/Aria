@@ -114,6 +114,7 @@ notice-settings-readonly = Կարգավորումների ֆայլը հասան�
 notice-settings-save-failed = Չհաջողվեց պահպանել կարգավորումները։ Նոր փորձ կկատարվի հաջորդ փոփոխության ժամանակ։
 notice-open-folder-failed = Չհաջողվեց բացել պանակը։
 notice-pick-folder-failed = Չհաջողվեց բացել պանակի ընտրությունը։
+notice-pick-sounds-failed = Չհաջողվեց բացել ֆայլերի ընտրությունը։
 notice-dismiss = Փակել
 
 ## Library notices (toasts)
@@ -147,6 +148,29 @@ playback-track-failed = Չհաջողվեց նվագարկել «{ $title }» ե�
 playback-stopped-after-failures = Նվագարկումը դադարեցվել է, քանի որ մի քանի երգ անընդմեջ չհաջողվեց նվագարկել։
 playback-device-fallback = Աուդիոսարքը հասանելի չէ, ուստի Aria-ն անցել է մեկ այլ սարքի։
 playback-no-device = Հասանելի աուդիոսարք չկա, ուստի նվագարկումը դադարեցված է։
+exclusive-unavailable = Բացառիկ ռեժիմն այս սարքում այս պահին հասանելի չէ, ուստի Aria-ն օգտագործում է համակարգային միքսերը։
+
+## Soundboard
+
+sound-name-invalid = Ձայնի անունը պետք է լինի 1-ից 50 նիշ։
+sound-limit = Ձայների սահմանաչափը ({ $max }) լրացել է, ուստի որոշ ֆայլեր չեն ավելացվել։
+sound-missing = Այս ձայնի ֆայլը չի գտնվել, ուստի ոչինչ չի նվագարկվել։
+sound-failed = Չհաջողվեց նվագարկել այս ձայնը։ Երաժշտության վրա դա չի ազդել։
+sound-device-failed = Չհաջողվեց օգտագործել ձայների երկրորդ սարքը։
+hotkey-not-allowed = Ստեղների համակցությունը պետք է ներառի Ctrl, Alt կամ Win, եթե դրա ստեղնը F ստեղն կամ թվային բլոկի ստեղն չէ։
+hotkey-taken = Ստեղների այս համակցությունն արդեն օգտագործվում է Aria-ում։
+hotkey-unavailable = Համակարգը մերժեց ստեղների այս համակցությունը, հավանաբար այն օգտագործում է մեկ այլ ծրագիր։ Այն չի պահպանվել։
+# $count (Number) - how many hotkeys the system refused to register
+hotkeys-inactive = { $count ->
+    [one] { $count } համակցություն չի աշխատում. համակարգը մերժել է այն, հավանաբար այն օգտագործում է մեկ այլ ծրագիր։
+   *[other] { $count } համակցություն չի աշխատում. համակարգը մերժել է դրանք, հավանաբար դրանք օգտագործում են այլ ծրագրեր։
+}
+hotkey-inactive-hint = Համակարգը մերժել է այս համակցությունը, հավանաբար այն օգտագործում է մեկ այլ ծրագիր։ Այժմ այն չի աշխատում։
+hotkey-dialog-title = Սահմանել ստեղների համակցություն
+hotkey-dialog-hint = Սեղմեք ստեղները միասին։ Escape-ը չեղարկում է, Delete-ը կամ Backspace-ը հեռացնում է համակցությունը։
+hotkey-dialog-clear = Հեռացնել
+hotkeys-unavailable = Գլոբալ ստեղների համակցությունները հասանելի չեն այս համակարգում, ուստի դրանցից ոչ մեկը չի աշխատում։
+hotkey-dialog-numpad = Թվային բլոկի ստեղն
 
 ## Local Music page
 
@@ -220,3 +244,50 @@ playlist-track-count = { $count ->
     [one] { $count } երգ
    *[other] { $count } երգ
 }
+
+## Output path, exclusive mode and quality
+output-bit-perfect = Առանց փոփոխության
+output-bit-perfect-hint = Aria-ն երգի նմուշները սարքին է փոխանցում անփոփոխ։ Մեկնարկը, դադարը, շարունակումը և առաջ-հետ անցումը մարում են 5 մվ-ում․ երգերի անընդմեջ միացումներում մարում չկա։
+output-resampled = Վերաչափված
+output-resampled-hint = Բացառիկ ելք՝ այնպիսի հաճախականությամբ, որը երգը չունի, ուստի նմուշները վերահաշվվում են։
+output-converted = Փոխակերպված
+output-converted-hint = Բացառիկ ելք, բայց նմուշները ֆայլինը չեն․ կորուստներով կամ լողացող ստորակետով աղբյուր, անհայտ, 24 բիթից ավելի կամ նվազեցված բիթայնություն, փոխված ալիքներ կամ անջատված ձայն։
+output-mixed = Խառնված ձայնի հետ
+output-mixed-hint = Ձայնային վահանակի ձայնը խառնված է հոսքին, ուստի այն ճշգրիտ չէ։
+output-system-mixer = Համակարգի խառնիչ
+output-system-mixer-hint = Նվագարկում համակարգի խառնիչով, որը կարող է փոխել նմուշները։
+player-volume-locked = Ձայնը կարգավորվում է սարքում, քանի դեռ բացառիկ ռեժիմը միացված է։
+settings-exclusive = Բացառիկ ռեժիմ
+settings-exclusive-hint = Մինչ Aria-ն նվագում է, մյուս ծրագրերը լռում են այս սարքում։ Մակարդակը կարգավորեք սարքում։
+settings-exclusive-windows-only = Բացառիկ ռեժիմը հասանելի է միայն Windows-ում։
+quality-lossless = Առանց կորստի
+quality-hi-res = Hi-Res
+local-col-quality = Որակ
+local-lossless-only = Միայն առանց կորստի
+
+## Soundboard page and settings
+
+nav-soundboard = Ձայնային վահանակ
+soundboard-empty = Ձայներ դեռ չկան
+soundboard-empty-hint = Ավելացրեք կարճ աուդիոֆայլեր՝ դրանք մեկ սեղմումով կամ ստեղների համակցությամբ նվագարկելու համար։
+soundboard-add = Ավելացնել ձայներ…
+soundboard-stop-all = Կանգնեցնել բոլորը
+sound-rename = Վերանվանել
+sound-hotkey = Ստեղների համակցություն…
+sound-hotkey-none = Չկա
+sound-volume = Ձայնի ուժգնություն
+sound-remove = Հեռացնել
+# $name (String) - the sound's name
+sound-remove-confirm = Հեռացնե՞լ «{ $name }» ձայնը ձայնային վահանակից։ Ֆայլը չի ջնջվում։
+settings-soundboard = Ձայնային վահանակ
+settings-sound-device = Երկրորդ սարք
+settings-sound-device-none = Չկա
+settings-sound-target = Նվագարկել ձայները
+settings-sound-target-mine = Իմ սարքում
+settings-sound-target-second = Երկրորդ սարքում
+settings-sound-target-both = Երկու սարքերում
+settings-sound-target-note = Երկրորդ սարք ընտրված չէ, ուստի ձայները նվագարկվում են ձեր սարքում։
+settings-global-hotkeys = Գլոբալ ստեղների համակցություններ
+settings-global-hotkeys-hint = Համակցությունները աշխատում են, երբ ուշադրությունը մեկ այլ ծրագրի վրա է։ Aria-ն ստանում է միայն ձեր սահմանած համակցությունները։
+settings-stop-hotkey = «Կանգնեցնել բոլորը» համակցություն
+settings-voice-chat-hint = Ձայնային զրույցում լսելի լինելու համար երկրորդ սարք ընտրեք վիրտուալ աուդիոմալուխ և նշանակեք այն զրույցի խոսափող։ Aria-ն այդպիսի մալուխ չի տեղադրում։ Զրույցը լսում է ձայները, ոչ թե ձեր խոսափողը։

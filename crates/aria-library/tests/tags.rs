@@ -379,3 +379,75 @@ fn largest_allowed_image_still_fits_the_decode_limit() {
     let id = cache.store(&png_bytes(8192, 8192, true)).unwrap();
     assert!(id.is_some());
 }
+
+#[test]
+fn flac_and_wav_report_their_depth() {
+    for (name, bits) in [
+        ("depth-16.flac", 16),
+        ("depth-24.flac", 24),
+        ("depth-16.wav", 16),
+        ("depth-24.wav", 24),
+    ] {
+        let t = ok(read_tags(&fixture(name)));
+        assert_eq!(t.bits_per_sample, bits, "{name}");
+    }
+    assert_eq!(&*ok(read_tags(&fixture("depth-24.flac"))).codec, "flac");
+    assert_eq!(&*ok(read_tags(&fixture("depth-24.wav"))).codec, "wav");
+}
+
+#[test]
+fn mp3_has_no_depth() {
+    let t = ok(read_tags(&fixture("tone.mp3")));
+    assert_eq!(t.bits_per_sample, 0);
+    assert_eq!(&*t.codec, "mp3");
+}
+
+#[test]
+fn alac_and_aac_in_m4a_are_told_apart() {
+    let alac = ok(read_tags(&fixture("tone-alac.m4a")));
+    assert_eq!(&*alac.codec, "alac");
+    assert_eq!(alac.bits_per_sample, 16);
+    let aac = ok(read_tags(&fixture("tone.m4a")));
+    assert_eq!(&*aac.codec, "aac");
+}
+
+#[test]
+fn aiff_reports_its_depth() {
+    let t = ok(read_tags(&fixture("tone.aiff")));
+    assert_eq!((&*t.codec, t.bits_per_sample), ("aiff", 16));
+}
+
+#[test]
+fn wav_and_aiff_are_named_by_how_their_data_is_coded() {
+    // Integer and float PCM keep the container's name, which counts as lossless; A-law and
+    // µ-law are named for themselves, which counts as lossy.
+    for (name, codec) in [
+        ("depth-16.wav", "wav"),
+        ("float.wav", "wav"),
+        ("alaw.wav", "alaw"),
+        ("tone.aiff", "aiff"),
+        ("float.aiff", "aiff"),
+        ("mulaw.aiff", "ulaw"),
+    ] {
+        assert_eq!(&*ok(read_tags(&fixture(name))).codec, codec, "{name}");
+    }
+}
+
+#[test]
+fn an_adpcm_wav_is_not_readable_so_it_is_never_stored() {
+    // lofty refuses WAV data of other than whole bytes per sample (IMA ADPCM has 4 bits), so
+    // the scan skips the file and it never gets a badge.
+    assert!(matches!(
+        read_tags(&fixture("adpcm.wav")),
+        Err(LibraryError::Tags(_))
+    ));
+}
+
+#[test]
+fn caf_is_not_readable_so_it_is_never_stored() {
+    // lofty has no CAF parser: the scan skips the file, and stores neither a codec nor a depth.
+    assert!(matches!(
+        read_tags(&fixture("tone.caf")),
+        Err(LibraryError::Tags(_))
+    ));
+}

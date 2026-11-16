@@ -8,13 +8,13 @@
 use std::time::Duration;
 
 use aria_core::{
-    ClockReading,
+    ClockReading, OutputPath,
     i18n::{FluentArgs, Localizer},
-    playback_service::PlayerView,
+    playback_service::{PlayerView, TrackFormat},
     player::queue::RepeatMode,
     settings::Settings,
 };
-use aria_library::{ArtworkId, Collections, LibrarySnapshot, TrackId};
+use aria_library::{ArtworkId, Collections, LibrarySnapshot, Quality, TrackId};
 use eframe::egui::{
     Align, Align2, Label, Layout, Margin, Panel, Rect, RichText, Sense, TextStyle, Ui, UiBuilder,
     Vec2, pos2, vec2,
@@ -250,12 +250,103 @@ fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>, out: &mut Vec<PlayerAction>
             ui.add(Label::new(title).selectable(false).truncate());
             let artist = RichText::new(&now.artist).small().color(p.text_muted);
             ui.add(Label::new(artist).selectable(false).truncate());
+            output_line(ui, bar);
         });
     });
     if let Some(PageAction::SetFavorite { track, favorite }) =
         track_menu::heart(ui, bar.tr, p, bar.collections, track)
     {
         out.push(PlayerAction::SetFavorite { track, favorite });
+    }
+}
+
+/// Between the format and the path on the bar's line.
+pub const LINE_SEPARATOR: &str = " · ";
+
+/// The file's format and how its sound reaches the device, as small text under the artist. The
+/// path has a tooltip saying what it means. Nothing is shown of a path the engine has not
+/// reported: while exclusive mode is on and no state has arrived, the format stands alone, and
+/// the system mixer is named only when exclusive mode is off.
+fn output_line(ui: &mut Ui, bar: &PlayerBar<'_>) {
+    let p = bar.palette;
+    let format = bar
+        .view
+        .format
+        .as_ref()
+        .map(format_label)
+        .filter(|text| !text.is_empty());
+    let path = path_key(bar.view);
+    if format.is_none() && path.is_none() {
+        return;
+    }
+    // One line that gives way to the heart with an ellipsis; the tooltip has all of it.
+    let name = path.map(|key| bar.tr.tr(key));
+    let parts: Vec<&str> = format
+        .as_deref()
+        .into_iter()
+        .chain(name.as_deref())
+        .collect();
+    let line = parts.join(LINE_SEPARATOR);
+    let text = RichText::new(&line).small().color(p.text_muted);
+    let label = Label::new(text)
+        .selectable(false)
+        .truncate()
+        .sense(Sense::hover());
+    ui.add(label).on_hover_ui(|ui| {
+        ui.label(&line);
+        if let Some(key) = path {
+            ui.label(RichText::new(bar.tr.tr(&format!("{key}-hint"))).color(p.text_muted));
+        }
+    });
+}
+
+/// The locale key naming how the current track reaches the device. `None` with nothing
+/// current, and while an exclusive output is being opened (the volume is locked) but the engine
+/// has not said how it turned out.
+fn path_key(view: &PlayerView) -> Option<&'static str> {
+    view.current?;
+    match view.output {
+        Some(state) => Some(match state.path {
+            OutputPath::BitPerfect => "output-bit-perfect",
+            OutputPath::Resampled => "output-resampled",
+            OutputPath::Converted => "output-converted",
+            OutputPath::MixedWithSound => "output-mixed",
+            OutputPath::SystemMixer => "output-system-mixer",
+        }),
+        None if view.volume_locked => None,
+        None => Some("output-system-mixer"),
+    }
+}
+
+/// A file's format as the bar shows it: the codec, the depth for lossless files only (a lossy
+/// file's tags can report one that means nothing), and the rate in kHz. "FLAC 24/96", "MP3 44.1".
+pub fn format_label(format: &TrackFormat) -> String {
+    let codec = match &*format.codec {
+        "unknown" => String::new(),
+        codec => codec.to_uppercase(),
+    };
+    if format.sample_rate == 0 {
+        // A file whose rate could not be read: no "0/0", only what is known.
+        return codec;
+    }
+    let (whole, part) = (format.sample_rate / 1_000, format.sample_rate % 1_000);
+    let rate = if part == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{part:03}")
+            .trim_end_matches('0')
+            .to_owned()
+    };
+    let rate = match format.quality {
+        Quality::Lossless | Quality::HiRes if format.bits_per_sample > 0 => {
+            format!("{}/{rate}", format.bits_per_sample)
+        }
+        _ => rate,
+    };
+    if codec.is_empty() {
+        rate
+    } else {
+        format!("{codec} {rate}")
     }
 }
 
@@ -497,12 +588,13 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
 
     let (rect, _) = ui.allocate_exact_size(vec2(VOLUME_WIDTH, SEEK_ROW), Sense::hover());
     let label = tr.tr("player-volume");
-    let volume = bar.settings.volume;
+    let locked = bar.view.volume_locked;
+    let volume = shown_volume(bar.view, bar.settings.volume);
     let scrub = Scrub {
         id: "aria_volume",
         rect,
         value: volume,
-        enabled: true,
+        enabled: !locked,
         label: &label,
         step: VOLUME_STEP,
     };
@@ -510,6 +602,14 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     // Every move is a change to apply; the app skips the ones that change nothing.
     if let Some(at) = moved.dragging.or(moved.committed) {
         out.push(PlayerAction::SetVolume(at));
+    }
+    if locked {
+        ui.interact(
+            rect,
+            ui.scope_id().with("aria_volume_locked"),
+            Sense::hover(),
+        )
+        .on_hover_text(tr.tr("player-volume-locked"));
     }
 
     let muted = bar.settings.muted;
@@ -527,6 +627,13 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     if ui.add(control).clicked() {
         out.push(PlayerAction::ToggleMute);
     }
+}
+
+/// The level the volume slider shows. While the device is held exclusively the level is the
+/// device's, so the slider shows full and cannot move; otherwise, after a refused exclusive open
+/// too, it shows the stored volume, which is the level heard.
+fn shown_volume(view: &PlayerView, stored: f32) -> f32 {
+    if view.volume_locked { 1.0 } else { stored }
 }
 
 /// Adds `control` disabled, with a tooltip naming it and the phase that brings it.
@@ -548,4 +655,80 @@ fn pending(
         ui.label(RichText::new(name).color(p.text));
         ui.label(RichText::new(&*hint).color(p.text_muted));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn format(codec: &str, bits: u16, rate: u32, quality: Quality) -> String {
+        format_label(&TrackFormat {
+            codec: Arc::from(codec),
+            sample_rate: rate,
+            bits_per_sample: bits,
+            quality,
+        })
+    }
+
+    #[test]
+    fn format_labels() {
+        assert_eq!(format("flac", 24, 96_000, Quality::HiRes), "FLAC 24/96");
+        assert_eq!(
+            format("flac", 16, 44_100, Quality::Lossless),
+            "FLAC 16/44.1"
+        );
+        assert_eq!(format("alac", 24, 192_000, Quality::HiRes), "ALAC 24/192");
+        assert_eq!(format("mp3", 0, 44_100, Quality::Lossy), "MP3 44.1");
+        assert_eq!(format("flac", 24, 88_200, Quality::HiRes), "FLAC 24/88.2");
+    }
+
+    #[test]
+    fn an_unreadable_rate_shows_no_junk() {
+        assert_eq!(format("flac", 24, 0, Quality::Lossless), "FLAC");
+        assert_eq!(format("unknown", 0, 0, Quality::Lossy), "");
+        assert_eq!(format("unknown", 0, 44_100, Quality::Lossy), "44.1");
+    }
+
+    fn view(output: Option<OutputPath>, volume_locked: bool) -> PlayerView {
+        PlayerView {
+            current: Some(TrackId(1)),
+            output: output.map(|path| aria_core::OutputState {
+                path,
+                device_rate: 44_100,
+                device_bits: 16,
+            }),
+            volume_locked,
+            ..PlayerView::default()
+        }
+    }
+
+    #[test]
+    fn the_bar_follows_the_output_actually_opened() {
+        // An exclusive open on its way: no path yet, and the slider is the device's.
+        let opening = view(None, true);
+        assert_eq!(path_key(&opening), None);
+        assert_eq!(shown_volume(&opening, 0.3), 1.0);
+
+        // Refused, before the engine has said more: the system mixer, at the stored volume.
+        let refused = view(None, false);
+        assert_eq!(path_key(&refused), Some("output-system-mixer"));
+        assert_eq!(shown_volume(&refused, 0.3), 0.3);
+
+        let shared = view(Some(OutputPath::SystemMixer), false);
+        assert_eq!(path_key(&shared), Some("output-system-mixer"));
+        assert_eq!(shown_volume(&shared, 0.3), 0.3);
+
+        // Held exclusively again.
+        let held = view(Some(OutputPath::BitPerfect), true);
+        assert_eq!(path_key(&held), Some("output-bit-perfect"));
+        assert_eq!(shown_volume(&held, 0.3), 1.0);
+    }
+
+    #[test]
+    fn a_lossy_file_never_shows_a_depth() {
+        // lofty can report 16 for AAC.
+        assert_eq!(format("aac", 16, 44_100, Quality::Lossy), "AAC 44.1");
+    }
 }

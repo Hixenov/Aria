@@ -1,7 +1,6 @@
-//! The modal that asks for a playlist's name.
+//! The modal that asks for a name: a playlist's or a sound's.
 
 use aria_core::i18n::Localizer;
-use aria_library::playlist_name;
 use eframe::egui::{
     Align, Button, Context, Frame, Id, Key, Label, Layout, Margin, Modal, RichText, Stroke,
     TextEdit, WidgetInfo, accesskit::Role, vec2,
@@ -21,6 +20,14 @@ const RADIUS: u8 = 8;
 /// Id of the modal.
 const ID: &str = "aria_name_dialog";
 
+/// `text` trimmed, if it is 1 to `max_chars` characters.
+fn valid_name(text: &str, max_chars: usize) -> Option<&str> {
+    let name = text.trim();
+    (1..=max_chars)
+        .contains(&name.chars().count())
+        .then_some(name)
+}
+
 /// What the user did with the dialog this frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NameAnswer {
@@ -38,11 +45,13 @@ pub struct NameDialog<'a> {
     pub title: &'a str,
     /// The confirm button.
     pub confirm: &'a str,
+    /// The longest name, in characters, once trimmed.
+    pub max_chars: usize,
 }
 
 impl NameDialog<'_> {
     /// Draws the dialog editing `text`. The confirm button, and Enter, work only while
-    /// `text` is a valid playlist name.
+    /// `text` is a valid name.
     pub fn show(
         &self,
         ctx: &Context,
@@ -74,7 +83,7 @@ impl NameDialog<'_> {
             if ui.memory(|memory| memory.focused().is_none()) {
                 field.request_focus();
             }
-            let valid = playlist_name(text).is_some();
+            let valid = valid_name(text, self.max_chars).is_some();
             let enter = (field.has_focus() || field.lost_focus())
                 && ui.input(|input| input.key_pressed(Key::Enter));
 
@@ -94,7 +103,7 @@ impl NameDialog<'_> {
             clicked.or((enter && valid).then_some(true))
         });
         match result.inner {
-            Some(true) => match playlist_name(text) {
+            Some(true) => match valid_name(text, self.max_chars) {
                 Some(name) => NameAnswer::Confirmed(name.to_owned()),
                 None => NameAnswer::Open,
             },

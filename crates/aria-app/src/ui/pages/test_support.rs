@@ -3,6 +3,7 @@
 use aria_core::{
     i18n::{FluentArgs, Localizer},
     settings::{Language, Settings},
+    soundboard::SoundboardState,
 };
 use aria_library::Collections;
 use eframe::egui::{Theme, Ui};
@@ -15,6 +16,7 @@ use crate::ui::theme::{Palette, fonts};
 pub struct World {
     pub collections: Collections,
     pub library: LibraryView,
+    pub soundboard: SoundboardState,
     /// The requests the page made, in order.
     pub out: Vec<PageAction>,
     pub modal_open: bool,
@@ -27,6 +29,7 @@ impl World {
         Self {
             collections,
             library,
+            soundboard: SoundboardState::default(),
             out: Vec::new(),
             modal_open: false,
             tr: Localizer::new(Language::En).expect("the English locale loads"),
@@ -41,10 +44,13 @@ impl World {
             palette: Palette::for_theme(Theme::Dark, &self.settings),
             settings: &self.settings,
             paths_available: false,
+            exclusive_supported: true,
             modal_open: &mut self.modal_open,
             out: &mut self.out,
             library: &self.library,
             collections: &self.collections,
+            soundboard: &self.soundboard,
+            inactive_hotkeys: &[],
             devices: &[],
             artwork: None,
         };

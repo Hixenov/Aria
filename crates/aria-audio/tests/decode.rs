@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use aria_audio::AudioError;
 use aria_audio::decode::{TrackDecoder, decode_clip};
 use aria_audio::resample::{Resampler, convert_channels};
+use aria_audio::sample_format::{SampleKind, write_samples};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -50,6 +51,96 @@ fn every_format_decodes() {
             "{name}: {frames} frames, expected about {expected}"
         );
         assert!(rms(&samples) > 0.05, "{name}: rms {}", rms(&samples));
+    }
+}
+
+/// The raw bytes of a WAV file's `data` chunk.
+fn wav_data(path: &Path) -> Vec<u8> {
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    assert_eq!(&bytes[..4], b"RIFF", "{}", path.display());
+    assert_eq!(&bytes[8..12], b"WAVE", "{}", path.display());
+    let mut at = 12;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = [bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]];
+        let len = u32::from_le_bytes(size) as usize;
+        let body = at + 8;
+        if id == b"data" {
+            return bytes[body..body + len].to_vec();
+        }
+        // Chunks are padded to an even length.
+        at = body + len + (len & 1);
+    }
+    panic!("no data chunk in {}", path.display());
+}
+
+#[test]
+fn decoded_flac_and_wav_match_their_source_samples() {
+    for name in ["depth-16.flac", "depth-16.wav"] {
+        let (samples, _) = decode_all(&fixture(name)).unwrap();
+        let raw = wav_data(&fixture("depth-16.wav"));
+        assert_eq!(samples.len() * 2, raw.len(), "{name}");
+
+        let mut out = vec![0u8; samples.len() * 2];
+        write_samples(SampleKind::I16, &samples, &mut out);
+        assert!(out == raw, "{name}: 16-bit samples differ from the source");
+
+        // Into a wider device the same samples arrive shifted up, the low bits zero.
+        let mut wide = vec![0u8; samples.len() * 4];
+        write_samples(SampleKind::I24In32, &samples, &mut wide);
+        let expected: Vec<u8> = raw
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|s| [0, 0, s[0], s[1]])
+            .collect();
+        assert!(wide == expected, "{name}: 16-bit samples in 32 bits differ");
+    }
+
+    for name in ["depth-24.flac", "depth-24.wav"] {
+        let (samples, _) = decode_all(&fixture(name)).unwrap();
+        let raw = wav_data(&fixture("depth-24.wav"));
+        assert_eq!(samples.len() * 3, raw.len(), "{name}");
+        // 24 bits left-justified in 32: a zero low byte, then the three source bytes.
+        let expected: Vec<u8> = raw
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|s| [0, s[0], s[1], s[2]])
+            .collect();
+
+        for kind in [SampleKind::I24In32, SampleKind::I32] {
+            let mut out = vec![0u8; samples.len() * 4];
+            write_samples(kind, &samples, &mut out);
+            assert!(
+                out == expected,
+                "{name}: 24-bit samples as {kind:?} differ from the source"
+            );
+        }
+    }
+}
+
+#[test]
+fn stream_info_reports_depth_and_float() {
+    for (name, bits, float) in [
+        ("depth-16.flac", Some(16), false),
+        ("depth-16.wav", Some(16), false),
+        ("depth-24.flac", Some(24), false),
+        ("depth-24.wav", Some(24), false),
+        ("tone.aiff", Some(16), false),
+        ("tone.caf", Some(16), false),
+        // Symphonia's MP4 reader and ALAC decoder do not report the depth.
+        ("tone-alac.m4a", None, false),
+        ("tone.mp3", None, true),
+        ("tone.ogg", None, true),
+        ("tone.opus", None, true),
+        ("tone.m4a", None, true),
+    ] {
+        let dec = TrackDecoder::open(&fixture(name)).unwrap();
+        let info = dec.info();
+        assert_eq!(info.bits_per_sample, bits, "{name}");
+        assert_eq!(info.float, float, "{name}");
     }
 }
 

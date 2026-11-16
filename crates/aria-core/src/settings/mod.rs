@@ -5,7 +5,7 @@ use std::{fmt, str::FromStr};
 use aria_audio::DeviceId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 
-use crate::player::RepeatMode;
+use crate::{hotkey::Hotkey, player::RepeatMode, soundboard::SoundTarget};
 
 pub mod store;
 
@@ -19,6 +19,8 @@ const SIDEBAR_DEFAULT: f32 = 220.0;
 const VOLUME_DEFAULT: f32 = 1.0;
 const GAPLESS_DEFAULT: bool = true;
 const HISTORY_ENABLED_DEFAULT: bool = true;
+const EXCLUSIVE_OUTPUT_DEFAULT: bool = false;
+const GLOBAL_HOTKEYS_DEFAULT: bool = true;
 
 /// UI language.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -222,6 +224,46 @@ fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::E
     lenient(d, HISTORY_ENABLED_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::exclusive_output`].
+fn lenient_exclusive_output<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, EXCLUSIVE_OUTPUT_DEFAULT)
+}
+
+/// [`lenient`] for [`Settings::global_hotkeys`].
+fn lenient_global_hotkeys<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, GLOBAL_HOTKEYS_DEFAULT)
+}
+
+/// Accepts any value for a hotkey; anything that is not a hotkey's text becomes `None` with a
+/// warning instead of failing the file. The value itself is not logged.
+fn lenient_hotkey<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Hotkey>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        S(String),
+        Other(serde::de::IgnoredAny),
+    }
+    match Option::<Raw>::deserialize(d)? {
+        None => Ok(None),
+        Some(Raw::S(s)) => match s.parse::<Hotkey>() {
+            Ok(hotkey) if hotkey.is_allowed() => Ok(Some(hotkey)),
+            // A plain typing key, written into the file by hand, is never registered.
+            Ok(_) => {
+                tracing::warn!("ignoring a hotkey in the settings that is not allowed");
+                Ok(None)
+            }
+            Err(_) => {
+                tracing::warn!("ignoring a hotkey in the settings that cannot be read");
+                Ok(None)
+            }
+        },
+        Some(Raw::Other(_)) => {
+            tracing::warn!("ignoring a hotkey in the settings that is not text");
+            Ok(None)
+        }
+    }
+}
+
 /// Persisted user settings.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -267,6 +309,21 @@ pub struct Settings {
     /// Whether plays are recorded. Plays already stored stay when it is switched off.
     #[serde(deserialize_with = "lenient_history_enabled")]
     pub history_enabled: bool,
+    /// Whether the device is held alone, at each track's own format. Only Windows has this.
+    #[serde(deserialize_with = "lenient_exclusive_output")]
+    pub exclusive_output: bool,
+    /// The second device for sounds; `None` means there is none.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub soundboard_device: Option<DeviceId>,
+    /// Where sounds are played.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub soundboard_target: SoundTarget,
+    /// Whether the hotkeys work while another program has the focus. Off, they stay stored.
+    #[serde(deserialize_with = "lenient_global_hotkeys")]
+    pub global_hotkeys: bool,
+    /// The hotkey of "Stop all", if any.
+    #[serde(deserialize_with = "lenient_hotkey")]
+    pub stop_sounds_hotkey: Option<Hotkey>,
 }
 
 impl Default for Settings {
@@ -288,6 +345,11 @@ impl Default for Settings {
             output_device: None,
             gapless: GAPLESS_DEFAULT,
             history_enabled: HISTORY_ENABLED_DEFAULT,
+            exclusive_output: EXCLUSIVE_OUTPUT_DEFAULT,
+            soundboard_device: None,
+            soundboard_target: SoundTarget::Mine,
+            global_hotkeys: GLOBAL_HOTKEYS_DEFAULT,
+            stop_sounds_hotkey: None,
         }
     }
 }
@@ -426,6 +488,91 @@ mod tests {
         assert_eq!(s.theme, Theme::Dark, "the rest of the file still counts");
         let s: Settings = toml::from_str("history_enabled = false").unwrap();
         assert!(!s.history_enabled);
+    }
+    #[test]
+    fn an_old_settings_file_loads_with_exclusive_off() {
+        let s: Settings = toml::from_str(
+            "theme = \"dark\"
+volume = 0.5",
+        )
+        .unwrap();
+        assert!(!s.exclusive_output);
+        assert!(!Settings::default().exclusive_output);
+        let s: Settings = toml::from_str("exclusive_output = true").unwrap();
+        assert!(s.exclusive_output);
+    }
+    #[test]
+    fn a_bad_exclusive_value_falls_back_to_off() {
+        let s: Settings = toml::from_str(
+            "exclusive_output = \"yes\"
+theme = \"dark\"",
+        )
+        .unwrap();
+        assert!(!s.exclusive_output);
+        assert_eq!(s.theme, Theme::Dark, "the rest of the file still counts");
+    }
+    #[test]
+    fn an_old_settings_file_loads_with_the_soundboard_defaults() {
+        let s: Settings = toml::from_str("theme = \"dark\"\nexclusive_output = true").unwrap();
+        assert_eq!(s.soundboard_device, None);
+        assert_eq!(s.soundboard_target, SoundTarget::Mine);
+        assert!(s.global_hotkeys);
+        assert_eq!(s.stop_sounds_hotkey, None);
+        let d = Settings::default();
+        assert_eq!(
+            (d.soundboard_device, d.soundboard_target, d.global_hotkeys),
+            (None, SoundTarget::Mine, true)
+        );
+        assert_eq!(d.stop_sounds_hotkey, None);
+    }
+    #[test]
+    fn the_soundboard_settings_roundtrip() {
+        let s = Settings {
+            soundboard_device: Some(DeviceId("name:Cable".into())),
+            soundboard_target: SoundTarget::Both,
+            global_hotkeys: false,
+            stop_sounds_hotkey: Some("Ctrl+Alt+F12".parse().unwrap()),
+            ..Settings::default()
+        };
+        let text = toml::to_string(&s).unwrap();
+        assert!(
+            text.contains("stop_sounds_hotkey = \"Ctrl+Alt+F12\""),
+            "{text}"
+        );
+        assert!(text.contains("soundboard_target = \"both\""), "{text}");
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(s, back);
+    }
+    #[test]
+    fn bad_soundboard_values_fall_back_without_costing_the_file() {
+        let s: Settings = toml::from_str(
+            "soundboard_device = 5
+soundboard_target = \"loud\"
+global_hotkeys = \"yes\"
+stop_sounds_hotkey = \"Hyper+Q\"
+theme = \"dark\"",
+        )
+        .unwrap();
+        assert_eq!(s.soundboard_device, None);
+        assert_eq!(s.soundboard_target, SoundTarget::Mine);
+        assert!(s.global_hotkeys);
+        assert_eq!(s.stop_sounds_hotkey, None);
+        assert_eq!(s.theme, Theme::Dark, "the rest of the file still counts");
+        let s: Settings = toml::from_str("stop_sounds_hotkey = 3").unwrap();
+        assert_eq!(s.stop_sounds_hotkey, None);
+    }
+    #[test]
+    fn a_stop_hotkey_that_is_not_allowed_loads_as_none() {
+        for text in ["A", "Shift+A", "5"] {
+            let s: Settings = toml::from_str(&format!(
+                "stop_sounds_hotkey = \"{text}\"\ntheme = \"dark\""
+            ))
+            .unwrap();
+            assert_eq!(s.stop_sounds_hotkey, None, "{text}");
+            assert_eq!(s.theme, Theme::Dark);
+        }
+        let s: Settings = toml::from_str("stop_sounds_hotkey = \"F9\"").unwrap();
+        assert_eq!(s.stop_sounds_hotkey, Some("F9".parse().unwrap()));
     }
     #[test]
     fn a_0_2_0_settings_file_loads() {

@@ -466,3 +466,80 @@ fn newer_wal_database_is_refused_and_main_file_untouched() {
     drop(c);
     assert!(!env.dir.path().join("library.db.bak").exists());
 }
+
+/// A version-2 database as 0.2.1 left it, with one of everything.
+fn build_0_2_1(db: &Path) {
+    let c = ok(Connection::open(db));
+    ok(c.execute_batch(
+        "
+CREATE TABLE folders (id INTEGER PRIMARY KEY, path BLOB NOT NULL UNIQUE, added_at INTEGER NOT NULL,
+    available INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    path BLOB NOT NULL UNIQUE, size INTEGER NOT NULL, mtime INTEGER NOT NULL, title TEXT NOT NULL,
+    artist TEXT, album TEXT, album_artist TEXT, track_no INTEGER, disc_no INTEGER, year INTEGER,
+    genre TEXT, duration_ms INTEGER NOT NULL DEFAULT 0, sample_rate INTEGER NOT NULL DEFAULT 0,
+    channels INTEGER NOT NULL DEFAULT 0, codec TEXT NOT NULL DEFAULT '', artwork_hash TEXT,
+    added_at INTEGER NOT NULL);
+CREATE INDEX tracks_folder ON tracks(folder_id);
+CREATE TABLE queue_items (list INTEGER NOT NULL, position INTEGER NOT NULL,
+    track_id INTEGER NOT NULL, PRIMARY KEY (list, position));
+CREATE TABLE queue_state (id INTEGER PRIMARY KEY CHECK (id = 1), current INTEGER,
+    position_ms INTEGER NOT NULL, shuffle_seed INTEGER NOT NULL, context_index INTEGER);
+CREATE TABLE favorites (path BLOB PRIMARY KEY, added_at INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+    created_at INTEGER NOT NULL);
+CREATE TABLE playlist_items (playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL, path BLOB NOT NULL, PRIMARY KEY (playlist_id, position));
+CREATE TABLE plays (id INTEGER PRIMARY KEY AUTOINCREMENT, path BLOB NOT NULL,
+    played_at INTEGER NOT NULL);
+CREATE INDEX plays_played_at ON plays(played_at);
+INSERT INTO folders (id, path, added_at) VALUES (1, x'2f6d', 5);
+INSERT INTO tracks (id, folder_id, path, size, mtime, title, codec, sample_rate, added_at)
+    VALUES (1, 1, x'2f6d2f61', 10, 111, 'A', 'flac', 44100, 5),
+           (2, 1, x'2f6d2f62', 20, 222, 'B', 'mp4', 44100, 5);
+INSERT INTO queue_items VALUES (0, 0, 1), (0, 1, 2);
+INSERT INTO queue_state VALUES (1, 1, 4000, 7, 0);
+INSERT INTO favorites VALUES (x'2f6d2f61', 9);
+INSERT INTO playlists VALUES (1, 'Mix', 9);
+INSERT INTO playlist_items VALUES (1, 0, x'2f6d2f62');
+INSERT INTO plays (path, played_at) VALUES (x'2f6d2f61', 9);
+PRAGMA user_version = 2;
+",
+    ));
+}
+
+#[test]
+fn a_0_2_1_database_upgrades_with_everything_kept() {
+    let env = Env::new();
+    build_0_2_1(&env.db());
+    let opened = env.open();
+    assert!(!opened.recovered);
+    let lib = opened.library;
+    assert_eq!(user_version(&env.db()), 3);
+    assert_eq!(SCHEMA_VERSION, 3);
+
+    assert_eq!(lib.folders().expect("folders").len(), 1);
+    let snap = lib.snapshot().expect("snapshot");
+    assert_eq!(snap.tracks.len(), 2);
+    assert!(snap.tracks.iter().all(|t| t.bits_per_sample == 0));
+    assert_eq!(snap.tracks[0].title, "A");
+    assert_eq!(&*snap.tracks[0].codec, "flac");
+    let q = lib.load_queue().expect("queue").expect("a saved queue");
+    assert_eq!(q.context, vec![TrackId(1), TrackId(2)]);
+    assert_eq!(q.position_ms, 4000);
+
+    let col = lib.collections().expect("collections");
+    assert!(col.is_favorite(TrackId(1)));
+    assert_eq!(col.playlists.len(), 1);
+    assert_eq!(col.recent, vec![TrackId(1)]);
+
+    // Every row is marked to be read again; favorites and the rest are keyed by path.
+    drop(lib);
+    let c = ok(Connection::open(env.db()));
+    let mtimes: Vec<i64> = ok(c.prepare("SELECT mtime FROM tracks ORDER BY id"))
+        .query_map([], |r| r.get(0))
+        .map(|rows| rows.map(ok).collect())
+        .unwrap_or_default();
+    assert_eq!(mtimes, vec![0, 0]);
+}

@@ -9,6 +9,10 @@
 //! are stored and a second rescan is noted. Folder changes and clearing the artwork wait for the
 //! scan to end, because the scanner holds a folder's rows across `on_batch` calls.
 //!
+//! The soundboard's sounds live here too. Their changes are served as collections are, and the
+//! files are checked for here, never on the UI or worker thread: when the sounds are sent, and
+//! when the engine could not play one. Firing a sound does not come here at all.
+//!
 //! [`LibraryRequest::Shutdown`] reaches a running scan through a flag the handle shares with the
 //! thread. The requests sent before it are still served; the changes among them are applied, but
 //! no scan starts and no snapshot is built, since nobody is left to read them.
@@ -17,7 +21,7 @@
 //! `Display`, which carries no path. Its source chain does, so it is never formatted.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     io, mem,
     path::{Path, PathBuf},
     sync::{
@@ -30,13 +34,18 @@ use std::{
 
 use aria_library::{
     Collections, Folder, FolderId, Library, LibraryError, LibrarySnapshot, Opened, PlaylistId,
-    QueueRecord, ScanProgress, ScanSummary, TrackId,
+    QueueRecord, ScanProgress, ScanSummary, Sound, SoundId, TrackId,
 };
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use crate::{
+    hotkey::Hotkey,
     notice::{Notice, NoticeLevel},
     runtime::{DoneGuard, join_bounded},
+    soundboard::{
+        self, SOUND_FAILED, SOUND_MISSING, SOUND_NAME_INVALID, SoundView, StoredSound,
+        stored_hotkey,
+    },
 };
 
 /// Name of the library thread.
@@ -147,6 +156,25 @@ pub enum LibraryRequest {
     ClearHistory,
     /// Record that a track was played now.
     RecordPlay(TrackId),
+    /// Add sounds named after their files. Those past the limit give a notice.
+    AddSounds(Vec<PathBuf>),
+    /// Rename a sound. A bad name gives a notice.
+    RenameSound { id: SoundId, name: String },
+    /// Set a sound's volume.
+    SetSoundVolume { id: SoundId, volume: f32 },
+    /// Set or clear a sound's hotkey. One that is not allowed, used by another sound, or equal to
+    /// `stop`, the hotkey of "Stop all", gives a notice and changes nothing.
+    SetSoundHotkey {
+        id: SoundId,
+        hotkey: Option<Hotkey>,
+        stop: Option<Hotkey>,
+    },
+    /// Remove a sound.
+    RemoveSound(SoundId),
+    /// Look at a sound's file again. With `failed`, the engine could not play it, and a notice
+    /// says why: the file is missing, or it could not be played. Either way the sounds go out
+    /// again if the file's being there changed.
+    CheckSound { id: SoundId, failed: bool },
     /// Cancel any scan and stop the thread.
     Shutdown,
 }
@@ -166,6 +194,10 @@ pub enum LibraryEvent {
     Notice(Notice),
     /// The answer to [`LibraryRequest::LoadQueue`]; `None` when no queue could be read.
     QueueLoaded(Option<QueueRecord>),
+    /// The sounds as they now are, in their order, with `missing` checked and none playing, and
+    /// the file of each. Sent once the library is open and after every change to them, but not
+    /// while it is disabled.
+    Sounds(Vec<StoredSound>),
 }
 
 /// Receives the thread's [`LibraryEvent`]s. It runs on the library thread and must not block.
@@ -287,7 +319,12 @@ fn serve_disabled(requests: &Receiver<LibraryRequest>, on_event: &OnEvent) {
             | LibraryRequest::AddToPlaylist { .. }
             | LibraryRequest::RemoveFromPlaylist { .. }
             | LibraryRequest::MoveInPlaylist { .. }
-            | LibraryRequest::ClearHistory => on_event(LibraryEvent::Notice(UNAVAILABLE)),
+            | LibraryRequest::ClearHistory
+            | LibraryRequest::AddSounds(_)
+            | LibraryRequest::RenameSound { .. }
+            | LibraryRequest::SetSoundVolume { .. }
+            | LibraryRequest::SetSoundHotkey { .. }
+            | LibraryRequest::RemoveSound(_) => on_event(LibraryEvent::Notice(UNAVAILABLE)),
             _ => {}
         }
     }
@@ -352,6 +389,8 @@ struct Service {
     /// Shutdown was requested, or the handle is gone.
     stopping: bool,
     progress: Throttle,
+    /// The sounds last sent as missing, so that firing one finds out whether that changed.
+    missing_sounds: HashSet<SoundId>,
 }
 
 impl Service {
@@ -366,11 +405,13 @@ impl Service {
             rescan_after_removal: false,
             stopping: false,
             progress: Throttle::default(),
+            missing_sounds: HashSet::new(),
         }
     }
 
     fn serve(mut self, library: &mut Library) {
         self.send_snapshot(library);
+        self.send_sounds(library);
         loop {
             while let Some(change) = self.deferred.pop_front() {
                 self.apply(library, change);
@@ -472,6 +513,26 @@ impl Service {
                 // A play that cannot be recorded is not worth a notice; playback goes on.
                 Err(error) => tracing::warn!(%error, "a play could not be recorded"),
             },
+            LibraryRequest::AddSounds(paths) => {
+                let result = library.add_sounds(&paths);
+                self.finish_adding_sounds(library, paths.len(), result);
+            }
+            LibraryRequest::RenameSound { id, name } => {
+                let result = library.rename_sound(id, &name);
+                self.finish_sound_change(library, result);
+            }
+            LibraryRequest::SetSoundVolume { id, volume } => {
+                let result = library.set_sound_volume(id, volume);
+                self.finish_sound_change(library, result);
+            }
+            LibraryRequest::SetSoundHotkey { id, hotkey, stop } => {
+                self.set_sound_hotkey(library, id, hotkey, stop);
+            }
+            LibraryRequest::RemoveSound(id) => {
+                let result = library.remove_sound(id);
+                self.finish_sound_change(library, result);
+            }
+            LibraryRequest::CheckSound { id, failed } => self.check_sound(library, id, failed),
             LibraryRequest::Rescan => self.want_scan = true,
             LibraryRequest::Shutdown => self.stop(),
             LibraryRequest::AddFolder(path) => return Some(Change::AddFolder(path)),
@@ -492,6 +553,135 @@ impl Service {
             }
             Err(error) => self.report_failure(&error),
         }
+    }
+
+    /// Reports what a change to a sound did: the new sounds if something changed, a notice if the
+    /// name was refused, nothing if the id is unknown. A failed change was rolled back, so the UI
+    /// keeps what it shows.
+    fn finish_sound_change(&mut self, library: &Library, result: Result<bool, LibraryError>) {
+        match result {
+            Ok(true) => self.send_sounds(library),
+            Ok(false) => tracing::debug!("a soundboard command named a sound that does not exist"),
+            Err(LibraryError::InvalidSoundName) => {
+                self.emit(LibraryEvent::Notice(SOUND_NAME_INVALID));
+            }
+            Err(error) => self.report_failure(&error),
+        }
+    }
+
+    /// Reports what adding `given` sounds did: the new sounds if any were added, and a notice if
+    /// the limit left some out. A failed add was rolled back, so the UI keeps what it shows.
+    fn finish_adding_sounds(
+        &mut self,
+        library: &Library,
+        given: usize,
+        result: Result<usize, LibraryError>,
+    ) {
+        match result {
+            Ok(added) => {
+                if added < given {
+                    self.emit(LibraryEvent::Notice(soundboard::sound_limit()));
+                }
+                if added > 0 {
+                    self.send_sounds(library);
+                }
+            }
+            Err(error) => self.report_failure(&error),
+        }
+    }
+
+    /// The sound `id` names, or `None` if there is none, which is logged. A failure to read the
+    /// sounds is reported with a notice, and also gives `None`.
+    fn find_sound(&self, library: &Library, id: SoundId) -> Option<(Sound, Vec<Sound>)> {
+        let sounds = match library.sounds() {
+            Ok(sounds) => sounds,
+            Err(error) => {
+                self.report_failure(&error);
+                return None;
+            }
+        };
+        let Some(sound) = sounds.iter().find(|sound| sound.id == id).cloned() else {
+            tracing::debug!("a soundboard command named a sound that does not exist");
+            return None;
+        };
+        Some((sound, sounds))
+    }
+
+    /// Gives a sound a hotkey, unless it is not allowed or already used inside Aria: by another
+    /// sound, or by "Stop all" (`stop`).
+    fn set_sound_hotkey(
+        &mut self,
+        library: &mut Library,
+        id: SoundId,
+        hotkey: Option<Hotkey>,
+        stop: Option<Hotkey>,
+    ) {
+        let Some((_, sounds)) = self.find_sound(library, id) else {
+            return;
+        };
+        if let Some(hotkey) = &hotkey {
+            let others = sounds
+                .iter()
+                .filter(|sound| sound.id != id)
+                .filter_map(|sound| stored_hotkey(sound.hotkey.as_deref()));
+            let refusal = soundboard::hotkey_refusal(hotkey, others.chain(stop));
+            if let Some(notice) = refusal {
+                self.emit(LibraryEvent::Notice(notice));
+                return;
+            }
+        }
+        let text = hotkey.map(|hotkey| hotkey.to_string());
+        let result = library.set_sound_hotkey(id, text.as_deref());
+        self.finish_sound_change(library, result);
+    }
+
+    /// Looks at a sound's file after the engine played it or failed to. For a failure (`failed`),
+    /// a notice says why. If the file's being there is news, the sounds go out again, so the tile
+    /// shows it.
+    fn check_sound(&mut self, library: &Library, id: SoundId, failed: bool) {
+        let Some((sound, _)) = self.find_sound(library, id) else {
+            return;
+        };
+        let missing = !sound.path.is_file();
+        if failed {
+            let notice = if missing { SOUND_MISSING } else { SOUND_FAILED };
+            self.emit(LibraryEvent::Notice(notice));
+        }
+        if missing != self.missing_sounds.contains(&id) {
+            self.send_sounds(library);
+        }
+    }
+
+    /// Reads the sounds, checks which files are missing and sends them, unless the thread is
+    /// stopping. A failure to read them is reported with a notice.
+    fn send_sounds(&mut self, library: &Library) {
+        if self.stopping {
+            return;
+        }
+        let sounds = match library.sounds() {
+            Ok(sounds) => sounds,
+            Err(error) => return self.report_failure(&error),
+        };
+        let stored: Vec<StoredSound> = sounds
+            .into_iter()
+            .map(|sound| StoredSound {
+                view: SoundView {
+                    id: sound.id,
+                    missing: !sound.path.is_file(),
+                    hotkey: stored_hotkey(sound.hotkey.as_deref()),
+                    name: sound.name,
+                    volume: sound.volume,
+                    playing: false,
+                },
+                path: sound.path,
+            })
+            .collect();
+        self.missing_sounds = stored
+            .iter()
+            .filter(|sound| sound.view.missing)
+            .map(|sound| sound.view.id)
+            .collect();
+        self.emit(LibraryEvent::Sounds(stored));
     }
 
     fn apply(&mut self, library: &mut Library, change: Change) {
@@ -1586,6 +1776,444 @@ mod tests {
             "{:?}",
             log.seen
         );
+    }
+
+    // Soundboard.
+
+    fn is_sounds(event: &LibraryEvent) -> bool {
+        matches!(event, LibraryEvent::Sounds(_))
+    }
+
+    fn stored_of(event: LibraryEvent) -> Vec<StoredSound> {
+        match event {
+            LibraryEvent::Sounds(sounds) => sounds,
+            other => panic!("not sounds: {other:?}"),
+        }
+    }
+
+    fn sounds_of(event: LibraryEvent) -> Vec<SoundView> {
+        stored_of(event)
+            .into_iter()
+            .map(|sound| sound.view)
+            .collect()
+    }
+
+    fn count_sounds(log: &Log) -> usize {
+        log.seen.iter().filter(|e| is_sounds(e)).count()
+    }
+
+    fn hotkey(text: &str) -> Hotkey {
+        text.parse().unwrap()
+    }
+
+    /// A copy of a short track at `name` in the test's folder.
+    fn sound_file(env: &Env, name: &str) -> PathBuf {
+        let path = env.dir.path().join(name);
+        fs::copy(fixture("tone.ogg"), &path).unwrap();
+        path
+    }
+
+    /// A service past its startup, with no sounds yet.
+    fn started_for_sounds(env: &Env) -> (LibraryHandle, Log) {
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        let first = sounds_of(log.wait_for(is_sounds));
+        assert!(first.is_empty());
+        (handle, log)
+    }
+
+    /// Adds `paths` and returns the sounds that come back.
+    fn add(handle: &LibraryHandle, log: &mut Log, paths: Vec<PathBuf>) -> Vec<SoundView> {
+        handle.send(LibraryRequest::AddSounds(paths));
+        sounds_of(log.wait_for(is_sounds))
+    }
+
+    /// Waits until every request sent so far has been served, then stops the service.
+    fn finish_sounds(handle: LibraryHandle, log: &mut Log) {
+        handle.send(LibraryRequest::LoadQueue);
+        log.wait_for(is_queue);
+        assert!(handle.shutdown(WAIT));
+        log.finish();
+    }
+
+    #[test]
+    fn the_sounds_go_out_once_the_library_opens() {
+        let env = Env::new();
+        let path = sound_file(&env, "horn.ogg");
+        env.open().add_sounds(&[path]).unwrap();
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        let sounds = sounds_of(log.wait_for(is_sounds));
+        assert_eq!(sounds.len(), 1);
+        assert_eq!(sounds[0].name, "horn");
+        assert!(!sounds[0].missing && !sounds[0].playing);
+        finish_sounds(handle, &mut log);
+        assert_eq!(count_sounds(&log), 1, "a scan does not send them again");
+    }
+
+    #[test]
+    fn each_sound_command_sends_the_sounds() {
+        let env = Env::new();
+        let (handle, mut log) = started_for_sounds(&env);
+        let sounds = add(
+            &handle,
+            &mut log,
+            vec![sound_file(&env, "a.ogg"), sound_file(&env, "b.ogg")],
+        );
+        let names: Vec<&str> = sounds.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+        assert!(sounds.iter().all(|s| s.volume == 1.0 && s.hotkey.is_none()));
+        let (a, b) = (sounds[0].id, sounds[1].id);
+
+        handle.send(LibraryRequest::RenameSound {
+            id: a,
+            name: "  Horn ".into(),
+        });
+        assert_eq!(sounds_of(log.wait_for(is_sounds))[0].name, "Horn");
+
+        handle.send(LibraryRequest::SetSoundVolume { id: b, volume: 0.3 });
+        assert_eq!(sounds_of(log.wait_for(is_sounds))[1].volume, 0.3);
+
+        handle.send(LibraryRequest::SetSoundHotkey {
+            id: a,
+            hotkey: Some(hotkey("Ctrl+F1")),
+            stop: None,
+        });
+        let sounds = sounds_of(log.wait_for(is_sounds));
+        assert_eq!(sounds[0].hotkey, Some(hotkey("Ctrl+F1")));
+        let stored = env.open().sounds().unwrap();
+        assert_eq!(
+            stored[0].hotkey.as_deref(),
+            Some("Ctrl+F1"),
+            "stored as text"
+        );
+
+        handle.send(LibraryRequest::SetSoundHotkey {
+            id: a,
+            hotkey: None,
+            stop: None,
+        });
+        assert_eq!(sounds_of(log.wait_for(is_sounds))[0].hotkey, None);
+
+        handle.send(LibraryRequest::RemoveSound(a));
+        let sounds = sounds_of(log.wait_for(is_sounds));
+        assert_eq!(sounds.len(), 1);
+        assert_eq!(sounds[0].id, b);
+        finish_sounds(handle, &mut log);
+        assert!(log.notices("library-action-failed").is_empty());
+    }
+
+    #[test]
+    fn an_invalid_name_changes_nothing_and_gives_a_notice() {
+        let env = Env::new();
+        let (handle, mut log) = started_for_sounds(&env);
+        let id = add(&handle, &mut log, vec![sound_file(&env, "a.ogg")])[0].id;
+        let before = count_sounds(&log);
+
+        for name in ["   ".to_owned(), "x".repeat(51)] {
+            handle.send(LibraryRequest::RenameSound { id, name });
+        }
+        finish_sounds(handle, &mut log);
+        assert_eq!(count_sounds(&log), before);
+        let notices = log.notices("sound-name-invalid");
+        assert_eq!(notices.len(), 2);
+        assert_eq!(notices[0].level, NoticeLevel::Warning);
+        assert_eq!(env.open().sounds().unwrap()[0].name, "a");
+    }
+
+    #[test]
+    fn adding_past_the_limit_gives_a_notice() {
+        let env = Env::new();
+        let path = sound_file(&env, "a.ogg");
+        let (handle, mut log) = started_for_sounds(&env);
+        let sounds = add(&handle, &mut log, vec![path.clone(); 99]);
+        assert_eq!(sounds.len(), 99);
+        assert!(log.notices("sound-limit").is_empty());
+
+        let sounds = add(&handle, &mut log, vec![path.clone(); 3]);
+        assert_eq!(sounds.len(), 100);
+        let notices = log.notices("sound-limit");
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].args, [("max", "100".to_owned())]);
+
+        let before = count_sounds(&log);
+        handle.send(LibraryRequest::AddSounds(vec![path]));
+        finish_sounds(handle, &mut log);
+        assert_eq!(count_sounds(&log), before, "nothing was added");
+        assert_eq!(log.notices("sound-limit").len(), 2);
+    }
+
+    #[test]
+    fn a_hotkey_used_by_another_sound_is_refused() {
+        let env = Env::new();
+        let (handle, mut log) = started_for_sounds(&env);
+        let paths = vec![sound_file(&env, "a.ogg"), sound_file(&env, "b.ogg")];
+        let sounds = add(&handle, &mut log, paths);
+        let (a, b) = (sounds[0].id, sounds[1].id);
+        let set = |id, text: &str| LibraryRequest::SetSoundHotkey {
+            id,
+            hotkey: Some(hotkey(text)),
+            stop: None,
+        };
+        handle.send(set(a, "Ctrl+F1"));
+        log.wait_for(is_sounds);
+        let before = count_sounds(&log);
+
+        handle.send(set(b, "Ctrl+F1"));
+        log.wait_for(|e| notice_is(e, "hotkey-taken"));
+        // A sound may be given the hotkey it already has.
+        handle.send(set(a, "Ctrl+F1"));
+        log.wait_for(is_sounds);
+        finish_sounds(handle, &mut log);
+        assert_eq!(count_sounds(&log), before + 1);
+        assert_eq!(log.notices("hotkey-taken").len(), 1);
+        assert_eq!(env.open().sounds().unwrap()[1].hotkey, None);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_hotkey_aria_uses_itself_is_refused() {
+        let env = Env::new();
+        let (handle, mut log) = started_for_sounds(&env);
+        let id = add(&handle, &mut log, vec![sound_file(&env, "a.ogg")])[0].id;
+        let before = count_sounds(&log);
+        for text in ["Ctrl+1", "Ctrl+0", "Ctrl+Alt+R"] {
+            handle.send(LibraryRequest::SetSoundHotkey {
+                id,
+                hotkey: Some(hotkey(text)),
+                stop: None,
+            });
+        }
+        finish_sounds(handle, &mut log);
+        assert_eq!(count_sounds(&log), before);
+        assert_eq!(log.notices("hotkey-taken").len(), 3);
+        assert_eq!(env.open().sounds().unwrap()[0].hotkey, None);
+    }
+
+    #[test]
+    fn a_hotkey_equal_to_stop_all_is_refused() {
+        let env = Env::new();
+        let (handle, mut log) = started_for_sounds(&env);
+        let id = add(&handle, &mut log, vec![sound_file(&env, "a.ogg")])[0].id;
+        let before = count_sounds(&log);
+        handle.send(LibraryRequest::SetSoundHotkey {
+            id,
+            hotkey: Some(hotkey("Ctrl+Alt+S")),
+            stop: Some(hotkey("Ctrl+Alt+S")),
+        });
+        log.wait_for(|e| notice_is(e, "hotkey-taken"));
+        finish_sounds(handle, &mut log);
+        assert_eq!(count_sounds(&log), before);
+        assert_eq!(env.open().sounds().unwrap()[0].hotkey, None);
+    }
+
+    #[test]
+    fn a_hotkey_that_is_not_allowed_is_refused() {
+        let env = Env::new();
+        let (handle, mut log) = started_for_sounds(&env);
+        let id = add(&handle, &mut log, vec![sound_file(&env, "a.ogg")])[0].id;
+        let before = count_sounds(&log);
+        for text in ["A", "Shift+A", "5"] {
+            handle.send(LibraryRequest::SetSoundHotkey {
+                id,
+                hotkey: Some(hotkey(text)),
+                stop: None,
+            });
+        }
+        finish_sounds(handle, &mut log);
+        assert_eq!(count_sounds(&log), before);
+        assert_eq!(log.notices("hotkey-not-allowed").len(), 3);
+        assert_eq!(env.open().sounds().unwrap()[0].hotkey, None);
+    }
+
+    #[test]
+    fn a_stored_hotkey_that_cannot_be_read_is_shown_as_none() {
+        let env = Env::new();
+        {
+            let mut library = env.open();
+            library
+                .add_sounds(&[
+                    sound_file(&env, "a.ogg"),
+                    sound_file(&env, "b.ogg"),
+                    sound_file(&env, "c.ogg"),
+                ])
+                .unwrap();
+            let ids: Vec<SoundId> = library.sounds().unwrap().iter().map(|s| s.id).collect();
+            library.set_sound_hotkey(ids[0], Some("Hyper+Q")).unwrap();
+            library.set_sound_hotkey(ids[1], Some("")).unwrap();
+            // Read, but a plain typing key, so never registered.
+            library.set_sound_hotkey(ids[2], Some("Shift+A")).unwrap();
+        }
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        let sounds = sounds_of(log.wait_for(is_sounds));
+        assert!(sounds.iter().all(|s| s.hotkey.is_none()), "{sounds:?}");
+        finish_sounds(handle, &mut log);
+        assert!(log.notices("library-action-failed").is_empty());
+    }
+
+    #[test]
+    fn the_sounds_carry_their_files_and_volumes() {
+        let env = Env::new();
+        let path = sound_file(&env, "a.ogg");
+        let (handle, mut log) = started_for_sounds(&env);
+        let id = add(&handle, &mut log, vec![path.clone()])[0].id;
+        handle.send(LibraryRequest::SetSoundVolume { id, volume: 0.4 });
+        let stored = stored_of(log.wait_for(is_sounds));
+        assert_eq!(stored[0].path, path);
+        assert_eq!(stored[0].view.volume, 0.4);
+        finish_sounds(handle, &mut log);
+    }
+
+    #[test]
+    fn a_failed_sound_is_told_apart_as_missing_or_unplayable() {
+        let env = Env::new();
+        let gone = env.dir.path().join("gone.ogg");
+        let broken = env.dir.path().join("broken.ogg");
+        fs::write(&broken, b"not audio").unwrap();
+        let (handle, mut log) = started_for_sounds(&env);
+        let sounds = add(&handle, &mut log, vec![gone.clone(), broken.clone()]);
+        assert!(sounds[0].missing && !sounds[1].missing);
+        let (gone_id, broken_id) = (sounds[0].id, sounds[1].id);
+        let failed = |id| LibraryRequest::CheckSound { id, failed: true };
+        let before = count_sounds(&log);
+
+        handle.send(failed(gone_id));
+        log.wait_for(|e| notice_is(e, "sound-missing"));
+        handle.send(failed(broken_id));
+        log.wait_for(|e| notice_is(e, "sound-failed"));
+        handle.send(LibraryRequest::LoadQueue);
+        log.wait_for(is_queue);
+        assert_eq!(count_sounds(&log), before, "nothing changed that shows");
+
+        // A file that went after the sounds were sent is found out, and shows.
+        fs::remove_file(&broken).unwrap();
+        handle.send(failed(broken_id));
+        assert!(sounds_of(log.wait_for(is_sounds))[1].missing);
+        assert_eq!(log.notices("sound-missing").len(), 2);
+
+        // One that came back and played is checked without a notice, and shows again.
+        fs::copy(fixture("tone.ogg"), &gone).unwrap();
+        handle.send(LibraryRequest::CheckSound {
+            id: gone_id,
+            failed: false,
+        });
+        assert!(!sounds_of(log.wait_for(is_sounds))[0].missing);
+        finish_sounds(handle, &mut log);
+        assert_eq!(log.notices("sound-missing").len(), 2);
+        assert_eq!(log.notices("sound-failed").len(), 1);
+    }
+
+    #[test]
+    fn a_database_error_during_a_sound_command_gives_a_notice_and_no_list() {
+        let env = Env::new();
+        let library = env.open();
+        let (_requests, receiver) = crossbeam_channel::unbounded();
+        let (on_event, mut log) = recording();
+        let mut service = Service::new(receiver, Arc::default(), on_event);
+        let failed = || LibraryError::Io(std::io::Error::other("test write fails"));
+
+        service.finish_sound_change(&library, Err(failed()));
+        service.finish_adding_sounds(&library, 2, Err(failed()));
+        log.finish();
+        assert_eq!(
+            log.notices("library-action-failed").len(),
+            2,
+            "{:?}",
+            log.seen
+        );
+        assert_eq!(count_sounds(&log), 0, "the UI keeps what it shows");
+        assert!(log.notices("sound-limit").is_empty());
+    }
+
+    #[test]
+    fn an_unknown_id_changes_nothing() {
+        let env = Env::new();
+        let (handle, mut log) = started_for_sounds(&env);
+        add(&handle, &mut log, vec![sound_file(&env, "a.ogg")]);
+        let before = log.seen.len();
+        let unknown = SoundId(99);
+        for request in [
+            LibraryRequest::RenameSound {
+                id: unknown,
+                name: "Horn".into(),
+            },
+            LibraryRequest::SetSoundVolume {
+                id: unknown,
+                volume: 0.5,
+            },
+            LibraryRequest::SetSoundHotkey {
+                id: unknown,
+                hotkey: Some(hotkey("Ctrl+F1")),
+                stop: None,
+            },
+            LibraryRequest::RemoveSound(unknown),
+            LibraryRequest::CheckSound {
+                id: unknown,
+                failed: true,
+            },
+        ] {
+            handle.send(request);
+        }
+        finish_sounds(handle, &mut log);
+        let after: Vec<_> = log.seen[before..].iter().filter(|e| !is_queue(e)).collect();
+        assert!(after.is_empty(), "{after:?}");
+        assert_eq!(env.open().sounds().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sound_commands_with_the_library_disabled_give_the_unavailable_notice() {
+        let env = Env::new();
+        let paths = env.paths();
+        fs::create_dir(&paths.db).unwrap();
+        let (on_event, mut log) = recording();
+        let handle = LibraryService::start(paths, on_event).unwrap();
+        log.wait_for(|e| snapshot_with(e, 0));
+
+        let id = SoundId(1);
+        for request in [
+            LibraryRequest::AddSounds(vec![PathBuf::from("a.ogg")]),
+            LibraryRequest::RenameSound {
+                id,
+                name: "Horn".into(),
+            },
+            LibraryRequest::SetSoundVolume { id, volume: 0.5 },
+            LibraryRequest::SetSoundHotkey {
+                id,
+                hotkey: None,
+                stop: None,
+            },
+            LibraryRequest::RemoveSound(id),
+            // Nobody clicked this one, so it is not answered.
+            LibraryRequest::CheckSound { id, failed: true },
+        ] {
+            handle.send(request);
+        }
+        finish_sounds(handle, &mut log);
+        assert_eq!(
+            log.notices("library-unavailable").len(),
+            6,
+            "the open, then 5"
+        );
+        assert_eq!(count_sounds(&log), 0);
+    }
+
+    #[test]
+    fn sound_commands_are_served_during_a_scan() {
+        let env = Env::new();
+        let music = env.folder("music", TREE);
+        env.seed(&music);
+        let path = sound_file(&env, "a.ogg");
+        let (on_event, mut log, release) = pausing(&[is_progress]);
+        let handle = LibraryService::start(env.paths(), on_event).unwrap();
+        log.wait_for(is_progress);
+
+        handle.send(LibraryRequest::AddSounds(vec![path]));
+        release.send(()).unwrap();
+        let sounds = log.wait_for(|e| matches!(e, LibraryEvent::Sounds(s) if s.len() == 1));
+        assert_eq!(sounds_of(sounds).len(), 1);
+        assert_eq!(log.scan_ends(), 0, "it was served during the scan");
+        assert!(handle.shutdown(WAIT));
     }
 
     #[test]

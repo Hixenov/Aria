@@ -7,5 +7,12 @@ Generated with ffmpeg 9.0.2 (gyan.dev full build). The script passes `-bitexact`
 byte-identical except `tone.ogg` and `tone.opus`, whose Ogg stream serial numbers are random;
 those files decode to the same audio either way.
 
-The total size stays under 500 KB. For WAV input without ffmpeg, the `test-support` feature of
+The total size is about 1 MB. For WAV input without ffmpeg, the `test-support` feature of
 `aria-audio` provides `aria_audio::testing`.
+
+`depth-16.flac`, `depth-16.wav`, `depth-24.flac` and `depth-24.wav` hold the same 0.1 s of a 440 Hz
+tone, once at 16 bits and once at 24 bits (the 24-bit samples are the 16-bit ones shifted up by 8).
+
+`float.wav`, `float.aiff` (32-bit float, mono), `alaw.wav`, `mulaw.aiff` and `adpcm.wav` (IMA ADPCM)
+hold 0.1 s of the same tone, for the codec the library stores for WAV and AIFF data that is not
+integer PCM. Each is under 18 KB.

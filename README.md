@@ -9,7 +9,53 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: Phase 2b (favorites, playlists, history), version 0.2.1 (pre-release)
+## Status: Phase 2c (lossless output and the soundboard), version 0.2.2 (release; parts not yet checked by hand, listed below)
+
+Version 0.2.2 adds an optional exclusive output on Windows, a Lossless / Hi-Res badge and filter in the library, and a soundboard with global hotkeys, on top of 0.2.1 (below). **Nobody has run 0.2.2 by hand and nobody has listened to it.** The agent that wrote it tested it with automated tests, and checked on one PC that WASAPI exclusive mode opens the default device and plays silence; no person has heard exclusive output, a sound, or a hotkey with the real app. Every line for a person in [docs/testing/phase2c-manual-check.md](docs/testing/phase2c-manual-check.md) is still pending. The Windows installer and `aria.exe` for 0.2.2 are built and tested separately before any release; this README does not claim they have been.
+
+### Exclusive mode and what "bit-perfect" means here
+
+Settings, Playback has an "Exclusive mode" switch (Windows only, off by default). When it is on, Aria sends the track's samples to the output device through WASAPI exclusive mode, at the track's own sample rate, instead of through the system mixer.
+
+- While it plays, other programs are silent on that device. Aria releases the device 15 seconds after you pause.
+- While Aria holds the device exclusively, its volume slider is locked at 100 % (mute still works); set the level on the device or amplifier. If exclusive mode is refused and the music goes through the system mixer, the slider is free and sets the level as usual; it locks again when an exclusive output opens. The saved volume comes back when you turn the mode off. A saved volume of 0 (not muted) plays at full level too, as the locked slider shows; the 0 is kept and used again when the lock lifts.
+- If the device refuses exclusive mode, playback goes on through the system mixer and a notice says so. If another program holds the device exclusively, Windows refuses Aria's shared stream as well, and Aria cannot play on that device until it is released.
+- After a refused exclusive open Aria stays on the system mixer for that output: exclusive mode is tried again only when the output is opened again (after a pause of more than 15 seconds, at a device change, at a join that needs another format, or when you turn the mode off and on), not as soon as the device is free.
+- If the device has no format at the track's rate, Aria opens the nearest rate it supports and resamples, and the indicator says "Resampled".
+- The player bar shows the track's format (for example "FLAC 24/96") and one state: "Bit-perfect", "Resampled", "Converted", "Mixed with a sound" or "System mixer". A tooltip explains each.
+
+"Bit-perfect" is shown only when all of these hold: exclusive output, an integer source of 24 bits or fewer, the music at full gain, no resampling, nothing else mixed in, and the channels unchanged (mono played on both channels counts as unchanged). Automated tests check that the mixer's path is exact in that case for 16- and 24-bit integer sources, against the decoder's own conversion. What it does **not** mean:
+
+- The 5 ms fades when playback starts, pauses, resumes or seeks are not bit-exact. Gapless joins between tracks have no fade.
+- ALAC is never shown as bit-perfect (its decoder reports no bit depth, so it shows "Converted"). Float sources and integer sources wider than 24 bits are never bit-perfect either.
+- It is a claim about what Aria hands to the output. Whether the device receives the samples unchanged cannot be recorded through WASAPI loopback; it is a check by hand, best with a DAC that shows its input rate, and nobody has done it.
+- Where the next track needs a different sample rate, a wider bit depth than the open output carries, or more channels, the output is closed and opened again, with a short silence at that join. Tracks in the same format stay gapless.
+- The output thread runs at normal priority, so under heavy load there may be dropouts. Not checked.
+- The log level "Trace" (Settings, Log level) is for diagnostics only. When Aria starts with it, or with `ARIA_LOG=trace`, the WASAPI output thread makes a log call, which takes a lock, on every device period, even though the line is filtered out (found by reading the code; its cost was not measured). Use a lower level for listening.
+
+Library: every track now stores its bit depth. The track tables (Local Music and Liked) have a Quality column with a "Lossless" badge (FLAC, ALAC, and WAV or AIFF whose data is integer or float PCM) or a "Hi-Res" badge (lossless, and above 48 kHz or above 16 bits), and the Tracks tab has a "Lossless only" toggle. CAF files are skipped by the library scan (as in 0.2.1), so no CAF track appears in the library. WAV and AIFF files coded as A-law, µ-law or another compression get no badge (the codec shows as "ALAW", "ULAW", "WAV-COMPRESSED" or "AIFF-COMPRESSED"); ADPCM WAV files are skipped by the scan, because lofty cannot read data of 4 bits per sample.
+
+### Soundboard and voice chat
+
+The Soundboard page holds up to 100 sounds. A sound is a reference to an audio file (any format Aria plays); Aria never copies, changes or deletes the file. Names are 1 to 50 characters. Each sound has a volume and an optional global hotkey, and there is one hotkey for "Stop all". A click or the hotkey plays the sound from its start; firing a playing sound restarts it; at most 6 sounds play at once, and a seventh stops the one that started first. Sounds are not tracks: they do not enter the queue or the history. A missing file gives a notice when fired.
+
+Settings, Soundboard chooses where sounds go: "My device" (the music's device, the default), "Second device" or "Both", and the second device itself. The second device is opened in shared mode when a sound needs it and closed 15 seconds after the last sound; with no second device chosen, "Second device" and "Both" play on your own device.
+
+- Sounds on your own device are mixed into the music stream, so they break bit-perfect output while they play (the indicator shows "Mixed with a sound"), and they are cut when the music output is closed or reopened (a rate, depth or channel change at a join, a device change, switching exclusive mode, a device failure). A sound removed while it plays keeps playing until it ends.
+- A sound fired while exclusive mode is on and no music plays opens your device exclusively, at the sound's own format: other programs (a video, a call) are silent on that device until 15 seconds after the last sound.
+- The player's volume and mute do not apply to sounds; each sound has its own volume, and "Stop all" stops them.
+- Opening and closing the second device run on the engine thread, which holds about one second of music. A device that is slow to open (Bluetooth, a sleeping USB interface; the wait is up to 7 s) or to close (up to 2 s) can briefly interrupt the music when a sound fires, or 15 seconds after the last one. A second device that fails to open is tried again, with a notice, on every sound.
+- **Voice chat.** To be heard in a voice chat, the second device must be a virtual audio cable that the chat program uses as its microphone. Aria does not provide or install one, and never reads the microphone. With only a cable, the chat hears the sounds and not your voice; mixing the two needs another program. No cable and no chat program were tested.
+- **Hotkeys** work while Aria runs, including minimized (a press may take about 100 ms to act then), with a switch in Settings that turns them all off. A hotkey must include Ctrl, Alt or Win unless it is F1 to F24 or a numpad key. One used by another sound or by Aria itself (Ctrl+0 to Ctrl+9 and Ctrl+Alt+R; Command on a Mac), or held by another program, is refused and not saved. Aria receives only the registered combinations from the system; it installs no keyboard hook and reads no other keystrokes. In the capture dialog the Win key, numpad `*` and `.`, and Ctrl+C, Ctrl+X and Ctrl+V cannot be captured, and numpad keys are chosen with a "Numpad" switch. Letters follow the keyboard layout. A global hotkey takes its combination from every other program while Aria runs, not only from Aria: for example, Ctrl+S as a sound's hotkey stops saving in editors. Turn the "Global hotkeys" switch off to give them back. On one PC a synthetic key press reached a test window while it was unfocused and minimized; the real app has not been run with hotkeys, and games in the foreground are not tested.
+- Exclusive output and hotkeys are built for Linux and macOS where the crates support them, but verified on Windows only. Exclusive output does not exist there.
+
+### Upgrading from 0.2.1
+
+The library database is upgraded in place (version 2 to 3), and every file is read once more on the first start, so a big library may take a while. Favorites, playlists and history are kept. The automated migration test passes; nobody has tried it on a real 0.2.1 library. After the upgrade 0.2.1 no longer opens it: it says the library was saved by a newer version and runs with the library turned off, leaving the file untouched. Copy the data folder first if you may want to go back to 0.2.1.
+
+English, Russian and Armenian; the new Russian and Armenian texts were written by the coding agent and not read by a native speaker.
+
+### Phase 2b (favorites, playlists, history), version 0.2.1 (pre-release)
 
 Version 0.2.1 adds favorites, playlists, playback history and a Home page on top of the 0.2.0 local player (below). **Nobody has run 0.2.1 by hand**: the hearts, the Liked and Playlists pages (including drag to reorder, which an automated pointer-event test covers but no person has tried), Home and the history settings have not been looked at in a running window. Every line for a person in [docs/testing/phase2b-manual-check.md](docs/testing/phase2b-manual-check.md) is still pending. The Windows installer and `aria.exe` for 0.2.1 are built and tested separately before any release; this README does not claim they have been.
 
@@ -33,7 +79,7 @@ Phase 2a turns it into an offline music player for local files:
 
 Formats with automated test coverage: MP3, FLAC, WAV, AIFF, CAF, AAC and ALAC in `.m4a`, Ogg Vorbis, and Opus (through the bundled libopus). The scanner also picks up `.aac`, `.mp4`, `.oga`, `.mka` and `.aif` files, but those were not tested with real audio, so they may not play. Playing each format by ear is on the manual check list and has not been done yet.
 
-Not yet: the soundboard (2c), Spotify (Phase 3), tray and media keys (Phase 4), lyrics and equalizer (Phase 5). See the [roadmap](docs/ROADMAP.md).
+Not yet: Spotify (Phase 3), tray and media keys (Phase 4), lyrics and equalizer (Phase 5). See the [roadmap](docs/ROADMAP.md).
 
 What has been checked by hand is recorded in [docs/testing/phase2a-manual-check.md](docs/testing/phase2a-manual-check.md). Anything marked pending there has not been verified by a person yet, and that includes listening to audio.
 
@@ -73,10 +119,10 @@ git config --global --add safe.directory /path/to/aria
 
 ```
 cargo build --release --locked -p aria-app
-ISCC.exe /DAppVersion=0.2.1 packaging\windows\aria.iss
+ISCC.exe /DAppVersion=0.2.2 packaging\windows\aria.iss
 ```
 
-It writes `target\installer\Aria-0.2.1-setup.exe`. That command is how the installer is built; the 0.2.1 installer has not been built or tested yet. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
+It writes `target\installer\Aria-0.2.2-setup.exe`. That command is how the installer is built; the 0.2.2 installer is built and tested separately before any release, and this README does not claim it has been. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 
 ## Configuration and data
 
@@ -113,7 +159,13 @@ Library used: 4,000 generated files (about 485 MB), 40 artists, 200 albums, 3-se
 
 The release build of the Collections test in `aria-library` (`cargo test --release -p aria-library --test collections -- --ignored --nocapture`) builds the favorites, playlists and recent plays that the app sends to the window for a synthetic library of 50,000 tracks with 5,000 favorites, 50 playlists of 200 entries each and 10,000 plays. It took **14.0 ms** in one run, against the target of under 50 ms. The machine is the one described above for Phase 2a (Intel Core i3-1315U, Windows 11 Pro for Workstations 10.0.26300). This is one run on one machine, the time is that of the `collections()` call alone; the database was a fresh one in a scratch folder; drawing the pages and the 30-second play counting were not timed.
 
+## Performance (Phase 2c, measured)
+
+Re-run on the 0.2.2 code, release build, same machine as above (Intel Core i3-1315U, Windows 11 Pro for Workstations 10.0.26300), one run each: the 2b `Collections` test (50,000 tracks) took **12.2 ms**, and the library snapshot of the synthetic 50,000-track database (`cargo test --release -p aria-library --test scan -- --ignored --nocapture`) took **93.7 ms**; the snapshot now carries each track's bit depth. **Not measured:** the time from a soundboard click to the first samples written (the spec asks for it; no test measures it), CPU while playing or in exclusive mode, and idle CPU with hotkeys registered.
+
 ## Known limitations
+
+Phase 2c: the limits of exclusive output, sounds and hotkeys are listed under Status above and in the 0.2.2 entry of [CHANGELOG.md](CHANGELOG.md). In short: nobody has listened to any of it; bit-perfect delivery to the device cannot be recorded and is a hand check; the Russian and Armenian texts are not reviewed by a native speaker.
 
 Phase 2b:
 
@@ -139,7 +191,7 @@ From Phase 1, still true:
 - Spotify audio is not streamed in-app. This is a compliance choice; see the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 - The Armenian translation needs native-speaker review, and Armenian headings render at regular weight because there is no Armenian semibold font.
 - egui's colour-picker popup and the panel splitter's accessibility label are English only.
-- Alt+Left/Right and Ctrl+1...9 are app-wide shortcuts.
+- Alt+Left/Right and Ctrl+1...9 and Ctrl+0 are app-wide shortcuts.
 - `ARIA_CONFIG_DIR` overrides only the config directory. Logs, the library database, the artwork cache and the window state still go to the OS defaults.
 - Only Windows has been run by hand (on one machine). Linux and macOS are built and tested by CI only; nobody has opened the app on them yet.
 - In the narrowest layout (a 900 px window with the widest sidebar and the queue open), the Russian theme switch does not fit on one line, so its "System" button wraps under the other two inside one outline.

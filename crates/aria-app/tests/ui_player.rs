@@ -19,14 +19,14 @@ use aria_app::{
     },
 };
 use aria_core::{
-    ClockReading, PlaybackClock,
+    ClockReading, OutputPath, OutputState, PlaybackClock,
     event::Event,
     i18n::{FluentArgs, Localizer},
-    playback_service::PlayerView,
+    playback_service::{PlayerView, TrackFormat},
     player::queue::{RepeatMode, UpNext},
     settings::{Language, Settings},
 };
-use aria_library::{FolderId, LibrarySnapshot, Track, TrackId};
+use aria_library::{FolderId, LibrarySnapshot, Quality, Track, TrackId};
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::{
     Harness,
@@ -67,6 +67,7 @@ fn track(id: i64, title: &str, artist: Option<&str>) -> Track {
         duration_ms: 200_000,
         sample_rate: 44_100,
         channels: 2,
+        bits_per_sample: 0,
         codec: Arc::from("flac"),
         artwork: None,
         added_at: 0,
@@ -80,6 +81,9 @@ fn view(current: Option<i64>, playing: bool, duration_ms: u64) -> PlayerView {
         playing,
         duration_ms,
         upcoming: Vec::new(),
+        output: None,
+        format: None,
+        volume_locked: false,
     }
 }
 
@@ -757,4 +761,128 @@ fn every_row_and_heading_is_the_same_height() {
     assert_eq!(top("Song 3") - top("Song 2"), 48.0);
     assert_eq!(top("Song 2") - top("Song 1"), 96.0);
     assert_eq!(top("Song 4") - top("Song 3"), 96.0);
+}
+
+/// The bar's line for the 96 kHz FLAC of `locked_view` and the path named by `key`.
+fn line(key: &str) -> String {
+    format!("FLAC 24/96 · {}", en(key))
+}
+
+fn locked_view(output: Option<OutputPath>, locked: bool) -> PlayerView {
+    PlayerView {
+        output: output.map(|path| OutputState {
+            path,
+            device_rate: 44_100,
+            device_bits: 24,
+        }),
+        volume_locked: locked,
+        format: Some(TrackFormat {
+            codec: Arc::from("flac"),
+            sample_rate: 96_000,
+            bits_per_sample: 24,
+            quality: Quality::HiRes,
+        }),
+        ..view(Some(1), true, 200_000)
+    }
+}
+
+#[test]
+fn the_indicator_names_each_output_path() {
+    let cases = [
+        (OutputPath::BitPerfect, "output-bit-perfect"),
+        (OutputPath::Resampled, "output-resampled"),
+        (OutputPath::Converted, "output-converted"),
+        (OutputPath::MixedWithSound, "output-mixed"),
+        (OutputPath::SystemMixer, "output-system-mixer"),
+    ];
+    for (path, key) in cases {
+        let harness = bar_harness(locked_view(Some(path), true), 0);
+        assert!(
+            harness.query_by_label(&line(key)).is_some(),
+            "{path:?} did not show {key}"
+        );
+        for (_, other) in cases.iter().filter(|(_, other)| *other != key) {
+            assert!(
+                harness.query_by_label(&line(other)).is_none(),
+                "{other} too"
+            );
+        }
+    }
+}
+
+#[test]
+fn shared_output_without_a_state_is_the_system_mixer() {
+    let harness = bar_harness(locked_view(None, false), 0);
+    assert!(
+        harness
+            .query_by_label(&line("output-system-mixer"))
+            .is_some()
+    );
+}
+
+#[test]
+fn exclusive_mode_before_the_engine_reports_shows_only_the_format() {
+    let harness = bar_harness(locked_view(None, true), 0);
+    assert!(harness.query_by_label("FLAC 24/96").is_some());
+    for key in [
+        "output-system-mixer",
+        "output-bit-perfect",
+        "output-resampled",
+        "output-converted",
+        "output-mixed",
+    ] {
+        assert!(harness.query_by_label(&line(key)).is_none(), "{key} shown");
+    }
+}
+
+#[test]
+fn the_indicator_tooltip_explains_the_path() {
+    let mut harness = bar_harness(locked_view(Some(OutputPath::BitPerfect), true), 0);
+    harness.get_by_label(&line("output-bit-perfect")).hover();
+    for _ in 0..10 {
+        harness.step();
+    }
+    let hint = en("output-bit-perfect-hint");
+    assert!(hint.contains("5 ms"), "the hint no longer names the fade");
+    assert!(harness.query_by_label(&hint).is_some(), "no tooltip");
+}
+
+#[test]
+fn no_track_shows_no_indicator() {
+    let harness = bar_harness(view(None, false, 0), 0);
+    for key in [
+        "output-system-mixer",
+        "output-bit-perfect",
+        "output-resampled",
+        "output-converted",
+        "output-mixed",
+    ] {
+        assert!(harness.query_by_label(&en(key)).is_none(), "{key} shown");
+    }
+}
+
+#[test]
+fn the_volume_slider_is_disabled_and_full_when_locked() {
+    let mut harness = bar_harness(locked_view(Some(OutputPath::BitPerfect), true), 0);
+    harness.state_mut().settings.volume = 0.3;
+    harness.run();
+    assert!(is_disabled(&harness, Role::Slider, &en("player-volume")));
+    let label = en("player-volume");
+    let node = harness.get_by_role_and_label(Role::Slider, &label);
+    assert_eq!(node.accesskit_node().numeric_value(), Some(100.0));
+    let pos = point_on(&harness, &label, 0.5);
+    click_at(&mut harness, pos);
+    assert!(
+        !harness
+            .state()
+            .actions
+            .iter()
+            .any(|a| matches!(a, PlayerAction::SetVolume(_))),
+        "a locked slider asked for a volume"
+    );
+    // Mute still works.
+    assert!(!is_disabled(&harness, Role::Button, &en("player-mute")));
+
+    let unlocked = bar_harness(view(Some(1), true, 200_000), 0);
+    assert!(!is_disabled(&unlocked, Role::Slider, &en("player-volume")));
 }

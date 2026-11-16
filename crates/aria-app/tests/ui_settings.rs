@@ -702,6 +702,7 @@ struct Page {
     tr: Localizer,
     settings: Settings,
     modal_open: bool,
+    exclusive_supported: bool,
     devices: Vec<DeviceInfo>,
     library: LibraryView,
     actions: Vec<PageAction>,
@@ -732,6 +733,7 @@ fn settings_only(
         tr: localizer(Language::En),
         settings,
         modal_open: false,
+        exclusive_supported: true,
         devices,
         library: LibraryView {
             snapshot: Arc::new(LibrarySnapshot {
@@ -752,10 +754,13 @@ fn settings_only(
                     palette: Palette::dark(),
                     settings: &page.settings,
                     paths_available: true,
+                    exclusive_supported: page.exclusive_supported,
                     modal_open: &mut page.modal_open,
                     out: &mut page.actions,
                     library: &page.library,
                     collections: &Default::default(),
+                    soundboard: &Default::default(),
+                    inactive_hotkeys: &[],
                     devices: &page.devices,
                     artwork: None,
                 };
@@ -860,6 +865,44 @@ fn gapless_toggle_updates_settings() {
     harness.run();
     let settings = saved(&harness).unwrap_or_else(|| panic!("no settings update"));
     assert!(!settings.gapless);
+}
+
+#[test]
+fn the_exclusive_switch_updates_settings() {
+    let mut harness = settings_only(english(), vec![], vec![]);
+    let label = en("settings-exclusive");
+    let switch = harness.get_by_role_and_label(Role::CheckBox, &label);
+    assert!(!switch.accesskit_node().is_disabled());
+    switch.click();
+    harness.run();
+    let settings = saved(&harness).unwrap_or_else(|| panic!("no settings update"));
+    assert!(settings.exclusive_output);
+    assert!(
+        harness
+            .query_by_label(&en("settings-exclusive-hint"))
+            .is_some()
+    );
+}
+
+#[test]
+fn the_exclusive_switch_is_disabled_where_unsupported() {
+    let mut harness = settings_only(english(), vec![], vec![]);
+    harness.state_mut().exclusive_supported = false;
+    harness.run();
+    let label = en("settings-exclusive");
+    let switch = harness.get_by_role_and_label(Role::CheckBox, &label);
+    assert!(switch.accesskit_node().is_disabled());
+    switch.click();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label(&en("settings-exclusive-windows-only"))
+            .is_some()
+    );
+    assert!(
+        saved(&harness).is_none(),
+        "a disabled switch saved something"
+    );
 }
 
 #[test]

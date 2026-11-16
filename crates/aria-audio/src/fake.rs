@@ -6,16 +6,49 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use crate::device::{DeviceId, DeviceInfo};
 use crate::error::AudioError;
 use crate::mixer::{InputHandle, Mixer, MixerControl};
-use crate::output::{AudioOutput, DeviceLister, OutputFactory, OutputFormat};
+use crate::output::{
+    AudioOutput, DeviceLister, Opened, OutputFactory, OutputFormat, OutputRequest,
+};
+use crate::sample_format::{DeviceFormat, SampleKind, SourceFormat, choose_format};
 
-#[derive(Default)]
+/// The rates a fake device takes exclusively until told otherwise.
+const EXCLUSIVE_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+/// The sample kinds a fake device takes exclusively until told otherwise.
+const EXCLUSIVE_KINDS: [SampleKind; 3] = [SampleKind::I16, SampleKind::I24In32, SampleKind::I32];
+
 struct FactoryState {
     failures_left: usize,
     outputs: Vec<FakeControl>,
     devices: Vec<DeviceInfo>,
+    exclusive_rates: Vec<u32>,
+    exclusive_kinds: Vec<SampleKind>,
+    /// `None`: the factory's own channel count only.
+    exclusive_channels: Option<Vec<u16>>,
+    refuse_exclusive: bool,
+    /// Devices that never open, as unplugged ones would not.
+    missing: Vec<DeviceId>,
+}
+
+impl Default for FactoryState {
+    fn default() -> Self {
+        Self {
+            failures_left: 0,
+            outputs: Vec::new(),
+            devices: Vec::new(),
+            exclusive_rates: EXCLUSIVE_RATES.to_vec(),
+            exclusive_kinds: EXCLUSIVE_KINDS.to_vec(),
+            exclusive_channels: None,
+            refuse_exclusive: false,
+            missing: Vec::new(),
+        }
+    }
 }
 
 /// Opens fake outputs. Clones share their state, so a test can keep one and hand one away.
+///
+/// A shared open runs at the factory's format. An exclusive one takes the track's format where
+/// the device allows it: by default the factory's channel count only, every rate from 44.1 kHz
+/// to 192 kHz and every [`SampleKind`].
 #[derive(Clone)]
 pub struct FakeFactory {
     format: OutputFormat,
@@ -23,7 +56,7 @@ pub struct FakeFactory {
 }
 
 impl FakeFactory {
-    /// Create a factory whose outputs all run at `format`.
+    /// Create a factory whose shared outputs all run at `format`.
     pub fn new(format: OutputFormat) -> Self {
         Self {
             format,
@@ -41,13 +74,64 @@ impl FakeFactory {
         self.state().devices = devices;
     }
 
+    /// Make the rates the device takes exclusively `rates`.
+    pub fn set_exclusive_rates(&self, rates: Vec<u32>) {
+        self.state().exclusive_rates = rates;
+    }
+
+    /// Make the sample kinds the device takes exclusively `kinds`.
+    pub fn set_exclusive_kinds(&self, kinds: Vec<SampleKind>) {
+        self.state().exclusive_kinds = kinds;
+    }
+
+    /// Make the channel counts the device takes exclusively `channels`. Until then it takes only
+    /// the factory's own.
+    pub fn set_exclusive_channels(&self, channels: Vec<u16>) {
+        self.state().exclusive_channels = Some(channels);
+    }
+
+    /// Make exclusive opens land on a shared output, as a device another program holds would.
+    pub fn refuse_exclusive(&self, refuse: bool) {
+        self.state().refuse_exclusive = refuse;
+    }
+
+    /// Make every open of `device` fail from now on, as for a device that is not plugged in.
+    pub fn remove_device(&self, device: DeviceId) {
+        self.state().missing.push(device);
+    }
+
     /// A control for every output opened so far, oldest first.
     pub fn outputs(&self) -> Vec<FakeControl> {
         self.state().outputs.clone()
     }
 
+    /// A control for every output opened so far on `device`, oldest first. `None` is the system
+    /// default.
+    pub fn outputs_on(&self, device: Option<&DeviceId>) -> Vec<FakeControl> {
+        self.state()
+            .outputs
+            .iter()
+            .filter(|output| output.shared.device.as_ref() == device)
+            .cloned()
+            .collect()
+    }
+
     fn state(&self) -> MutexGuard<'_, FactoryState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The format an exclusive open of `source` gets, if the device takes one.
+    fn exclusive_format(&self, state: &FactoryState, source: SourceFormat) -> Option<DeviceFormat> {
+        if state.refuse_exclusive {
+            return None;
+        }
+        let own = [self.format.channels];
+        let channels = state.exclusive_channels.as_deref().unwrap_or(&own);
+        choose_format(source, &state.exclusive_rates, &mut |format| {
+            channels.contains(&format.channels)
+                && state.exclusive_rates.contains(&format.sample_rate)
+                && state.exclusive_kinds.contains(&format.kind)
+        })
     }
 }
 
@@ -60,24 +144,58 @@ impl OutputFactory for FakeFactory {
         })
     }
 
-    fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError> {
+    fn open(
+        &self,
+        device: Option<&DeviceId>,
+        request: OutputRequest,
+    ) -> Result<Opened, AudioError> {
         let mut state = self.state();
         if state.failures_left > 0 {
             state.failures_left -= 1;
             return Err(AudioError::Device("fake open failure".into()));
         }
-        let (mixer, control) = Mixer::new(self.format);
+        if let Some(device) = device.filter(|device| state.missing.contains(device)) {
+            return Err(AudioError::DeviceNotFound(device.0.clone()));
+        }
+        let shared_format = DeviceFormat {
+            sample_rate: self.format.sample_rate,
+            channels: self.format.channels,
+            kind: SampleKind::I32,
+        };
+        let exclusive_format = request.exclusive.then(|| {
+            let source = request.source.unwrap_or(SourceFormat {
+                sample_rate: self.format.sample_rate,
+                channels: self.format.channels,
+                bits: None,
+                float: false,
+            });
+            self.exclusive_format(&state, source)
+        });
+        let (exclusive, device_format) = match exclusive_format.flatten() {
+            Some(format) => (true, format),
+            None => (false, shared_format),
+        };
+        let format = OutputFormat {
+            sample_rate: device_format.sample_rate,
+            channels: device_format.channels,
+        };
+        let (mixer, control) = Mixer::new(format);
         let shared = Arc::new(FakeShared {
             mixer: Mutex::new(mixer),
-            format: self.format,
+            format,
             device: device.cloned(),
+            opened_as: (exclusive, device_format),
             failed: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         });
         state.outputs.push(FakeControl {
             shared: Arc::clone(&shared),
         });
-        Ok(Box::new(FakeOutput { shared, control }))
+        Ok(Opened {
+            output: Box::new(FakeOutput { shared, control }),
+            exclusive,
+            device: device_format,
+        })
     }
 }
 
@@ -85,6 +203,7 @@ struct FakeShared {
     mixer: Mutex<Mixer>,
     format: OutputFormat,
     device: Option<DeviceId>,
+    opened_as: (bool, DeviceFormat),
     failed: AtomicBool,
     closed: AtomicBool,
 }
@@ -146,5 +265,10 @@ impl FakeControl {
     /// The device the output was opened on. `None` is the system default.
     pub fn device(&self) -> Option<DeviceId> {
         self.shared.device.clone()
+    }
+
+    /// Whether the output was opened exclusively, and at what format.
+    pub fn opened_as(&self) -> (bool, DeviceFormat) {
+        self.shared.opened_as
     }
 }

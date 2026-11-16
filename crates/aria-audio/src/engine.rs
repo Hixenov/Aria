@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
@@ -18,8 +18,10 @@ use crate::decode::{StreamInfo, TrackDecoder};
 use crate::device::DeviceId;
 use crate::error::AudioError;
 use crate::mixer::InputHandle;
-use crate::output::{AudioOutput, OutputFactory, OutputFormat};
+use crate::output::{AudioOutput, Opened, OutputFactory, OutputFormat, OutputRequest};
 use crate::resample::{Resampler, convert_channels};
+use crate::sample_format::{DeviceFormat, OutputState, PathFacts, SourceFormat, output_path};
+use crate::sounds::{SOUNDS_AT_ONCE, SecondOutput, SoundRoute, Spares, Target, Voice};
 
 /// How often the thread looks at the output while a track is active.
 const TICK: Duration = Duration::from_millis(10);
@@ -61,8 +63,26 @@ pub enum EngineCommand {
     SetVolume(f32),
     SetDevice(Option<DeviceId>),
     SetGapless(bool),
-    /// Drop the track and what follows it.
+    /// Ask for outputs that hold the device alone, at each track's own format. While an output is
+    /// exclusive, the music plays at full level whatever the volume, unless the volume is zero,
+    /// which mutes. Tracks of one rate join as before; at a change of rate, or a depth wider than
+    /// the output carries, the output is opened again once the track before has been heard out.
+    SetExclusive(bool),
+    /// Drop the track and what follows it. Sounds play on.
     Stop,
+    /// Play the sound in `path` from its start, at `gain` (0.0 to 1.0), on the outputs `route`
+    /// names. The token names it in events. A sound already playing under `token` starts again.
+    /// With [`SOUNDS_AT_ONCE`] playing, the one that started first stops.
+    PlaySound {
+        token: u64,
+        path: PathBuf,
+        gain: f32,
+        route: SoundRoute,
+    },
+    /// Stop every sound. The music plays on.
+    StopSounds,
+    /// The second device for sounds, or none.
+    SetSoundDevice(Option<DeviceId>),
 }
 
 /// What the engine reports. Tracks start and end when they are heard, not when they are decoded.
@@ -88,6 +108,33 @@ pub enum EngineEvent {
     NoDevice,
     /// The last track ended, or a [`Stop`](EngineCommand::Stop) took effect.
     Stopped,
+    /// How the track being heard reaches the device, when that changes. Sent while exclusive mode
+    /// is on, and once more after it is turned off, for the first shared output with a track on
+    /// it. With the mode off the path is always the system mixer, so nothing more is sent. After
+    /// [`NoDevice`](Self::NoDevice) the next state is sent even if it is the same as the last.
+    Output(OutputState),
+    /// Exclusive mode was on, but the device would not be held, so a shared output was opened.
+    /// Sent once for each output opened that way.
+    ExclusiveUnavailable,
+    /// A sound began to play, or began again from its start.
+    SoundStarted {
+        token: u64,
+    },
+    /// A sound finished, was stopped, was pushed out by a newer one, or was cut off because the
+    /// output it played on closed (as at a reopen for a new rate). Also sent for a sound that
+    /// played nowhere because no output it was meant for could be opened, unless a sound under
+    /// the same token plays on, which ends later. Each start has exactly one end.
+    SoundEnded {
+        token: u64,
+    },
+    /// The sound could not be played: its file could not be opened or decoded, or it could not
+    /// be set up on any output. Other sounds, a sound playing under the same token, and the music
+    /// are left as they were. For a file that cannot be opened, no output is opened either.
+    SoundFailed {
+        token: u64,
+    },
+    /// The second device could not be opened for a sound, or failed while one played on it.
+    SoundDeviceFailed,
 }
 
 /// Starts the engine thread.
@@ -243,11 +290,67 @@ fn coalesce(batch: Vec<EngineCommand>) -> Vec<EngineCommand> {
     kept
 }
 
-/// An open output and the one input the engine writes to.
+/// An open output and the input the engine writes the music to.
 struct Sink {
     input: InputHandle,
+    /// Inputs for sounds that none plays through now.
+    spares: Spares,
     output: Box<dyn AudioOutput>,
     format: OutputFormat,
+    /// Whether the device is held exclusively.
+    exclusive: bool,
+    /// The format the device runs at.
+    device: DeviceFormat,
+    /// The track the output was opened for, if it was opened for one.
+    opened_for: Option<SourceFormat>,
+}
+
+impl Sink {
+    /// Whether a track of `source` can follow on this output as it is. A shared output takes
+    /// anything and resamples. An exclusive one keeps to the rate it was opened for, or that it
+    /// runs at, to integer depths its samples carry exactly, and to as many channels as it has.
+    fn fits(&self, source: &SourceFormat) -> bool {
+        if !self.exclusive {
+            return true;
+        }
+        let rate_fits = self.opened_for.map(|opened| opened.sample_rate)
+            == Some(source.sample_rate)
+            || self.device.sample_rate == source.sample_rate;
+        rate_fits && !self.too_narrow_for(source) && !self.too_few_channels_for(source)
+    }
+
+    /// Whether `source` has more channels than the output, which would mix it down, and a new
+    /// output might have them. As with depth, an output opened for a track with that many
+    /// already got what the device gives.
+    fn too_few_channels_for(&self, source: &SourceFormat) -> bool {
+        let opened_channels = self.opened_for.map_or(0, |opened| opened.channels);
+        source.channels > self.device.channels && source.channels > opened_channels
+    }
+
+    /// Whether `source` is integer audio deeper than the output carries, and a new output might
+    /// carry it. If the output was opened for a track at least that deep, the device already
+    /// gave what it could, and opening again would only cost the gapless join.
+    fn too_narrow_for(&self, source: &SourceFormat) -> bool {
+        let Some(bits) = source.bits.filter(|_| !source.float) else {
+            return false;
+        };
+        let opened_bits = self
+            .opened_for
+            .filter(|opened| !opened.float)
+            .and_then(|opened| opened.bits)
+            .unwrap_or(0);
+        bits > self.device.kind.bits() && bits > opened_bits
+    }
+}
+
+/// What the decoder says about a track, as an output needs it.
+fn source_format(info: &StreamInfo) -> SourceFormat {
+    SourceFormat {
+        sample_rate: info.sample_rate,
+        channels: info.channels,
+        bits: info.bits_per_sample,
+        float: info.float,
+    }
 }
 
 /// The stretch of the sample index that belongs to one track.
@@ -261,6 +364,8 @@ struct Segment {
     source_start_frame: u64,
     /// The file's sample rate.
     rate: u32,
+    /// The file's format. `None` for a track that could not be opened.
+    source: Option<SourceFormat>,
     duration_ms: Option<u64>,
     /// Whether `TrackStarted` has been sent.
     started: bool,
@@ -283,6 +388,7 @@ impl Segment {
             end_index: None,
             source_start_frame,
             rate,
+            source: Some(source_format(info)),
             duration_ms: info.total_frames.map(|total| scale(total, 1_000, rate)),
             started,
             failed: false,
@@ -297,6 +403,7 @@ impl Segment {
             end_index: Some(index),
             source_start_frame: 0,
             rate: 1,
+            source: None,
             duration_ms: None,
             started: false,
             failed: true,
@@ -386,10 +493,17 @@ struct Worker {
     device: Option<DeviceId>,
     volume: f32,
     gapless: bool,
+    /// Whether exclusive outputs are asked for.
+    exclusive: bool,
     playing: bool,
     sink: Option<Sink>,
     feed: Option<Feed>,
     next: Option<TrackRequest>,
+    /// The next track, already open, which the exclusive output cannot play at its rate. It
+    /// starts on a new output once everything queued has been heard.
+    waiting: Option<(TrackRequest, TrackDecoder)>,
+    /// The last state sent in [`EngineEvent::Output`], while there is one to compare against.
+    last_output: Option<OutputState>,
     segments: VecDeque<Segment>,
     /// Audio in the output's format still to go into the ring, from `pending_from` on.
     pending: Vec<f32>,
@@ -405,6 +519,14 @@ struct Worker {
     idle_since: Option<Instant>,
     /// The handle is gone, so the thread ends.
     shut_down: bool,
+    /// The sounds playing, the one that started first at the front.
+    voices: VecDeque<Voice>,
+    /// The second device for sounds.
+    sound_device: Option<DeviceId>,
+    /// The output on the second device, while it is open.
+    second: Option<SecondOutput>,
+    /// Since when the second output has been open without a sound, if it has been.
+    second_idle_since: Option<Instant>,
 }
 
 impl Worker {
@@ -422,10 +544,13 @@ impl Worker {
             device: None,
             volume: 1.0,
             gapless: true,
+            exclusive: false,
             playing: false,
             sink: None,
             feed: None,
             next: None,
+            waiting: None,
+            last_output: None,
             segments: VecDeque::new(),
             pending: Vec::new(),
             pending_from: 0,
@@ -435,17 +560,22 @@ impl Worker {
             idle_grace,
             idle_since: None,
             shut_down: false,
+            voices: VecDeque::new(),
+            sound_device: None,
+            second: None,
+            second_idle_since: None,
         }
     }
 
     /// How long to wait for a command: the regular look while sound is wanted or has just stopped,
-    /// then until the idle output is due to close, and for as long as it takes without an output.
+    /// then until an idle output is due to close, and for as long as it takes without an output.
     fn wait_for_command(&mut self, commands: &Receiver<EngineCommand>) -> Option<EngineCommand> {
-        let idle = self.sink.is_some() && !(self.playing && self.has_track());
+        let music_busy = (self.playing && self.has_track()) || self.sound_on(Target::Music);
+        let idle = self.sink.is_some() && !music_busy;
         if !idle {
             self.idle_since = None;
         }
-        let timeout = match (&self.sink, idle) {
+        let music_timeout = match (&self.sink, idle) {
             (None, _) => None,
             (Some(_), false) => Some(TICK),
             (Some(_), true) => {
@@ -457,6 +587,22 @@ impl Worker {
                 }
             }
         };
+        let second_idle = self.second.is_some() && !self.sound_on(Target::Second);
+        if !second_idle {
+            self.second_idle_since = None;
+        }
+        let second_timeout = match (&self.second, second_idle) {
+            (None, _) => None,
+            (Some(_), false) => Some(TICK),
+            (Some(_), true) => {
+                let idle_for = self
+                    .second_idle_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed();
+                Some(self.idle_grace.saturating_sub(idle_for))
+            }
+        };
+        let timeout = music_timeout.into_iter().chain(second_timeout).min();
         match timeout {
             Some(timeout) => match commands.recv_timeout(timeout) {
                 Ok(command) => Some(command),
@@ -487,6 +633,13 @@ impl Worker {
             self.replace_output(false);
             self.idle_since = None;
         }
+        let second_due = self
+            .second_idle_since
+            .is_some_and(|since| since.elapsed() >= self.idle_grace);
+        if second_due && self.second.is_some() {
+            tracing::debug!("closing the idle second output");
+            self.close_second_output();
+        }
     }
 
     fn run(mut self, commands: &Receiver<EngineCommand>) {
@@ -502,7 +655,10 @@ impl Worker {
             self.check_output();
             self.close_idle_output();
             self.fill();
+            self.feed_sounds();
             self.settle();
+            self.settle_sounds();
+            self.report_output();
             // In this order, so that whoever hears of an event finds the clock agreeing with it.
             self.publish();
             for event in self.events.drain(..) {
@@ -530,12 +686,21 @@ impl Worker {
             EngineCommand::SetVolume(volume) => {
                 self.volume = volume;
                 if let Some(sink) = &self.sink {
-                    sink.input.set_gain(volume);
+                    sink.input.set_gain(self.gain(sink.exclusive));
                 }
             }
             EngineCommand::SetDevice(device) => self.set_device(device),
             EngineCommand::SetGapless(gapless) => self.gapless = gapless,
+            EngineCommand::SetExclusive(exclusive) => self.set_exclusive(exclusive),
             EngineCommand::Stop => self.stop(),
+            EngineCommand::PlaySound {
+                token,
+                path,
+                gain,
+                route,
+            } => self.play_sound(token, &path, gain, route),
+            EngineCommand::StopSounds => self.stop_sounds(),
+            EngineCommand::SetSoundDevice(device) => self.set_sound_device(device),
         }
     }
 
@@ -550,6 +715,41 @@ impl Worker {
 
     fn format(&self) -> Option<OutputFormat> {
         self.sink.as_ref().map(|sink| sink.format)
+    }
+
+    /// The music gain on an output. An exclusive one plays at exactly 1.0, unless the volume
+    /// mutes it.
+    fn gain(&self, exclusive: bool) -> f32 {
+        let audible = self.volume.is_finite() && self.volume > 0.0;
+        match (exclusive, audible) {
+            (true, true) => 1.0,
+            (true, false) => 0.0,
+            (false, _) => self.volume,
+        }
+    }
+
+    /// Whether the open output, if any, can take a track of `info` as it is.
+    fn output_fits(&self, info: &StreamInfo) -> bool {
+        self.sink
+            .as_ref()
+            .is_none_or(|sink| sink.fits(&source_format(info)))
+    }
+
+    /// Close an output that cannot take a track of `info`, so that the next one opens at its
+    /// format. Only for when nothing is queued: what the output still holds is cut off.
+    fn close_unfit_output(&mut self, info: &StreamInfo) -> bool {
+        if self.output_fits(info) {
+            return false;
+        }
+        tracing::debug!(
+            rate = info.sample_rate,
+            bits = ?info.bits_per_sample,
+            "reopening the output for a new format"
+        );
+        self.close_music_output();
+        self.pending.clear();
+        self.pending_from = 0;
+        true
     }
 
     /// Samples heard so far. With no output, the next one's index space starts at zero.
@@ -582,6 +782,7 @@ impl Worker {
     /// Let go of every track, and of the audio queued for them.
     fn drop_tracks(&mut self) {
         self.next = None;
+        self.waiting = None;
         self.feed = None;
         self.segments.clear();
         self.discard_queued();
@@ -592,6 +793,7 @@ impl Worker {
         self.set_playing(play);
         match TrackDecoder::open(&track.path) {
             Ok(decoder) => {
+                self.close_unfit_output(decoder.info());
                 let frame = scale(start_ms, decoder.info().sample_rate, 1_000);
                 self.start_at(track, decoder, frame, false);
             }
@@ -672,6 +874,9 @@ impl Worker {
         if let Some(behind) = self.segments.drain(..).nth(1) {
             self.next = Some(behind.track);
         }
+        if let Some((waiting, _)) = self.waiting.take() {
+            self.next = Some(waiting);
+        }
         self.discard_queued();
         let decoder = match decoder {
             Some(feed) => feed.decoder,
@@ -696,6 +901,18 @@ impl Worker {
     }
 
     fn set_next(&mut self, next: Option<TrackRequest>) {
+        if let Some((waiting, _)) = &mut self.waiting {
+            match next {
+                // The same file under a new token: it is already open.
+                Some(next) if next.path == waiting.path => *waiting = next,
+                // Nothing of it is queued, so it can simply be let go.
+                next => {
+                    self.waiting = None;
+                    self.next = next;
+                }
+            }
+            return;
+        }
         // The old next track could not be opened, and now nobody is waiting for it.
         if self.segments.len() > 1 && self.segments.back().is_some_and(Segment::is_unplayable) {
             self.segments.pop_back();
@@ -716,18 +933,57 @@ impl Worker {
 
     fn set_device(&mut self, device: Option<DeviceId>) {
         self.device = device;
+        let second_is_music = self.second.is_some()
+            && self
+                .sound_device
+                .as_ref()
+                .is_some_and(|second| self.is_music_device(second));
+        if second_is_music {
+            // Sounds for the second device now play on the music's output, once.
+            self.close_second_output();
+        }
         if self.sink.is_none() {
             return;
         }
         if !self.has_track() {
             // The next track opens the new device when it needs one.
-            self.sink = None;
+            self.close_music_output();
             return;
         }
         match self.replace_output(true) {
             Some(true) => self.emit(EngineEvent::DeviceFellBack),
             Some(false) => {}
             None => self.lose_output(),
+        }
+    }
+
+    /// Turn exclusive mode on or off. An open output in the other mode is replaced, and the track
+    /// carries on from where the ear was.
+    fn set_exclusive(&mut self, exclusive: bool) {
+        if exclusive == self.exclusive {
+            return;
+        }
+        self.exclusive = exclusive;
+        if exclusive {
+            // Whoever listens has taken the path for the system mixer since the mode went off,
+            // whether or not that was ever said. The first exclusive state must be sent.
+            self.last_output = None;
+        }
+        let Some(sink) = &self.sink else {
+            return;
+        };
+        if sink.exclusive == exclusive {
+            // Already right, as a shared output is when exclusive mode was refused.
+            return;
+        }
+        if !self.has_track() {
+            // Let go of the device. The next track opens an output in the new mode.
+            self.close_music_output();
+            return;
+        }
+        // The device was not changed, so landing on the default is no news.
+        if self.replace_output(true).is_none() {
+            self.lose_output();
         }
     }
 
@@ -743,31 +999,49 @@ impl Worker {
         }
     }
 
-    /// Open the configured device, then the system default. Returns whether it had to fall back,
-    /// or `None` if there is no output.
+    /// Open the configured device, then the system default, for the track being heard. Returns
+    /// whether it had to fall back, or `None` if there is no output.
     fn open_output(&mut self) -> Option<bool> {
-        let (opened, fell_back) = match self.factory.open(self.device.as_ref()) {
+        let source = self.segments.front().and_then(|segment| segment.source);
+        let request = OutputRequest {
+            exclusive: self.exclusive,
+            source,
+        };
+        let (opened, fell_back) = match self.factory.open(self.device.as_ref(), request) {
             Ok(output) => (Ok(output), false),
             Err(error) if self.device.is_some() => {
                 tracing::debug!(%error, "could not open the chosen output");
-                (self.factory.open(None), true)
+                (self.factory.open(None, request), true)
             }
             Err(error) => (Err(error), false),
         };
-        let sink = opened.and_then(|mut output| {
+        let sink = opened.and_then(|opened| {
+            let Opened {
+                mut output,
+                exclusive,
+                device,
+            } = opened;
             let format = output.format();
             // One second of audio.
             let input = output.add_input(format.sample_rate as usize)?;
-            input.set_gain(self.volume);
+            input.set_gain(self.gain(exclusive));
             input.set_paused(!self.playing);
             Ok(Sink {
                 input,
+                spares: Spares::default(),
                 output,
                 format,
+                exclusive,
+                device,
+                opened_for: source,
             })
         });
         match sink {
             Ok(sink) => {
+                if self.exclusive && !sink.exclusive {
+                    tracing::debug!("exclusive mode is not available; the output is shared");
+                    self.emit(EngineEvent::ExclusiveUnavailable);
+                }
                 self.sink = Some(sink);
                 Some(fell_back)
             }
@@ -782,7 +1056,7 @@ impl Worker {
     /// Returns what [`open_output`](Self::open_output) did.
     fn replace_output(&mut self, open: bool) -> Option<bool> {
         let heard = self.heard();
-        self.sink = None;
+        self.close_music_output();
         let opened = if open { self.open_output() } else { None };
         if let Some(heard) = heard {
             self.restart(heard);
@@ -791,18 +1065,33 @@ impl Worker {
     }
 
     fn lose_output(&mut self) {
+        // Whoever listens forgets the path when nothing is open, so the next output's state is
+        // sent even when it is the one before.
+        if self.exclusive {
+            self.last_output = None;
+        }
         self.set_playing(false);
         self.emit(EngineEvent::NoDevice);
     }
 
-    /// Replace an output that has failed, unless failures keep coming.
+    /// Replace an output that has failed, unless failures keep coming. A failed second output is
+    /// let go of, and opened again by the next sound for it.
     fn check_output(&mut self) {
+        if self
+            .second
+            .as_ref()
+            .is_some_and(|second| second.output.failed())
+        {
+            tracing::debug!("the second output failed");
+            self.close_second_output();
+            self.emit(EngineEvent::SoundDeviceFailed);
+        }
         if !self.sink.as_ref().is_some_and(|sink| sink.output.failed()) {
             return;
         }
         if !self.has_track() {
             // Nothing is lost. The next track opens an output when it needs one.
-            self.sink = None;
+            self.close_music_output();
             return;
         }
         let now = Instant::now();
@@ -912,6 +1201,13 @@ impl Worker {
 
     /// Follow the feed with `track`, with no gap between them.
     fn join(&mut self, track: TrackRequest, decoder: TrackDecoder) {
+        if !self.output_fits(decoder.info()) {
+            // An exclusive output plays one rate, and depths up to its own. This track waits
+            // until the last one has been heard out, and then starts on an output opened for it.
+            self.close_feed();
+            self.waiting = Some((track, decoder));
+            return;
+        }
         let rate = decoder.info().sample_rate;
         let same_rate = self
             .feed
@@ -996,14 +1292,289 @@ impl Worker {
         if failed {
             return self.set_playing(false);
         }
-        let Some(track) = self.next.take() else {
-            self.set_playing(false);
-            return self.emit(EngineEvent::Stopped);
+        let (track, decoder) = match self.waiting.take() {
+            Some(waiting) => waiting,
+            None => {
+                let Some(track) = self.next.take() else {
+                    self.set_playing(false);
+                    return self.emit(EngineEvent::Stopped);
+                };
+                match TrackDecoder::open(&track.path) {
+                    Ok(decoder) => (track, decoder),
+                    Err(error) => return self.fail(track.token, &error),
+                }
+            }
         };
-        match TrackDecoder::open(&track.path) {
-            Ok(decoder) => self.start_at(track, decoder, 0, false),
-            Err(error) => self.fail(track.token, &error),
+        // Before the track takes its place, which counts from the start of the output.
+        let reopen = self.close_unfit_output(decoder.info());
+        self.start_at(track, decoder, 0, false);
+        // Not through `ensure_output`, which would forget the recent failures: a new format is
+        // no fresh start.
+        if reopen && self.playing && self.open_output().is_none() {
+            self.lose_output();
         }
+    }
+
+    /// Close the music's output. Sounds on it are cut off there.
+    fn close_music_output(&mut self) {
+        self.sink = None;
+        self.cut_sounds(Target::Music);
+    }
+
+    /// Close the second output. Sounds on it are cut off there.
+    fn close_second_output(&mut self) {
+        self.second = None;
+        self.second_idle_since = None;
+        self.cut_sounds(Target::Second);
+    }
+
+    /// Take sounds off `target`, whose output has closed. A sound left with no output has ended.
+    fn cut_sounds(&mut self, target: Target) {
+        let mut ended = Vec::new();
+        self.voices.retain_mut(|voice| {
+            voice.leave(target);
+            if !voice.has_parts() {
+                ended.push(voice.token);
+            }
+            voice.has_parts()
+        });
+        for token in ended {
+            self.emit(EngineEvent::SoundEnded { token });
+        }
+    }
+
+    /// Whether a sound plays on `target`.
+    fn sound_on(&self, target: Target) -> bool {
+        self.voices.iter().any(|voice| voice.plays_on(target))
+    }
+
+    fn play_sound(&mut self, token: u64, path: &Path, gain: f32, route: SoundRoute) {
+        let decoder = match TrackDecoder::open(path) {
+            Ok(decoder) => decoder,
+            Err(error) => {
+                tracing::debug!(token, %error, "sound failed");
+                return self.emit(EngineEvent::SoundFailed { token });
+            }
+        };
+        let playing = self.voices.iter().position(|voice| voice.token == token);
+        let (on_music, on_second) = self.open_sound_outputs(route);
+        if !on_music && !on_second {
+            // Played nowhere. A sound already playing under the token plays on, and ends later.
+            if playing.is_none() {
+                self.emit(EngineEvent::SoundEnded { token });
+            }
+            return;
+        }
+        // Set up before anything else changes, so that a sound that cannot play leaves the others
+        // as they were. Spares are taken first, so this needs a new input only when every input
+        // on the output is in use: one more than the sounds playing at most.
+        let mut voice = Voice::new(token, decoder, gain);
+        if on_music && let Some(sink) = &mut self.sink {
+            let added = voice.add_part(
+                Target::Music,
+                sink.output.as_mut(),
+                sink.format,
+                &mut sink.spares,
+            );
+            if let Err(error) = added {
+                tracing::debug!(token, %error, "a sound could not join the music's output");
+            }
+        }
+        if on_second && let Some(second) = &mut self.second {
+            let added = voice.add_part(
+                Target::Second,
+                second.output.as_mut(),
+                second.format,
+                &mut second.spares,
+            );
+            if let Err(error) = added {
+                tracing::debug!(token, %error, "a sound could not join the second output");
+            }
+        }
+        if !voice.has_parts() {
+            return self.emit(EngineEvent::SoundFailed { token });
+        }
+        // A sound fired again starts over, as the newest; a new one may push out the oldest.
+        if let Some(at) = playing {
+            if let Some(old) = self.voices.remove(at) {
+                self.release(old);
+            }
+        } else if self.voices.len() >= SOUNDS_AT_ONCE
+            && let Some(oldest) = self.voices.pop_front()
+        {
+            let oldest_token = oldest.token;
+            self.release(oldest);
+            self.emit(EngineEvent::SoundEnded {
+                token: oldest_token,
+            });
+        }
+        self.voices.push_back(voice);
+        self.emit(EngineEvent::SoundStarted { token });
+    }
+
+    /// Open the outputs a sound for `route` plays on, and say which are there: the music's, then
+    /// the second.
+    fn open_sound_outputs(&mut self, route: SoundRoute) -> (bool, bool) {
+        let to_second = route != SoundRoute::Mine && self.second_device_is_another();
+        let to_music = route != SoundRoute::Second || !to_second;
+        let on_second = to_second && self.ensure_second_output();
+        let on_music = to_music && {
+            self.ensure_output();
+            self.sink.is_some()
+        };
+        (on_music, on_second)
+    }
+
+    /// Whether there is a second device, and it is not the one the music plays on.
+    fn second_device_is_another(&self) -> bool {
+        let Some(second) = &self.sound_device else {
+            return false;
+        };
+        // An open second output was another device when it was opened, and is checked again
+        // whenever the music's device changes.
+        self.second.is_some() || !self.is_music_device(second)
+    }
+
+    /// Whether `device` is the one the music plays on.
+    ///
+    /// With the music on the system default, this asks the factory for the default device. That
+    /// happens for every sound for the second device while the second output is closed (so for
+    /// every one while the second device is the default, or cannot be opened), and at every
+    /// change of the music's device while it is open. The system factory answers with one query
+    /// of the default endpoint rather than a listing of every device.
+    fn is_music_device(&self, device: &DeviceId) -> bool {
+        match &self.device {
+            Some(music) => music == device,
+            None => self.factory.default_device().as_ref() == Some(device),
+        }
+    }
+
+    /// Open the second output if it is not open. Shared, whatever the music's mode: it is for
+    /// sounds only.
+    fn ensure_second_output(&mut self) -> bool {
+        if self.second.is_some() {
+            return true;
+        }
+        let request = OutputRequest {
+            exclusive: false,
+            source: None,
+        };
+        let opened = self
+            .factory
+            .open(self.sound_device.as_ref(), request)
+            .map(|opened| {
+                let format = opened.output.format();
+                SecondOutput {
+                    output: opened.output,
+                    format,
+                    spares: Spares::default(),
+                }
+            });
+        match opened {
+            Ok(second) => {
+                self.second = Some(second);
+                true
+            }
+            Err(error) => {
+                tracing::debug!(%error, "could not open the second output");
+                self.emit(EngineEvent::SoundDeviceFailed);
+                false
+            }
+        }
+    }
+
+    /// Keep a voice's inputs for the sounds that come after it.
+    fn release(&mut self, voice: Voice) {
+        for (target, input) in voice.into_inputs() {
+            match target {
+                Target::Music => {
+                    if let Some(sink) = &mut self.sink {
+                        sink.spares.put(input);
+                    }
+                }
+                Target::Second => {
+                    if let Some(second) = &mut self.second {
+                        second.spares.put(input);
+                    }
+                }
+            }
+        }
+    }
+
+    fn stop_sounds(&mut self) {
+        while let Some(voice) = self.voices.pop_front() {
+            let token = voice.token;
+            self.release(voice);
+            self.emit(EngineEvent::SoundEnded { token });
+        }
+    }
+
+    fn set_sound_device(&mut self, device: Option<DeviceId>) {
+        if device != self.sound_device {
+            self.sound_device = device;
+            self.close_second_output();
+        }
+    }
+
+    /// Decode sounds while their outputs have room.
+    fn feed_sounds(&mut self) {
+        for voice in &mut self.voices {
+            voice.feed(&mut self.mixed);
+        }
+    }
+
+    /// Report the sounds that have been heard to their end.
+    fn settle_sounds(&mut self) {
+        let mut index = 0;
+        while index < self.voices.len() {
+            if !self.voices[index].finished() {
+                index += 1;
+                continue;
+            }
+            if let Some(voice) = self.voices.remove(index) {
+                let token = voice.token;
+                self.release(voice);
+                self.emit(EngineEvent::SoundEnded { token });
+            }
+        }
+    }
+
+    /// How the track being heard reaches the device, if there is an output and a track.
+    fn output_state(&self) -> Option<OutputState> {
+        let sink = self.sink.as_ref()?;
+        let source = self.segments.front()?.source?;
+        let channels = sink.device.channels;
+        let facts = PathFacts {
+            exclusive: sink.exclusive,
+            source,
+            device: sink.device,
+            gain_is_unity: self.gain(sink.exclusive) == 1.0,
+            // Mono to both channels counts as unchanged.
+            channels_unchanged: source.channels == channels
+                || (source.channels == 1 && channels == 2),
+            sound_playing: self.sound_on(Target::Music),
+        };
+        Some(OutputState {
+            path: output_path(facts),
+            device_rate: sink.device.sample_rate,
+            device_bits: sink.device.kind.bits(),
+        })
+    }
+
+    /// Say how the sound reaches the device, when that has changed. With exclusive mode off this
+    /// says nothing, except once after it is turned off, which is why the last state is kept only
+    /// while the mode is on.
+    fn report_output(&mut self) {
+        if !self.exclusive && self.last_output.is_none() {
+            return;
+        }
+        let Some(state) = self.output_state() else {
+            return;
+        };
+        if self.last_output != Some(state) {
+            self.emit(EngineEvent::Output(state));
+        }
+        self.last_output = self.exclusive.then_some(state);
     }
 
     fn publish(&mut self) {

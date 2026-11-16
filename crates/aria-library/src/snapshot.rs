@@ -88,7 +88,7 @@ impl Library {
             let mut stmt = tx.prepare(
                 "SELECT id, folder_id, path, title, artist, album, album_artist, track_no,
                         disc_no, year, genre, duration_ms, sample_rate, channels, codec,
-                        artwork_hash, added_at
+                        artwork_hash, added_at, bits_per_sample
                  FROM tracks ORDER BY id",
             )?;
             let mut rows = stmt.query([])?;
@@ -117,6 +117,7 @@ impl Library {
                     duration_ms: u64::try_from(r.get::<_, i64>(11)?).unwrap_or(0),
                     sample_rate: u32::try_from(r.get::<_, i64>(12)?).unwrap_or(0),
                     channels: u16::try_from(r.get::<_, i64>(13)?).unwrap_or(0),
+                    bits_per_sample: u16::try_from(r.get::<_, i64>(17)?).unwrap_or(0),
                     codec: strings.get(&codec),
                     artwork: r
                         .get::<_, Option<String>>(15)?

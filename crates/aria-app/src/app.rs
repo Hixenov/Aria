@@ -11,6 +11,7 @@ use aria_core::{
     Collections, DeviceInfo, PlaybackClock,
     command::Command,
     event::Event,
+    hotkey::Hotkey,
     i18n::{Localizer, os_language},
     logging::LogLevelHandle,
     notice::{Notice, NoticeLevel},
@@ -19,12 +20,15 @@ use aria_core::{
     player::queue::RepeatMode,
     runtime::BackendHandle,
     settings::{SIDEBAR_MAX, SIDEBAR_MIN, Settings},
+    soundboard::SoundboardState,
 };
+use aria_library::{PLAYLIST_NAME_MAX, SOUND_NAME_MAX, SoundId};
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
 use crate::{
     artwork::ArtworkTextures,
-    folders::{FolderOpener, FolderPicker},
+    folders::{FolderOpener, FolderPicker, SoundPicker},
+    hotkeys::{HotkeyAction, HotkeyBackend, Hotkeys, NoHotkeys, SystemHotkeys},
     nav::{History, Route},
     shortcuts::read_shortcuts,
     ui::{
@@ -38,7 +42,7 @@ use crate::{
             Palette, fonts,
             visuals::{self, SPACE},
         },
-        widgets::{NameAnswer, NameDialog, Toasts},
+        widgets::{HotkeyAnswer, HotkeyCapture, HotkeyDialog, NameAnswer, NameDialog, Toasts},
     },
     whole_ms,
 };
@@ -49,6 +53,17 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const SETTLE_FOR: f64 = 1.0;
 /// How often it redraws then.
 const SETTLE_REPAINT: Duration = Duration::from_millis(50);
+/// Shown when the system refused a hotkey the user chose, which is then not saved.
+const HOTKEY_UNAVAILABLE: Notice = Notice::new(NoticeLevel::Warning, "hotkey-unavailable");
+
+/// Shown when global hotkeys cannot be had at all this session, and some are set.
+const HOTKEYS_UNAVAILABLE: Notice = Notice::new(NoticeLevel::Warning, "hotkeys-unavailable");
+
+/// Shown when the system refused `count` of the hotkeys Aria has, which do not work now.
+fn hotkeys_inactive(count: usize) -> Notice {
+    Notice::new(NoticeLevel::Warning, "hotkeys-inactive").with_arg("count", count.to_string())
+}
+
 /// Shown when a folder could not be opened in the file manager.
 const OPEN_FOLDER_FAILED: Notice = Notice {
     level: NoticeLevel::Warning,
@@ -63,6 +78,22 @@ const PICK_FOLDER_FAILED: Notice = Notice {
     args: Vec::new(),
 };
 
+/// Shown when the sound file dialog could not be opened.
+const PICK_SOUNDS_FAILED: Notice = Notice {
+    level: NoticeLevel::Warning,
+    key: "notice-pick-sounds-failed",
+    args: Vec::new(),
+};
+
+/// What the hotkey dialog sets the hotkey of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotkeyFor {
+    /// This sound's.
+    Sound(SoundId),
+    /// The one of "Stop all".
+    StopAll,
+}
+
 /// The handles the shell drives. Each is optional, so tests, and a start-up that lost one,
 /// still run.
 #[derive(Default)]
@@ -76,10 +107,13 @@ pub struct AppDeps {
     pub paths: Option<AppPaths>,
     /// Where playback is. Taken from `backend` when left out.
     pub clock: Option<Arc<PlaybackClock>>,
+    /// The system's global hotkeys, made on the main thread before the window. Without them
+    /// every hotkey is refused.
+    pub hotkeys: Option<SystemHotkeys>,
 }
 
 impl AppDeps {
-    /// No backend, logging or paths, for tests.
+    /// No backend, logging, paths or hotkeys, for tests.
     pub fn none() -> Self {
         Self::default()
     }
@@ -108,6 +142,8 @@ pub struct AriaApp {
     folders: FolderOpener,
     /// The dialog for choosing a folder to add to the library.
     picker: FolderPicker,
+    /// The dialog for choosing sound files to add to the soundboard.
+    sound_picker: SoundPicker,
     /// What the backend last reported of the library and the player. Starts empty, since a
     /// disabled library sends nothing at all.
     library: LibraryView,
@@ -116,8 +152,22 @@ pub struct AriaApp {
     /// Favorites, playlists and recent plays as the backend last reported them. Empty until
     /// it does.
     collections: Arc<Collections>,
+    /// The soundboard as the backend last reported it. Empty until it does.
+    soundboard: Arc<SoundboardState>,
     /// The playlist name dialog, while it is open: what it is for and the text typed so far.
     name_dialog: Option<(NameFor, String)>,
+    /// The hotkey dialog, while it is open: what it is for and the combination pressed so far.
+    hotkey_dialog: Option<(HotkeyFor, HotkeyCapture)>,
+    /// The global hotkeys registered with the system.
+    hotkeys: Hotkeys<Box<dyn HotkeyBackend>>,
+    /// Whether the system's hotkey manager could be made. Without it every hotkey is refused,
+    /// and the notice says so rather than blaming other programs.
+    hotkeys_available: bool,
+    /// What the hotkeys are for changed, or the dialog opened or closed: they are synced at the
+    /// end of the frame.
+    hotkeys_dirty: bool,
+    /// The hotkeys the system refused at the last sync, marked on their tiles.
+    inactive_hotkeys: Vec<Hotkey>,
     /// The output devices the backend last listed. Empty until it answers.
     devices: Vec<DeviceInfo>,
     /// Whether the Settings page was on screen last frame, so that entering it asks for the
@@ -155,9 +205,14 @@ impl AriaApp {
     pub fn new(
         settings: Settings,
         localizer: Localizer,
-        deps: AppDeps,
+        mut deps: AppDeps,
         startup_notices: Vec<Notice>,
     ) -> AriaApp {
+        let hotkeys_available = deps.hotkeys.is_some();
+        let hotkeys: Box<dyn HotkeyBackend> = match deps.hotkeys.take() {
+            Some(system) => Box::new(system),
+            None => Box::new(NoHotkeys),
+        };
         let clock = deps
             .clock
             .clone()
@@ -175,10 +230,17 @@ impl AriaApp {
             toasts: Toasts::new(player_bar::HEIGHT),
             folders: FolderOpener::default(),
             picker: FolderPicker::default(),
+            sound_picker: SoundPicker::default(),
             library: LibraryView::default(),
             player: PlayerView::default(),
             collections: Arc::default(),
+            soundboard: Arc::default(),
             name_dialog: None,
+            hotkey_dialog: None,
+            hotkeys: Hotkeys::new(hotkeys),
+            hotkeys_available,
+            hotkeys_dirty: true,
+            inactive_hotkeys: Vec::new(),
             devices: Vec::new(),
             on_settings: false,
             clock,
@@ -211,6 +273,11 @@ impl AriaApp {
         &self.settings
     }
 
+    /// The soundboard as the backend last reported it.
+    pub fn soundboard(&self) -> &SoundboardState {
+        &self.soundboard
+    }
+
     /// Startup notices not shown yet, oldest first. The first frame shows them as toasts.
     pub fn pending_notices(&self) -> &[Notice] {
         &self.pending_notices
@@ -231,6 +298,7 @@ impl AriaApp {
         }
         self.collect_folder_failures(&ctx);
         self.collect_picked_folder();
+        self.collect_picked_sounds();
         self.handle_shortcuts(&ctx);
 
         self.poll_artwork(&ctx);
@@ -242,6 +310,9 @@ impl AriaApp {
         self.show_right_panel(ui, &palette);
         self.show_page(ui, &ctx, &palette);
         self.show_name_dialog(&ctx, &palette);
+        self.show_hotkey_dialog(&ctx, &palette);
+        // After the dialogs, so one that opened this frame already has the keys to itself.
+        self.run_hotkeys(&ctx);
         self.toasts.show(&ctx, &self.localizer, &palette);
     }
 
@@ -395,6 +466,10 @@ impl AriaApp {
                 self.library.snapshot = snapshot;
             }
             Event::Collections(collections) => self.collections = collections,
+            Event::Soundboard(soundboard) => {
+                self.soundboard = soundboard;
+                self.hotkeys_dirty = true;
+            }
             Event::ScanProgress(scan) => {
                 // Covers that were missing may have been written by the scan that just ended;
                 // between snapshots, a missing cover stays missing.
@@ -428,6 +503,14 @@ impl AriaApp {
     fn collect_picked_folder(&mut self) {
         if let Some(folder) = self.picker.picked() {
             self.send(Command::AddFolder(folder));
+        }
+    }
+
+    /// Adds the sound files the user chose in the dialog, if some were chosen since the last
+    /// frame.
+    fn collect_picked_sounds(&mut self) {
+        if let Some(files) = self.sound_picker.picked() {
+            self.send(Command::AddSounds(files));
         }
     }
 
@@ -507,10 +590,13 @@ impl AriaApp {
             palette: *palette,
             settings: &self.settings,
             paths_available: self.deps.paths.is_some(),
+            exclusive_supported: aria_core::playback_service::EXCLUSIVE_SUPPORTED,
             modal_open: &mut self.page_dialog_open,
             out: &mut actions,
             library: &self.library,
             collections: &self.collections,
+            soundboard: &self.soundboard,
+            inactive_hotkeys: &self.inactive_hotkeys,
             devices: &self.devices,
             artwork: self.artwork.as_mut(),
         };
@@ -572,6 +658,16 @@ impl AriaApp {
             PageAction::DeletePlaylist(id) => self.send(Command::DeletePlaylist(id)),
             PageAction::ClearHistory => self.send(Command::ClearHistory),
             PageAction::AskPlaylistName(purpose) => self.open_name_dialog(purpose),
+            PageAction::AddSounds => self.pick_sounds(ctx),
+            PageAction::AskSoundName(id) => self.open_name_dialog(NameFor::Sound(id)),
+            PageAction::SetSoundVolume { id, volume } => {
+                self.send(Command::SetSoundVolume { id, volume });
+            }
+            PageAction::RemoveSound(id) => self.send(Command::RemoveSound(id)),
+            PageAction::PlaySound(id) => self.send(Command::PlaySound(id)),
+            PageAction::StopSounds => self.send(Command::StopSounds),
+            PageAction::AskSoundHotkey(id) => self.open_hotkey_dialog(HotkeyFor::Sound(id)),
+            PageAction::AskStopHotkey => self.open_hotkey_dialog(HotkeyFor::StopAll),
         }
     }
 
@@ -586,15 +682,22 @@ impl AriaApp {
                     return;
                 }
             },
+            NameFor::Sound(id) => match self.sound_name(id) {
+                Some(name) => name.to_owned(),
+                None => {
+                    tracing::debug!(id = id.0, "no such sound to rename");
+                    return;
+                }
+            },
         };
         self.name_dialog = Some((purpose, text));
     }
 
-    /// Whether a modal dialog is open: a page's confirmation (Settings or Playlists) or the
-    /// playlist name dialog. Navigation and panel shortcuts wait while one is. Each dialog owns its own
-    /// state, so closing one cannot close the other's hold on the app.
+    /// Whether a modal dialog is open: a page's confirmation (Settings or Playlists), the name
+    /// dialog or the hotkey dialog. Navigation and panel shortcuts wait while one is. Each dialog
+    /// owns its own state, so closing one cannot close the other's hold on the app.
     fn modal_open(&self) -> bool {
-        self.page_dialog_open || self.name_dialog.is_some()
+        self.page_dialog_open || self.name_dialog.is_some() || self.hotkey_dialog.is_some()
     }
 
     /// The name of playlist `id`, if the collections know it.
@@ -602,6 +705,154 @@ impl AriaApp {
         let playlists = &self.collections.playlists;
         let playlist = playlists.iter().find(|playlist| playlist.id == id)?;
         Some(&playlist.name)
+    }
+
+    /// The name of sound `id`, if the soundboard has it.
+    fn sound_name(&self, id: aria_library::SoundId) -> Option<&str> {
+        let sound = self.soundboard.sounds.iter().find(|sound| sound.id == id)?;
+        Some(&sound.name)
+    }
+
+    /// The hotkey `target` has now, or `None` for a sound the soundboard no longer has.
+    fn hotkey_of(&self, target: HotkeyFor) -> Option<Option<Hotkey>> {
+        match target {
+            HotkeyFor::Sound(id) => {
+                let sounds = &self.soundboard.sounds;
+                sounds.iter().find(|sound| sound.id == id).map(|s| s.hotkey)
+            }
+            HotkeyFor::StopAll => Some(self.settings.stop_sounds_hotkey),
+        }
+    }
+
+    /// What each hotkey is for: the sounds' first, then the one of Stop all.
+    fn wanted_hotkeys(&self) -> Vec<(Hotkey, HotkeyAction)> {
+        let sounds = self.soundboard.sounds.iter();
+        let sounds = sounds.filter_map(|sound| Some((sound.hotkey?, HotkeyAction::Play(sound.id))));
+        let stop = self
+            .settings
+            .stop_sounds_hotkey
+            .map(|hotkey| (hotkey, HotkeyAction::StopAll));
+        sounds.chain(stop).collect()
+    }
+
+    /// Opens the hotkey dialog for `target`, unless it is a sound the soundboard does not have.
+    /// The hotkeys are unregistered while it is open, so the combination reaches the dialog.
+    fn open_hotkey_dialog(&mut self, target: HotkeyFor) {
+        let Some(current) = self.hotkey_of(target) else {
+            tracing::debug!(?target, "no such sound to set a hotkey for");
+            return;
+        };
+        self.hotkey_dialog = Some((target, HotkeyCapture::new(current)));
+        self.hotkeys_dirty = true;
+    }
+
+    /// Draws the hotkey dialog while it is open, and saves what it was confirmed with. A hotkey
+    /// the system refuses is not saved.
+    fn show_hotkey_dialog(&mut self, ctx: &egui::Context, palette: &Palette) {
+        let Some((target, mut capture)) = self.hotkey_dialog.take() else {
+            return;
+        };
+        // A sound removed while its dialog was open has nothing left to set.
+        let Some(current) = self.hotkey_of(target) else {
+            self.hotkeys_dirty = true;
+            return;
+        };
+        // The hotkeys used elsewhere in Aria: refused here, before anything is sent.
+        let taken: Vec<Hotkey> = self
+            .wanted_hotkeys()
+            .into_iter()
+            .filter(|(_, action)| match (target, action) {
+                (HotkeyFor::Sound(id), HotkeyAction::Play(other)) => *other != id,
+                (HotkeyFor::StopAll, HotkeyAction::StopAll) => false,
+                _ => true,
+            })
+            .map(|(hotkey, _)| hotkey)
+            .collect();
+        let dialog = HotkeyDialog {
+            current,
+            taken: &taken,
+        };
+        match dialog.show(ctx, &self.localizer, palette, &mut capture) {
+            HotkeyAnswer::Open => {
+                self.hotkey_dialog = Some((target, capture));
+                return;
+            }
+            HotkeyAnswer::Cancelled => {}
+            HotkeyAnswer::Cleared => {
+                if current.is_some() {
+                    self.set_hotkey(ctx, target, None);
+                }
+            }
+            HotkeyAnswer::Confirmed(hotkey) if Some(hotkey) == current => {}
+            HotkeyAnswer::Confirmed(hotkey) => {
+                if self.hotkeys.try_register(hotkey) {
+                    self.set_hotkey(ctx, target, Some(hotkey));
+                } else {
+                    self.notify(ctx, HOTKEY_UNAVAILABLE);
+                }
+            }
+        }
+        self.hotkeys_dirty = true;
+    }
+
+    /// Saves `hotkey` as the one of `target`.
+    fn set_hotkey(&mut self, ctx: &egui::Context, target: HotkeyFor, hotkey: Option<Hotkey>) {
+        match target {
+            HotkeyFor::Sound(id) => self.send(Command::SetSoundHotkey { id, hotkey }),
+            HotkeyFor::StopAll => {
+                let mut settings = self.settings.clone();
+                settings.stop_sounds_hotkey = hotkey;
+                self.update_settings(ctx, settings);
+            }
+        }
+    }
+
+    /// Syncs the hotkeys with the system when that is due, and fires what was pressed.
+    fn run_hotkeys(&mut self, ctx: &egui::Context) {
+        if mem::take(&mut self.hotkeys_dirty) {
+            self.sync_hotkeys(ctx);
+        }
+        self.fire_hotkeys();
+    }
+
+    /// Sends what the hotkeys pressed since the last look are for. A press wakes the window
+    /// itself, and eframe then runs [`eframe::App::logic`], which calls this, even while the
+    /// window is minimized and draws nothing.
+    fn fire_hotkeys(&mut self) {
+        for action in self.hotkeys.poll() {
+            self.send(match action {
+                HotkeyAction::Play(id) => Command::PlaySound(id),
+                HotkeyAction::StopAll => Command::StopSounds,
+            });
+        }
+    }
+
+    /// Registers the hotkeys wanted now: none while the switch is off or the hotkey dialog is
+    /// open. The hotkeys the system refused are marked, and one notice counts them when some
+    /// are newly refused.
+    fn sync_hotkeys(&mut self, ctx: &egui::Context) {
+        let suspended = self.hotkey_dialog.is_some();
+        let enabled = self.settings.global_hotkeys && !suspended;
+        let wanted = self.wanted_hotkeys();
+        let refused = self.hotkeys.sync(enabled, &wanted);
+        // Nothing was asked of the system while the dialog is open: the marks stay as they were.
+        if suspended {
+            return;
+        }
+        let newly = refused
+            .iter()
+            .any(|hotkey| !self.inactive_hotkeys.contains(hotkey));
+        if newly {
+            let now = ctx.input(|input| input.time);
+            if self.hotkeys_available {
+                // One notice counts them all, in place of one that counted fewer.
+                self.toasts
+                    .push_replacing(hotkeys_inactive(refused.len()), now);
+            } else {
+                self.toasts.push(HOTKEYS_UNAVAILABLE, now);
+            }
+        }
+        self.inactive_hotkeys = refused;
     }
 
     /// Draws the name dialog while it is open, and sends what it was confirmed for.
@@ -615,14 +866,22 @@ impl AriaApp {
         {
             return;
         }
-        let (title, confirm) = match purpose {
-            NameFor::New { .. } => ("playlist-new", "playlist-create"),
-            NameFor::Rename(_) => ("playlist-rename", "playlist-rename"),
+        // A sound removed while its rename was open has nothing left to rename.
+        if let NameFor::Sound(id) = purpose
+            && self.sound_name(id).is_none()
+        {
+            return;
+        }
+        let (title, confirm, max_chars) = match purpose {
+            NameFor::New { .. } => ("playlist-new", "playlist-create", PLAYLIST_NAME_MAX),
+            NameFor::Rename(_) => ("playlist-rename", "playlist-rename", PLAYLIST_NAME_MAX),
+            NameFor::Sound(_) => ("sound-rename", "sound-rename", SOUND_NAME_MAX),
         };
         let (title, confirm) = (self.localizer.tr(title), self.localizer.tr(confirm));
         let dialog = NameDialog {
             title: &title,
             confirm: &confirm,
+            max_chars,
         };
         match dialog.show(ctx, &self.localizer, palette, &mut text) {
             NameAnswer::Open => {
@@ -633,6 +892,7 @@ impl AriaApp {
                 self.send(match purpose {
                     NameFor::New { first } => Command::CreatePlaylist { name, first },
                     NameFor::Rename(id) => Command::RenamePlaylist { id, name },
+                    NameFor::Sound(id) => Command::RenameSound { id, name },
                 });
             }
         }
@@ -656,6 +916,14 @@ impl AriaApp {
         if let Err(err) = self.picker.start(ctx) {
             tracing::warn!(%err, "could not open the folder dialog");
             self.notify(ctx, PICK_FOLDER_FAILED);
+        }
+    }
+
+    /// Opens the sound file dialog, unless one is open already.
+    fn pick_sounds(&mut self, ctx: &egui::Context) {
+        if let Err(err) = self.sound_picker.start(ctx) {
+            tracing::warn!(%err, "could not open the sound file dialog");
+            self.notify(ctx, PICK_SOUNDS_FAILED);
         }
     }
 
@@ -699,6 +967,11 @@ impl AriaApp {
         if old.sidebar_width != new.sidebar_width {
             self.sidebar_width_dirty = true;
         }
+        if old.global_hotkeys != new.global_hotkeys
+            || old.stop_sounds_hotkey != new.stop_sounds_hotkey
+        {
+            self.hotkeys_dirty = true;
+        }
         ctx.request_repaint();
     }
 
@@ -712,6 +985,14 @@ impl AriaApp {
 }
 
 impl eframe::App for AriaApp {
+    /// Runs before every [`Self::ui`], and alone while the window is minimized. So the
+    /// backend's events (a new soundboard list, replaced settings) are taken in and the hotkeys
+    /// synced here too: an Aria started minimized registers its hotkeys without a drawn frame.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drain_events(ctx);
+        self.run_hotkeys(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
@@ -1040,6 +1321,25 @@ mod tests {
         assert_eq!(app.devices, [device]);
     }
 
+    #[test]
+    fn the_soundboard_is_kept() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        assert!(app.soundboard().sounds.is_empty());
+        let state = SoundboardState {
+            sounds: vec![aria_core::soundboard::SoundView {
+                id: aria_core::SoundId(1),
+                name: "Horn".into(),
+                volume: 0.5,
+                hotkey: None,
+                missing: false,
+                playing: true,
+            }],
+        };
+        app.handle_event(&ctx, Event::Soundboard(Arc::new(state.clone())));
+        assert_eq!(*app.soundboard(), state);
+    }
+
     fn space_harness() -> Harness<'static, AriaApp> {
         let mut app = app(vec![]);
         let track = aria_library::Track {
@@ -1057,6 +1357,7 @@ mod tests {
             duration_ms: 1000,
             sample_rate: 44_100,
             channels: 2,
+            bits_per_sample: 0,
             codec: Arc::from("flac"),
             artwork: None,
             added_at: 1,
@@ -1276,6 +1577,88 @@ mod tests {
         assert!(!harness.state().modal_open());
     }
 
+    fn sound_view(id: i64, name: &str) -> aria_core::soundboard::SoundView {
+        aria_core::soundboard::SoundView {
+            id: aria_core::SoundId(id),
+            name: name.into(),
+            volume: 1.0,
+            hotkey: None,
+            missing: false,
+            playing: false,
+        }
+    }
+
+    #[test]
+    fn rename_opens_the_name_dialog_with_the_current_name() {
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let mut harness = dialog_harness(aria_library::Collections::default());
+        let ctx = harness.ctx.clone();
+        let state = SoundboardState {
+            sounds: vec![sound_view(3, "Airhorn")],
+        };
+        harness
+            .state_mut()
+            .handle_event(&ctx, Event::Soundboard(Arc::new(state)));
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskSoundName(aria_core::SoundId(3)));
+        harness.run();
+        assert!(harness.state().modal_open());
+
+        let label = english("playlist-name-label");
+        let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, &label);
+        assert_eq!(field.accesskit_node().value().as_deref(), Some("Airhorn"));
+
+        // 50 characters are the most a sound's name can have.
+        let confirm = english("sound-rename");
+        let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, &label);
+        field.focus();
+        harness.run();
+        harness.state_mut().name_dialog =
+            Some((NameFor::Sound(aria_core::SoundId(3)), "x".repeat(51)));
+        harness.run();
+        let button = harness.get_by_role_and_label(egui::accesskit::Role::Button, &confirm);
+        assert!(button.accesskit_node().is_disabled(), "51 characters");
+        harness.state_mut().name_dialog =
+            Some((NameFor::Sound(aria_core::SoundId(3)), "x".repeat(50)));
+        harness.run();
+        let button = harness.get_by_role_and_label(egui::accesskit::Role::Button, &confirm);
+        assert!(!button.accesskit_node().is_disabled(), "50 characters");
+        button.click();
+        harness.run();
+        let command = Command::RenameSound {
+            id: aria_core::SoundId(3),
+            name: "x".repeat(50),
+        };
+        assert_eq!(sent_like(harness.state(), &command), 1);
+        assert!(!harness.state().modal_open());
+    }
+
+    #[test]
+    fn the_sound_actions_become_commands() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let id = aria_core::SoundId(4);
+        for (action, command) in [
+            (PageAction::PlaySound(id), Command::PlaySound(id)),
+            (PageAction::StopSounds, Command::StopSounds),
+            (PageAction::RemoveSound(id), Command::RemoveSound(id)),
+            (
+                PageAction::SetSoundVolume { id, volume: 0.25 },
+                Command::SetSoundVolume { id, volume: 0.25 },
+            ),
+        ] {
+            app.handle_page_action(&ctx, action);
+            assert_eq!(sent_like(&app, &command), 1, "{command:?}");
+        }
+        // The hotkey dialogs send nothing until they are confirmed, and none opens for a sound
+        // the soundboard does not have.
+        let before = app.sent.borrow().len();
+        app.handle_page_action(&ctx, PageAction::AskSoundHotkey(id));
+        app.handle_page_action(&ctx, PageAction::AskStopHotkey);
+        assert_eq!(app.sent.borrow().len(), before);
+    }
+
     #[test]
     fn the_name_dialog_closes_on_escape() {
         let mut harness = dialog_harness(aria_library::Collections::default());
@@ -1357,5 +1740,400 @@ mod tests {
         harness.key_press(egui::Key::Escape);
         harness.run();
         assert!(!harness.state().modal_open());
+    }
+
+    // Global hotkeys, with a fake system behind them.
+
+    fn key(text: &str) -> Hotkey {
+        text.parse()
+            .unwrap_or_else(|err| panic!("{text} is a hotkey: {err}"))
+    }
+
+    fn keyed(id: i64, name: &str, hotkey: &str) -> aria_core::soundboard::SoundView {
+        aria_core::soundboard::SoundView {
+            hotkey: Some(key(hotkey)),
+            ..sound_view(id, name)
+        }
+    }
+
+    /// The app on the Soundboard page with `sounds`, over a fake system the test keeps a handle
+    /// to.
+    fn hotkey_harness(
+        sounds: Vec<aria_core::soundboard::SoundView>,
+        fake: &crate::hotkeys::fake::Fake,
+    ) -> Harness<'static, AriaApp> {
+        let mut app = app(vec![]);
+        app.hotkeys = Hotkeys::new(Box::new(fake.clone()));
+        app.hotkeys_available = true;
+        let ctx = egui::Context::default();
+        app.handle_event(
+            &ctx,
+            Event::Soundboard(Arc::new(SoundboardState { sounds })),
+        );
+        app.history.navigate(Route::Soundboard);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 780.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+        harness.run();
+        harness
+    }
+
+    fn set_hotkey_sent(app: &AriaApp) -> Vec<Command> {
+        app.sent
+            .borrow()
+            .iter()
+            .filter(|command| matches!(command, Command::SetSoundHotkey { .. }))
+            .cloned()
+            .collect()
+    }
+
+    fn plays_sent(app: &AriaApp, id: i64) -> usize {
+        sent_like(app, &Command::PlaySound(aria_core::SoundId(id)))
+    }
+
+    fn click(harness: &mut Harness<'_, AriaApp>, key: &str) {
+        use egui_kittest::kittest::Queryable as _;
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, &english(key))
+            .click();
+        harness.run();
+    }
+
+    #[test]
+    fn a_press_plays_its_sound_and_stop_all_stops_them() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        let mut harness = hotkey_harness(vec![keyed(1, "Airhorn", "Ctrl+1")], &fake);
+        let ctx = harness.ctx.clone();
+        let mut settings = harness.state().settings.clone();
+        settings.stop_sounds_hotkey = Some(key("F9"));
+        harness.state_mut().update_settings(&ctx, settings);
+        harness.run();
+        let registered: std::collections::HashSet<Hotkey> = [key("Ctrl+1"), key("F9")].into();
+        assert_eq!(fake.registered(), registered);
+
+        fake.press(key("Ctrl+1"));
+        fake.press(key("F9"));
+        harness.run();
+        assert_eq!(plays_sent(harness.state(), 1), 1);
+        assert_eq!(sent_like(harness.state(), &Command::StopSounds), 1);
+    }
+
+    #[test]
+    fn the_switch_off_unregisters_every_hotkey_and_keeps_them() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        let mut harness = hotkey_harness(vec![keyed(1, "Airhorn", "Ctrl+1")], &fake);
+        let ctx = harness.ctx.clone();
+        let mut settings = harness.state().settings.clone();
+        settings.global_hotkeys = false;
+        harness.state_mut().update_settings(&ctx, settings.clone());
+        harness.run();
+        assert!(fake.registered().is_empty());
+        fake.press(key("Ctrl+1"));
+        harness.run();
+        assert_eq!(plays_sent(harness.state(), 1), 0, "fired while off");
+        assert!(
+            set_hotkey_sent(harness.state()).is_empty(),
+            "the hotkey was dropped"
+        );
+
+        settings.global_hotkeys = true;
+        harness.state_mut().update_settings(&ctx, settings);
+        harness.run();
+        assert_eq!(fake.registered(), [key("Ctrl+1")].into());
+    }
+
+    #[test]
+    fn a_hotkey_the_system_refuses_is_not_saved() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        fake.take(key("Ctrl+Alt+K"));
+        let mut harness = hotkey_harness(vec![sound_view(1, "Airhorn")], &fake);
+        let ctx = harness.ctx.clone();
+        let id = aria_core::SoundId(1);
+
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskSoundHotkey(id));
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::CTRL | egui::Modifiers::ALT, egui::Key::K);
+        harness.run();
+        click(&mut harness, "settings-confirm");
+        assert!(
+            set_hotkey_sent(harness.state()).is_empty(),
+            "a refused hotkey was saved"
+        );
+        let unavailable = harness
+            .state()
+            .toasts
+            .notices()
+            .filter(|notice| notice.key == "hotkey-unavailable")
+            .count();
+        assert_eq!(unavailable, 1);
+        assert!(harness.state().hotkey_dialog.is_none());
+        assert!(
+            fake.registered().is_empty(),
+            "the check left a hotkey behind"
+        );
+
+        // One the system accepts is saved, and is not left registered by the check.
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskSoundHotkey(id));
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::CTRL | egui::Modifiers::ALT, egui::Key::J);
+        harness.run();
+        click(&mut harness, "settings-confirm");
+        let expected = Command::SetSoundHotkey {
+            id,
+            hotkey: Some(key("Ctrl+Alt+J")),
+        };
+        assert_eq!(sent_like(harness.state(), &expected), 1);
+        assert_eq!(set_hotkey_sent(harness.state()).len(), 1);
+        assert!(
+            fake.registered().is_empty(),
+            "registered before the soundboard has it"
+        );
+    }
+
+    #[test]
+    fn a_hotkey_another_sound_has_is_refused_before_anything_is_sent() {
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let fake = crate::hotkeys::fake::Fake::default();
+        let sounds = vec![keyed(1, "Airhorn", "Ctrl+1"), sound_view(2, "Rimshot")];
+        let mut harness = hotkey_harness(sounds, &fake);
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskSoundHotkey(aria_core::SoundId(2)));
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Num1);
+        harness.run();
+        harness.get_by_label(&english("hotkey-taken"));
+        let label = english("settings-confirm");
+        let confirm = harness.get_by_role_and_label(egui::accesskit::Role::Button, &label);
+        assert!(confirm.accesskit_node().is_disabled());
+        assert!(set_hotkey_sent(harness.state()).is_empty());
+    }
+
+    #[test]
+    fn the_stop_all_hotkey_is_saved_in_the_settings_and_cleared_with_delete() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        let mut harness = hotkey_harness(vec![], &fake);
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskStopHotkey);
+        harness.run();
+        harness.key_press(egui::Key::F9);
+        harness.run();
+        click(&mut harness, "settings-confirm");
+        assert_eq!(harness.state().settings.stop_sounds_hotkey, Some(key("F9")));
+        assert_eq!(fake.registered(), [key("F9")].into());
+
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskStopHotkey);
+        harness.run();
+        harness.key_press(egui::Key::Delete);
+        harness.run();
+        assert_eq!(harness.state().settings.stop_sounds_hotkey, None);
+        assert!(fake.registered().is_empty());
+    }
+
+    #[test]
+    fn inactive_hotkeys_are_marked_on_their_tiles_and_counted_in_one_notice() {
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let fake = crate::hotkeys::fake::Fake::default();
+        fake.take(key("Ctrl+1"));
+        fake.take(key("Ctrl+2"));
+        let sounds = vec![
+            keyed(1, "Airhorn", "Ctrl+1"),
+            keyed(2, "Rimshot", "Ctrl+2"),
+            keyed(3, "Gong", "Ctrl+3"),
+        ];
+        let mut harness = hotkey_harness(sounds.clone(), &fake);
+
+        let hint = english("hotkey-inactive-hint");
+        let description = |harness: &Harness<'_, AriaApp>, name: &str| {
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, name)
+                .accesskit_node()
+                .description()
+        };
+        assert_eq!(
+            description(&harness, "Airhorn").as_deref(),
+            Some(format!("Ctrl+1. {hint}").as_str())
+        );
+        assert_eq!(
+            description(&harness, "Rimshot").as_deref(),
+            Some(format!("Ctrl+2. {hint}").as_str())
+        );
+        assert_eq!(description(&harness, "Gong").as_deref(), Some("Ctrl+3"));
+
+        let inactive = |harness: &Harness<'_, AriaApp>| -> Vec<Notice> {
+            harness
+                .state()
+                .toasts
+                .notices()
+                .filter(|notice| notice.key == "hotkeys-inactive")
+                .cloned()
+                .collect()
+        };
+        let notices = inactive(&harness);
+        assert_eq!(notices, [hotkeys_inactive(2)]);
+        let text = Localizer::new(Language::En)
+            .expect("the English locale loads")
+            .tr_args(notices[0].key, &notices[0].fluent_args())
+            .into_owned();
+        assert!(text.starts_with("2 hotkeys don't work"), "{text}");
+
+        // The same refusals again say nothing new.
+        harness.state_mut().toasts = Toasts::new(player_bar::HEIGHT);
+        let ctx = harness.ctx.clone();
+        harness.state_mut().handle_event(
+            &ctx,
+            Event::Soundboard(Arc::new(SoundboardState { sounds })),
+        );
+        harness.run();
+        assert!(inactive(&harness).is_empty(), "the notice was repeated");
+        assert_eq!(fake.registered(), [key("Ctrl+3")].into());
+
+        // One more refused replaces the notice on screen with one that counts three.
+        harness.state_mut().notify(&ctx, hotkeys_inactive(2));
+        fake.take(key("F9"));
+        let mut settings = harness.state().settings.clone();
+        settings.stop_sounds_hotkey = Some(key("F9"));
+        harness.state_mut().update_settings(&ctx, settings);
+        harness.run();
+        assert_eq!(inactive(&harness), [hotkeys_inactive(3)]);
+    }
+
+    #[test]
+    fn hotkeys_do_not_fire_while_the_hotkey_dialog_is_open() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        let mut harness = hotkey_harness(vec![keyed(1, "Airhorn", "Ctrl+1")], &fake);
+        let ctx = harness.ctx.clone();
+        fake.press(key("Ctrl+1"));
+        harness.run();
+        assert_eq!(plays_sent(harness.state(), 1), 1);
+
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskSoundHotkey(aria_core::SoundId(1)));
+        harness.run();
+        assert!(harness.state().modal_open());
+        assert!(fake.registered().is_empty(), "registered behind the dialog");
+        fake.press(key("Ctrl+1"));
+        harness.run();
+        assert_eq!(plays_sent(harness.state(), 1), 1, "fired behind the dialog");
+
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(!harness.state().modal_open());
+        assert_eq!(fake.registered(), [key("Ctrl+1")].into());
+        fake.press(key("Ctrl+1"));
+        harness.run();
+        assert_eq!(plays_sent(harness.state(), 1), 2);
+    }
+
+    #[test]
+    fn without_the_system_manager_every_hotkey_is_inactive() {
+        // `AppDeps::none()` brings no manager.
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        let sounds = vec![keyed(1, "Airhorn", "Ctrl+1")];
+        app.handle_event(
+            &ctx,
+            Event::Soundboard(Arc::new(SoundboardState { sounds })),
+        );
+        app.run_hotkeys(&ctx);
+        assert_eq!(app.inactive_hotkeys, [key("Ctrl+1")]);
+        assert!(!app.hotkeys.any_registered());
+        // The notice does not blame other programs.
+        let keys: Vec<&str> = app.toasts.notices().map(|notice| notice.key).collect();
+        assert_eq!(keys, ["hotkeys-unavailable"]);
+    }
+
+    #[test]
+    fn a_window_never_drawn_still_takes_in_events_and_syncs_its_hotkeys() {
+        // Started minimized, eframe runs only `logic`: no frame is ever drawn here.
+        let woke = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woke);
+        let waker: Waker = Arc::new(move || flag.store(true, Ordering::SeqCst));
+        let services = BackendServices {
+            library: None,
+            output: Box::new(FakeFactory::new(OutputFormat {
+                sample_rate: 48_000,
+                channels: 2,
+            })),
+            settings: Settings::default(),
+        };
+        let backend = Backend::start(None, services, waker, BackendConfig::default())
+            .expect("the backend starts");
+        let deps = AppDeps {
+            backend: Some(backend),
+            ..AppDeps::none()
+        };
+        let settings = Settings {
+            language: Some(Language::En),
+            stop_sounds_hotkey: Some(key("F9")),
+            ..Settings::default()
+        };
+        let localizer = Localizer::new(Language::En).expect("the English locale loads");
+        let mut app = AriaApp::new(settings, localizer, deps, vec![]);
+        let fake = crate::hotkeys::fake::Fake::default();
+        app.hotkeys = Hotkeys::new(Box::new(fake.clone()));
+        app.hotkeys_available = true;
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(fake.registered(), [key("F9")].into());
+
+        // A new soundboard list: its hotkeys are registered, and fire, with nothing drawn.
+        let sounds = vec![keyed(1, "Airhorn", "Ctrl+F1")];
+        app.handle_event(
+            &ctx,
+            Event::Soundboard(Arc::new(SoundboardState { sounds })),
+        );
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(fake.registered(), [key("F9"), key("Ctrl+F1")].into());
+        fake.press(key("Ctrl+F1"));
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(plays_sent(&app, 1), 1);
+
+        // The backend's events are taken in by `logic` too: settings it replaced (here the
+        // defaults, after a reset) drop the hotkey of "Stop all".
+        woke.store(false, Ordering::SeqCst);
+        app.send(Command::ResetSettings);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !woke.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(woke.load(Ordering::SeqCst), "the backend did not answer");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.settings().stop_sounds_hotkey.is_some() && Instant::now() < deadline {
+            eframe::App::logic(&mut app, &ctx, &mut frame);
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.settings().stop_sounds_hotkey, None);
+        assert_eq!(fake.registered(), [key("Ctrl+F1")].into());
+    }
+
+    #[test]
+    fn a_press_fires_while_the_window_is_hidden() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        // One frame registers the hotkey; after that the window is minimized and eframe runs
+        // only `logic`.
+        let harness = hotkey_harness(vec![keyed(1, "Airhorn", "Ctrl+1")], &fake);
+        let ctx = harness.ctx.clone();
+        let mut app = harness.into_state();
+        assert_eq!(fake.registered(), [key("Ctrl+1")].into());
+
+        fake.press(key("Ctrl+1"));
+        let mut frame = eframe::Frame::_new_kittest();
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(plays_sent(&app, 1), 1, "the press waited for a drawn frame");
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(plays_sent(&app, 1), 1, "a press fired twice");
     }
 }

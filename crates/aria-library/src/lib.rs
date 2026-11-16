@@ -9,6 +9,7 @@ mod model;
 mod paths;
 mod scan;
 mod snapshot;
+mod sounds;
 mod tags;
 
 pub use artwork::{
@@ -21,7 +22,8 @@ pub use collections::{
 pub use db::{Library, Opened};
 pub use error::LibraryError;
 pub use migrations::SCHEMA_VERSION;
-pub use model::{ArtworkId, Folder, FolderId, QueueRecord, Track, TrackId};
+pub use model::{ArtworkId, Folder, FolderId, Quality, QueueRecord, Track, TrackId};
 pub use scan::{SUPPORTED_EXTENSIONS, ScanProgress, ScanSummary};
 pub use snapshot::{Album, Artist, LibrarySnapshot};
+pub use sounds::{SOUND_NAME_MAX, SOUNDS_MAX, Sound, SoundId, sound_name};
 pub use tags::{TrackTags, read_tags};

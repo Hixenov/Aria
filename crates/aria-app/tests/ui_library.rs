@@ -60,6 +60,7 @@ fn track(id: i64, title: &str, artist: Option<&str>, album: Option<&str>, ms: u6
         duration_ms: ms,
         sample_rate: 44_100,
         channels: 2,
+        bits_per_sample: 0,
         codec: Arc::from("flac"),
         artwork: None,
         added_at: id,
@@ -103,10 +104,13 @@ fn harness(snapshot: LibrarySnapshot) -> Harness<'static, Page> {
                     palette: Palette::dark(),
                     settings: &page.settings,
                     paths_available: true,
+                    exclusive_supported: true,
                     modal_open: &mut page.modal_open,
                     out: &mut page.actions,
                     library: &page.library,
                     collections: &Default::default(),
+                    soundboard: &Default::default(),
+                    inactive_hotkeys: &[],
                     devices: &[],
                     artwork: None,
                 };
@@ -141,6 +145,67 @@ fn double_click(harness: &mut Harness<'_, Page>, label: &str) {
     }
     harness.step();
     harness.run();
+}
+
+/// A library of an MP3, a CD-quality FLAC and a 96 kHz FLAC, titled "Lossy song", "CD song" and
+/// "Studio song".
+fn quality_library() -> LibrarySnapshot {
+    let mut tracks = vec![
+        track(1, "Lossy song", None, None, 1000),
+        track(2, "CD song", None, None, 1000),
+        track(3, "Studio song", None, None, 1000),
+    ];
+    tracks[0].codec = Arc::from("mp3");
+    tracks[1].bits_per_sample = 16;
+    tracks[2].bits_per_sample = 24;
+    tracks[2].sample_rate = 96_000;
+    snapshot(tracks)
+}
+
+#[test]
+fn the_quality_column_shows_lossless_and_hi_res_badges() {
+    let harness = harness(quality_library());
+    assert!(harness.query_by_label(&en("local-col-quality")).is_some());
+    assert_eq!(
+        harness.query_all_by_label(&en("quality-lossless")).count(),
+        1
+    );
+    assert_eq!(harness.query_all_by_label(&en("quality-hi-res")).count(), 1);
+}
+
+#[test]
+fn the_quality_badge_has_a_tooltip_with_codec_depth_and_rate() {
+    let mut harness = harness(quality_library());
+    harness.get_by_label(&en("quality-hi-res")).hover();
+    for _ in 0..10 {
+        harness.step();
+    }
+    let tip = format!("{} · FLAC 24/96", en("quality-hi-res"));
+    assert!(harness.query_by_label(&tip).is_some(), "no tooltip");
+}
+
+#[test]
+fn the_lossless_toggle_filters_the_table() {
+    let mut harness = harness(quality_library());
+    assert!(harness.query_by_label("Lossy song").is_some());
+    harness
+        .get_by_role_and_label(Role::CheckBox, &en("local-lossless-only"))
+        .click();
+    harness.run();
+    assert!(
+        harness.query_by_label("Lossy song").is_none(),
+        "the MP3 stayed"
+    );
+    assert!(harness.query_by_label("CD song").is_some());
+    assert!(harness.query_by_label("Studio song").is_some());
+    harness
+        .get_by_role_and_label(Role::CheckBox, &en("local-lossless-only"))
+        .click();
+    harness.run();
+    assert!(
+        harness.query_by_label("Lossy song").is_some(),
+        "not restored"
+    );
 }
 
 #[test]

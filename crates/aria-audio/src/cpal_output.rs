@@ -9,10 +9,15 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample};
 
-use crate::device::{DeviceId, DeviceKind, device_error, find_output_device, list_devices};
+use crate::device::{
+    DeviceId, DeviceKind, default_output_id, device_error, find_output_device, list_devices,
+};
 use crate::error::AudioError;
 use crate::mixer::{InputHandle, Mixer, MixerControl};
-use crate::output::{AudioOutput, DeviceLister, OutputFactory, OutputFormat};
+use crate::output::{
+    AudioOutput, DeviceLister, Opened, OutputFactory, OutputFormat, OutputRequest,
+};
+use crate::sample_format::{DeviceFormat, SampleKind};
 
 /// How much the callback renders at a time, before converting to the device's sample type.
 const SCRATCH_FRAMES: usize = 1024;
@@ -20,9 +25,9 @@ const SCRATCH_FRAMES: usize = 1024;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long opening may take in all, finding the device included. A driver can stick anywhere, and
 /// whoever opens an output has other work to get back to.
-const OPEN_WAIT: Duration = Duration::from_secs(7);
+pub(crate) const OPEN_WAIT: Duration = Duration::from_secs(7);
 /// How long dropping an output waits for the stream to close.
-const CLOSE_WAIT: Duration = Duration::from_secs(2);
+pub(crate) const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 /// Opens outputs through CPAL on the default host.
 pub struct CpalFactory;
@@ -32,7 +37,18 @@ impl OutputFactory for CpalFactory {
         Arc::new(|| list_devices(DeviceKind::Output))
     }
 
-    fn open(&self, device: Option<&DeviceId>) -> Result<Box<dyn AudioOutput>, AudioError> {
+    fn default_device(&self) -> Option<DeviceId> {
+        default_output_id()
+    }
+
+    /// Always shared: CPAL opens no exclusive streams, so `request` changes nothing. The device
+    /// format names the stream's own rate and channels, with [`SampleKind::I32`] standing for the
+    /// float samples the system mixer is handed.
+    fn open(
+        &self,
+        device: Option<&DeviceId>,
+        _request: OutputRequest,
+    ) -> Result<Opened, AudioError> {
         let device = device.cloned();
         let health = Arc::new(StreamHealth::default());
         let stream_health = Arc::clone(&health);
@@ -57,14 +73,22 @@ impl OutputFactory for CpalFactory {
                 AudioError::Device("the output thread stopped".into())
             }
         })??;
-        Ok(Box::new(CpalOutput {
-            format,
-            control,
-            health,
-            stop: Some(stop),
-            closed,
-            thread: Some(thread),
-        }))
+        Ok(Opened {
+            output: Box::new(CpalOutput {
+                format,
+                control,
+                health,
+                stop: Some(stop),
+                closed,
+                thread: Some(thread),
+            }),
+            exclusive: false,
+            device: DeviceFormat {
+                sample_rate: format.sample_rate,
+                channels: format.channels,
+                kind: SampleKind::I32,
+            },
+        })
     }
 }
 
@@ -137,8 +161,18 @@ fn open_stream(
             "unsupported sample format: {other}"
         ))),
     }?;
-    stream.play().map_err(device_error)?;
+    stream.play().map_err(stream_error)?;
     Ok((stream, format, control))
+}
+
+/// A stream that could not be built or started. A device another stream holds is told apart, so
+/// the caller can see it is busy rather than broken.
+fn stream_error(error: cpal::Error) -> AudioError {
+    if error.kind() == ErrorKind::DeviceBusy {
+        AudioError::DeviceBusy
+    } else {
+        device_error(error)
+    }
 }
 
 fn build_stream<T>(
@@ -163,7 +197,7 @@ where
     let on_error = move |error: cpal::Error| health.record(&error);
     device
         .build_output_stream(config, on_data, on_error, Some(OPEN_TIMEOUT))
-        .map_err(device_error)
+        .map_err(stream_error)
 }
 
 /// Whether an error leaves the stream dead, so the output must be replaced.
@@ -214,7 +248,7 @@ impl Drop for CpalOutput {
 
 /// Join `thread` once `closed` hangs up. Returns false if that takes longer than `limit`, which
 /// leaves the thread to finish on its own, or if it panicked.
-fn join_within(thread: JoinHandle<()>, closed: &Receiver<()>, limit: Duration) -> bool {
+pub(crate) fn join_within(thread: JoinHandle<()>, closed: &Receiver<()>, limit: Duration) -> bool {
     if let Err(RecvTimeoutError::Timeout) = closed.recv_timeout(limit) {
         tracing::debug!("the audio stream did not close in time; leaving it");
         return false;
@@ -250,6 +284,18 @@ mod tests {
         assert!(!join_within(thread, &closed, Duration::from_millis(20)));
 
         drop(release);
+    }
+
+    #[test]
+    fn a_busy_device_is_told_apart() {
+        assert!(matches!(
+            stream_error(ErrorKind::DeviceBusy.into()),
+            AudioError::DeviceBusy
+        ));
+        assert!(matches!(
+            stream_error(ErrorKind::BackendError.into()),
+            AudioError::Device(_)
+        ));
     }
 
     #[test]

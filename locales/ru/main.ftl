@@ -112,6 +112,7 @@ notice-settings-readonly = Нет доступа к файлу настроек,
 notice-settings-save-failed = Не удалось сохранить настройки. Aria попробует снова при следующем изменении.
 notice-open-folder-failed = Не удалось открыть папку.
 notice-pick-folder-failed = Не удалось открыть выбор папки.
+notice-pick-sounds-failed = Не удалось открыть выбор файлов.
 notice-dismiss = Закрыть
 
 ## Library notices (toasts)
@@ -146,6 +147,31 @@ playback-track-failed = Не удалось воспроизвести «{ $titl
 playback-stopped-after-failures = Воспроизведение остановлено: несколько треков подряд воспроизвести не удалось.
 playback-device-fallback = Аудиоустройство недоступно, поэтому Aria переключилась на другое.
 playback-no-device = Нет доступного аудиоустройства, поэтому воспроизведение приостановлено.
+exclusive-unavailable = Монопольный режим сейчас недоступен на этом устройстве, поэтому Aria использует системный микшер.
+
+## Soundboard
+
+sound-name-invalid = Название звука должно быть от 1 до 50 символов.
+sound-limit = Достигнут предел звуков ({ $max }), поэтому часть файлов не добавлена.
+sound-missing = Файл этого звука не найден, поэтому ничего не воспроизведено.
+sound-failed = Не удалось воспроизвести этот звук. Музыка не затронута.
+sound-device-failed = Не удалось использовать второе устройство для звуков.
+hotkey-not-allowed = Сочетание клавиш должно включать Ctrl, Alt или Win, если это не клавиша F или клавиша цифрового блока.
+hotkey-taken = Это сочетание клавиш уже используется в Aria.
+hotkey-unavailable = Система отклонила это сочетание клавиш — возможно, его использует другая программа. Сочетание не сохранено.
+# $count (Number) - how many hotkeys the system refused to register
+hotkeys-inactive = { $count ->
+    [one] { $count } сочетание клавиш не работает: система его отклонила — возможно, его использует другая программа.
+    [few] { $count } сочетания клавиш не работают: система их отклонила — возможно, их используют другие программы.
+    [many] { $count } сочетаний клавиш не работают: система их отклонила — возможно, их используют другие программы.
+   *[other] { $count } сочетания клавиш не работают: система их отклонила — возможно, их используют другие программы.
+}
+hotkey-inactive-hint = Система отклонила это сочетание клавиш — возможно, его использует другая программа. Сейчас оно не работает.
+hotkey-dialog-title = Задать сочетание клавиш
+hotkey-dialog-hint = Нажмите клавиши одновременно. Escape — отмена, Delete или Backspace — убрать сочетание.
+hotkey-dialog-clear = Убрать
+hotkeys-unavailable = Глобальные сочетания клавиш недоступны в этой системе, поэтому ни одно из них не работает.
+hotkey-dialog-numpad = Клавиша цифрового блока
 
 ## Local Music page
 
@@ -225,3 +251,50 @@ playlist-track-count = { $count ->
     [many] { $count } треков
    *[other] { $count } трека
 }
+
+## Output path, exclusive mode and quality
+output-bit-perfect = Без изменений
+output-bit-perfect-hint = Aria передаёт отсчёты трека устройству без изменений. Запуск, пауза, возобновление и перемотка идут с затуханием за 5 мс; на стыках без пауз между треками затухания нет.
+output-resampled = С передискретизацией
+output-resampled-hint = Монопольный вывод на частоте, которой нет у трека, поэтому отсчёты пересчитываются.
+output-converted = С преобразованием
+output-converted-hint = Монопольный вывод, но отсчёты не совпадают с файлом: источник с потерями или с плавающей точкой, разрядность неизвестна, больше 24 бит или уменьшена, изменились каналы или звук выключен.
+output-mixed = Смешано со звуком
+output-mixed-hint = В поток подмешан звук из саундборда, поэтому вывод не бит-в-бит.
+output-system-mixer = Системный микшер
+output-system-mixer-hint = Воспроизведение через системный микшер, который может менять отсчёты.
+player-volume-locked = Громкость задаётся на устройстве, пока включён монопольный режим.
+settings-exclusive = Монопольный режим
+settings-exclusive-hint = Пока играет Aria, другие программы молчат на этом устройстве. Уровень задайте на самом устройстве.
+settings-exclusive-windows-only = Монопольный режим доступен только в Windows.
+quality-lossless = Без потерь
+quality-hi-res = Hi-Res
+local-col-quality = Качество
+local-lossless-only = Только без потерь
+
+## Soundboard page and settings
+
+nav-soundboard = Звуковая панель
+soundboard-empty = Звуков пока нет
+soundboard-empty-hint = Добавьте короткие аудиофайлы, чтобы запускать их щелчком или сочетанием клавиш.
+soundboard-add = Добавить звуки…
+soundboard-stop-all = Остановить все
+sound-rename = Переименовать
+sound-hotkey = Сочетание клавиш…
+sound-hotkey-none = Нет
+sound-volume = Громкость
+sound-remove = Убрать
+# $name (String) - the sound's name
+sound-remove-confirm = Убрать «{ $name }» из звуковой панели? Файл не удаляется.
+settings-soundboard = Звуковая панель
+settings-sound-device = Второе устройство
+settings-sound-device-none = Нет
+settings-sound-target = Воспроизводить звуки на
+settings-sound-target-mine = Моём устройстве
+settings-sound-target-second = Втором устройстве
+settings-sound-target-both = Обоих устройствах
+settings-sound-target-note = Второе устройство не выбрано, поэтому звуки воспроизводятся на вашем устройстве.
+settings-global-hotkeys = Глобальные сочетания клавиш
+settings-global-hotkeys-hint = Сочетания работают, когда фокус у другой программы. Aria получает только заданные вами сочетания.
+settings-stop-hotkey = Сочетание для «Остановить все»
+settings-voice-chat-hint = Чтобы звуки были слышны в голосовом чате, выберите виртуальный аудиокабель вторым устройством и назначьте его микрофоном чата. Aria такой кабель не устанавливает. Чат слышит звуки, а не ваш микрофон.

@@ -23,6 +23,22 @@ ff -f lavfi -i "$tone" -ac 1 -c:a pcm_s16le tone-mono.wav
 ff -f lavfi -i "$tone" -ac 2 -c:a pcm_s16be tone.aiff
 ff -f lavfi -i "$tone" -ac 2 -c:a pcm_s16le tone.caf
 
+# 16-bit and 24-bit FLAC and WAV made from the same samples (0.1 s of 440 Hz, so each stays
+# small): the 24-bit files hold the 16-bit samples shifted up by 8 bits.
+short="sine=frequency=440:duration=0.1:sample_rate=44100"
+ff -f lavfi -i "$short" -ac 2 -c:a flac depth-16.flac
+ff -f lavfi -i "$short" -ac 2 -c:a pcm_s16le depth-16.wav
+ff -f lavfi -i "$short" -ac 2 -sample_fmt s32 -c:a flac depth-24.flac
+ff -f lavfi -i "$short" -ac 2 -c:a pcm_s24le depth-24.wav
+
+# WAV and AIFF whose data is not integer PCM, for the codec the library stores: float PCM
+# (lossless) and A-law, mu-law and IMA ADPCM (lossy). Mono where it keeps a file small.
+ff -f lavfi -i "$short" -ac 1 -c:a pcm_f32le float.wav
+ff -f lavfi -i "$short" -ac 1 -c:a pcm_f32be float.aiff
+ff -f lavfi -i "$short" -ac 2 -c:a pcm_alaw alaw.wav
+ff -f lavfi -i "$short" -ac 2 -c:a pcm_mulaw mulaw.aiff
+ff -f lavfi -i "$short" -ac 2 -c:a adpcm_ima_wav adpcm.wav
+
 ff -f lavfi -i "$tone" -ac 2 -c:a libmp3lame -b:a 128k \
     -metadata title="Fixture Title" -metadata artist="Fixture Artist" \
     -metadata album="Fixture Album" -metadata track=3 tagged.mp3

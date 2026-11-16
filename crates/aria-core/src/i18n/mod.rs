@@ -292,6 +292,7 @@ mod tests {
         "notice-settings-save-failed",
         "notice-open-folder-failed",
         "notice-pick-folder-failed",
+        "notice-pick-sounds-failed",
         "notice-dismiss",
         "library-scan-skipped",
         "library-folder-unavailable",
@@ -330,6 +331,45 @@ mod tests {
         "playback-stopped-after-failures",
         "playback-device-fallback",
         "playback-no-device",
+        "exclusive-unavailable",
+        "sound-name-invalid",
+        "sound-limit",
+        "sound-missing",
+        "sound-failed",
+        "sound-device-failed",
+        "hotkey-not-allowed",
+        "hotkey-taken",
+        "hotkey-unavailable",
+        "hotkeys-inactive",
+        "hotkey-inactive-hint",
+        "hotkey-dialog-title",
+        "hotkey-dialog-hint",
+        "hotkey-dialog-clear",
+        "hotkeys-unavailable",
+        "hotkey-dialog-numpad",
+        "nav-soundboard",
+        "soundboard-empty",
+        "soundboard-empty-hint",
+        "soundboard-add",
+        "soundboard-stop-all",
+        "sound-rename",
+        "sound-hotkey",
+        "sound-hotkey-none",
+        "sound-volume",
+        "sound-remove",
+        "sound-remove-confirm",
+        "settings-soundboard",
+        "settings-sound-device",
+        "settings-sound-device-none",
+        "settings-sound-target",
+        "settings-sound-target-mine",
+        "settings-sound-target-second",
+        "settings-sound-target-both",
+        "settings-sound-target-note",
+        "settings-global-hotkeys",
+        "settings-global-hotkeys-hint",
+        "settings-stop-hotkey",
+        "settings-voice-chat-hint",
         "error-startup-title",
         "error-startup-window",
         "home-recent",
@@ -362,6 +402,24 @@ mod tests {
         "lang-en",
         "lang-ru",
         "lang-hy",
+        "output-bit-perfect",
+        "output-bit-perfect-hint",
+        "output-resampled",
+        "output-resampled-hint",
+        "output-converted",
+        "output-converted-hint",
+        "output-mixed",
+        "output-mixed-hint",
+        "output-system-mixer",
+        "output-system-mixer-hint",
+        "player-volume-locked",
+        "settings-exclusive",
+        "settings-exclusive-hint",
+        "settings-exclusive-windows-only",
+        "quality-lossless",
+        "quality-hi-res",
+        "local-col-quality",
+        "local-lossless-only",
     ];
 
     // The six tests below are the Task 4 brief's, verbatim except for the
@@ -381,6 +439,26 @@ mod tests {
         for (lang, src) in &SOURCES[1..] {
             let missing: Vec<_> = en.difference(&message_ids(src)).cloned().collect();
             assert!(missing.is_empty(), "{lang:?} missing {missing:?}");
+        }
+    }
+
+    #[test]
+    fn the_converted_hint_names_every_cause() {
+        // "Converted" is shown for each of these (spec 3.4: the tooltip explains the state).
+        let hint = Localizer::new(Language::En)
+            .unwrap()
+            .tr("output-converted-hint")
+            .into_owned();
+        for cause in [
+            "lossy",
+            "float",
+            "unknown",
+            "above 24 bits",
+            "reduced",
+            "channels",
+            "muted",
+        ] {
+            assert!(hint.contains(cause), "{cause:?} is missing from {hint:?}");
         }
     }
 
@@ -464,6 +542,7 @@ mod tests {
         args.set("folder", "777");
         args.set("title", "777");
         args.set("name", "777");
+        args.set("max", 777);
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));

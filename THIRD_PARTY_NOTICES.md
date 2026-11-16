@@ -30,5 +30,15 @@ The libopus license text is in `opusic-sys`'s `opus/COPYING`; the licenses above
 in each crate's `Cargo.toml`. This table lists the crates added in Phase 2a; the full set is in
 `Cargo.lock` and checked in CI.
 
+## Exclusive output and global hotkeys (Phase 2c)
+
+| Component | License | Used for |
+|-----------|---------|----------|
+| `wasapi` 0.27 | MIT | WASAPI exclusive output (Windows only) |
+| `global-hotkey` 0.10 | Apache-2.0 OR MIT | Global hotkeys for the soundboard |
+| `keyboard-types` 0.8, a dependency of `global-hotkey` | MIT OR Apache-2.0 | Key and modifier types |
+
+The licenses above are those declared in each crate's `Cargo.toml`. These are the crates added in Phase 2c; the full set is in `Cargo.lock` and checked in CI.
+
 Rust crate dependencies are under their own licenses, checked in CI with `cargo-deny`
 (see `deny.toml`).

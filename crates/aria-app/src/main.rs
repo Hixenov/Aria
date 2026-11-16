@@ -20,12 +20,12 @@ use std::{
 
 use anyhow::{Context as _, anyhow};
 use aria_app::{
-    APP_NAME,
+    APP_NAME, SystemHotkeys,
     app::{AppDeps, AriaApp},
     whole_ms,
 };
 use aria_core::{
-    CpalFactory,
+    SystemFactory,
     error::I18nError,
     i18n::{Localizer, os_language},
     logging::{self, LoggingHandle},
@@ -131,7 +131,7 @@ fn main() -> anyhow::Result<()> {
     }
     let services = BackendServices {
         library,
-        output: Box::new(CpalFactory),
+        output: Box::new(SystemFactory),
         settings: settings.clone().sanitized(),
     };
     let backend = match Backend::start(
@@ -150,7 +150,20 @@ fn main() -> anyhow::Result<()> {
     };
     log_stage("backend", stage.elapsed());
 
-    // 6. The window. The app owns the backend from here and stops it in `on_exit`. `main`
+    // 6. Global hotkeys. Their manager and press handler must be made here, on the main thread,
+    // before the event loop starts and before any hotkey is registered. A press wakes the
+    // window, minimized or not. Without them Aria runs with global hotkeys unavailable.
+    let stage = Instant::now();
+    let hotkeys = match SystemHotkeys::new(repaint_waker(Arc::clone(&egui_ctx))) {
+        Ok(hotkeys) => Some(hotkeys),
+        Err(err) => {
+            tracing::warn!(%err, "global hotkeys are unavailable");
+            None
+        }
+    };
+    log_stage("hotkeys", stage.elapsed());
+
+    // 7. The window. The app owns the backend from here and stops it in `on_exit`. `main`
     // keeps `logging` itself, so what is logged after the window closes still reaches the
     // file.
     let deps = AppDeps {
@@ -158,6 +171,7 @@ fn main() -> anyhow::Result<()> {
         logging: logging.as_ref().map(LoggingHandle::level),
         paths,
         clock: None,
+        hotkeys,
     };
     let mut parts = Some((settings, localizer, deps, notices));
     let stage = Instant::now();

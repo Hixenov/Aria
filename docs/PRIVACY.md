@@ -73,4 +73,12 @@ is the data directory of the `directories` crate. `library.db` is in the same fo
 Setting the `ARIA_CONFIG_DIR` environment variable to a non-empty path overrides the config
 directory only; the library database, logs and cache still go to the folders above. An empty value is ignored.
 
+## Soundboard and hotkeys (since 0.2.2)
+
+- **Sounds.** For each sound Aria stores the full path of its audio file, its name, its volume and its hotkey, in the `sounds` table of `library.db` (the hotkey of "Stop all", the chosen second output device, where sounds go, and the global-hotkeys switch are in `settings.toml`). The files are never copied, changed or deleted by Aria. Removing a sound removes its row, not the file; as with other deleted rows, SQLite may leave the old contents on disk in `library.db` and `library.db-wal` until the space is reused. Deleting `library.db` (and its `-wal`, `-shm` and `.bak` files) while Aria is closed removes all sounds with the rest of the library.
+- **Hotkeys.** Global hotkeys are registered with the operating system. Aria receives only the combinations you registered, when you press them. It installs no keyboard hook and does not see any other key you press, in Aria or in other programs. While a combination is registered, the system gives it to Aria alone: other programs no longer receive it until Aria lets it go (when you change or clear the hotkey, turn "Global hotkeys" off, or quit).
+- **No microphone.** Aria does not open or read a microphone. The second output device is an output; for a voice chat it must be a virtual audio cable installed separately.
+- Nothing about sounds or hotkeys is sent anywhere.
+- Since 0.2.2 `library.db` also holds each track's bit depth, read from your audio files.
+
 This document is extended in each phase that changes what Aria stores or sends.

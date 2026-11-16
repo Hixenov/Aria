@@ -1,5 +1,5 @@
-//! Opens Aria's folders in the file manager, and asks the user for a folder, without making
-//! the UI wait.
+//! Opens Aria's folders in the file manager, and asks the user for a folder or for sound files,
+//! without making the UI wait.
 //!
 //! `open::that` waits for the system's launcher. On Windows that is PowerShell, which takes
 //! about 0.3 s to start, and on some Linux desktops the launcher returns only once the file
@@ -14,12 +14,13 @@ use std::{
     thread,
 };
 
+use aria_library::SUPPORTED_EXTENSIONS;
 use eframe::egui::Context;
 
 /// Name of the threads that open folders.
 const THREAD_NAME: &str = "aria-open-folder";
-/// Name of the thread that shows the folder dialog.
-const PICK_THREAD_NAME: &str = "aria-pick-folder";
+/// Name of the thread that shows a file or folder dialog.
+const PICK_THREAD_NAME: &str = "aria-pick";
 
 /// Opens a path with the system's default application.
 pub(crate) type Open = fn(&Path) -> io::Result<()>;
@@ -133,24 +134,29 @@ fn open_with_system(path: &Path) -> io::Result<()> {
     open::that(path)
 }
 
-/// Shows the system's folder dialog and returns the folder chosen, or `None` if the dialog
-/// was cancelled or could not be shown.
-pub(crate) type Pick = fn() -> Option<PathBuf>;
+/// Shows a system dialog and returns what the user chose, or `None` if the dialog was
+/// cancelled or could not be shown.
+pub(crate) type Pick<T> = fn() -> Option<T>;
 
-/// The folder dialog, shown on a thread of its own. At most one is open at a time.
-pub(crate) struct FolderPicker {
-    pick: Pick,
+/// A system dialog, shown on a thread of its own. At most one is open at a time.
+pub(crate) struct Picker<T> {
+    pick: Pick<T>,
     /// The thread sends what the dialog returned.
-    results: Receiver<Option<PathBuf>>,
+    results: Receiver<Option<T>>,
     /// Cloned into the thread.
-    report: Sender<Option<PathBuf>>,
+    report: Sender<Option<T>>,
     /// A dialog is open, or its answer has not been collected yet.
     open: bool,
 }
 
-impl FolderPicker {
-    /// Picks folders with `pick`.
-    pub(crate) fn new(pick: Pick) -> Self {
+/// The dialog for choosing a folder.
+pub(crate) type FolderPicker = Picker<PathBuf>;
+/// The dialog for choosing audio files, several at a time.
+pub(crate) type SoundPicker = Picker<Vec<PathBuf>>;
+
+impl<T: Send + 'static> Picker<T> {
+    /// Picks with `pick`.
+    pub(crate) fn new(pick: Pick<T>) -> Self {
         let (report, results) = mpsc::channel();
         Self {
             pick,
@@ -187,13 +193,13 @@ impl FolderPicker {
         Ok(())
     }
 
-    /// The folder the user chose since the last call. A cancelled dialog gives nothing.
-    pub(crate) fn picked(&mut self) -> Option<PathBuf> {
+    /// What the user chose since the last call. A cancelled dialog gives nothing.
+    pub(crate) fn picked(&mut self) -> Option<T> {
         let result = self.results.try_recv().ok()?;
         self.open = false;
-        let folder = result?;
-        tracing::debug!(folder = %folder.display(), "folder picked");
-        Some(folder)
+        let chosen = result?;
+        tracing::debug!("the dialog picked something");
+        Some(chosen)
     }
 
     /// Whether a dialog is open or its answer is waiting to be collected.
@@ -206,23 +212,30 @@ impl FolderPicker {
 impl Default for FolderPicker {
     /// Picks folders with the system's dialog.
     fn default() -> Self {
-        Self::new(pick_with_system)
+        Self::new(pick_folder_with_system)
+    }
+}
+
+impl Default for SoundPicker {
+    /// Picks audio files with the system's dialog.
+    fn default() -> Self {
+        Self::new(pick_sounds_with_system)
     }
 }
 
 /// Reports the dialog's answer when its thread ends, then repaints the UI. As a drop guard it
 /// also reports a thread that panicked, as a cancelled dialog.
-struct PickReport {
-    results: Sender<Option<PathBuf>>,
+struct PickReport<T> {
+    results: Sender<Option<T>>,
     ctx: Context,
     /// Set once the dialog has closed: what it returned.
-    picked: Option<Option<PathBuf>>,
+    picked: Option<Option<T>>,
 }
 
-impl Drop for PickReport {
+impl<T> Drop for PickReport<T> {
     fn drop(&mut self) {
         let picked = self.picked.take().unwrap_or_else(|| {
-            tracing::error!("the thread showing the folder dialog panicked");
+            tracing::error!("the thread showing a dialog panicked");
             None
         });
         // Fails only once the picker is gone, when nobody is waiting for the answer.
@@ -232,9 +245,25 @@ impl Drop for PickReport {
 }
 
 /// Shows the system's folder dialog, and waits for it on this thread.
-fn pick_with_system() -> Option<PathBuf> {
+fn pick_folder_with_system() -> Option<PathBuf> {
     let dialog = rfd::AsyncFileDialog::new().pick_folder();
     pollster::block_on(dialog).map(|handle| handle.path().to_path_buf())
+}
+
+/// Shows the system's file dialog for sounds, and waits for it on this thread. It lists the
+/// files the library scan accepts. Its filter is named by those extensions, so it needs no
+/// translation.
+fn pick_sounds_with_system() -> Option<Vec<PathBuf>> {
+    let filter = SUPPORTED_EXTENSIONS.join(", ");
+    let dialog = rfd::AsyncFileDialog::new()
+        .add_filter(filter, SUPPORTED_EXTENSIONS)
+        .pick_files();
+    let files = pollster::block_on(dialog)?;
+    let paths: Vec<PathBuf> = files
+        .iter()
+        .map(|handle| handle.path().to_path_buf())
+        .collect();
+    (!paths.is_empty()).then_some(paths)
 }
 
 #[cfg(test)]
@@ -340,6 +369,23 @@ mod tests {
         assert_eq!(answer(&mut picker), Some(PathBuf::from("music")));
         assert!(!picker.is_open());
         assert_eq!(picker.picked(), None, "the answer was reported twice");
+    }
+
+    #[test]
+    fn picked_sound_files_are_reported_in_order() {
+        let mut picker = SoundPicker::new(|| Some(vec!["a.wav".into(), "b.flac".into()]));
+        picker.start(&Context::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut files = None;
+        while files.is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+            files = picker.picked();
+        }
+        assert_eq!(
+            files,
+            Some(vec![PathBuf::from("a.wav"), PathBuf::from("b.flac")])
+        );
+        assert!(!picker.is_open());
     }
 
     #[test]

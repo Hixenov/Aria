@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use aria_library::{LibrarySnapshot, Track, TrackId};
+use aria_library::{LibrarySnapshot, Quality, Track, TrackId};
 
 /// What the track list is sorted by.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,6 +74,8 @@ impl Lowered {
 pub struct TrackView {
     /// Trimmed and lowercase.
     query: String,
+    /// Keep only lossless and Hi-Res tracks.
+    lossless_only: bool,
     key: SortKey,
     ascending: bool,
     /// The user chose the sort, by clicking a header. Until then an album lists its tracks
@@ -103,6 +105,7 @@ impl TrackView {
     pub fn new() -> Self {
         Self {
             query: String::new(),
+            lossless_only: false,
             key: SortKey::default(),
             ascending: true,
             explicit: false,
@@ -121,6 +124,14 @@ impl TrackView {
         let q = q.trim().to_lowercase();
         if q != self.query {
             self.query = q;
+            self.stale = true;
+        }
+    }
+
+    /// Keeps only the lossless and Hi-Res tracks while `on`.
+    pub fn set_lossless_only(&mut self, on: bool) {
+        if on != self.lossless_only {
+            self.lossless_only = on;
             self.stale = true;
         }
     }
@@ -182,9 +193,9 @@ impl TrackView {
         &self.scope
     }
 
-    /// Whether a search is in effect.
+    /// Whether a search or the lossless filter is in effect.
     pub fn is_filtered(&self) -> bool {
-        !self.query.is_empty()
+        !self.query.is_empty() || self.lossless_only
     }
 
     /// The tracks to show, in order, as indexes into `snapshot.tracks`. Redone only when the
@@ -217,6 +228,9 @@ impl TrackView {
         };
         if !self.query.is_empty() {
             rows.retain(|&i| self.lowered[i].contains(&self.query));
+        }
+        if self.lossless_only {
+            rows.retain(|&i| snapshot.tracks[i].quality() != Quality::Lossy);
         }
         // A stable sort, with the direction inside the comparison: reversing the result
         // instead would also reverse the order of equal tracks.
@@ -289,6 +303,7 @@ mod tests {
             duration_ms: ms,
             sample_rate: 44_100,
             channels: 2,
+            bits_per_sample: 0,
             codec: Arc::from("flac"),
             artwork: None,
             added_at: id,
@@ -602,6 +617,48 @@ mod tests {
         let mut view = TrackView::new();
         view.set_scope(Scope::Ids(Arc::from([TrackId(3), TrackId(99), TrackId(1)])));
         assert_eq!(ids(&mut view, &snap), [3, 1]);
+    }
+
+    /// A snapshot of an MP3, a CD-quality FLAC and a 24-bit FLAC, titled "Alpha", "Bravo",
+    /// "Alps".
+    fn quality_snapshot() -> Arc<LibrarySnapshot> {
+        let mut tracks = vec![
+            track(1, "Alpha", None, None, 1000),
+            track(2, "Bravo", None, None, 1000),
+            track(3, "Alps", None, None, 1000),
+        ];
+        tracks[0].codec = Arc::from("mp3");
+        tracks[1].bits_per_sample = 16;
+        tracks[2].bits_per_sample = 24;
+        snapshot(tracks)
+    }
+
+    #[test]
+    fn lossless_only_keeps_lossless_and_hi_res_rows() {
+        let snap = quality_snapshot();
+        let mut view = TrackView::new();
+        assert_eq!(ids(&mut view, &snap), [1, 3, 2]);
+        view.set_lossless_only(true);
+        assert!(view.is_filtered());
+        assert_eq!(ids(&mut view, &snap), [3, 2], "the MP3 is hidden");
+        view.set_lossless_only(false);
+        assert!(!view.is_filtered());
+        assert_eq!(ids(&mut view, &snap), [1, 3, 2]);
+    }
+
+    #[test]
+    fn lossless_only_and_search_combine() {
+        let snap = quality_snapshot();
+        let mut view = TrackView::new();
+        view.set_lossless_only(true);
+        view.set_query("al");
+        assert_eq!(
+            ids(&mut view, &snap),
+            [3],
+            "Alpha is lossy, Bravo does not match"
+        );
+        view.set_query("");
+        assert_eq!(ids(&mut view, &snap), [3, 2]);
     }
 
     #[test]

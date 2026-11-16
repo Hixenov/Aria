@@ -112,6 +112,7 @@ notice-settings-readonly = Couldn't access the settings file, so defaults are in
 notice-settings-save-failed = Couldn't save settings. Aria will try again after your next change.
 notice-open-folder-failed = Couldn't open the folder.
 notice-pick-folder-failed = Couldn't open the folder picker.
+notice-pick-sounds-failed = Couldn't open the file picker.
 notice-dismiss = Dismiss
 
 ## Library notices (toasts)
@@ -145,6 +146,29 @@ playback-track-failed = Couldn't play { $title }, so it was skipped.
 playback-stopped-after-failures = Playback stopped because several tracks in a row couldn't be played.
 playback-device-fallback = The audio device isn't available, so Aria switched to another one.
 playback-no-device = No audio device is available, so playback is paused.
+exclusive-unavailable = Exclusive mode isn't available on this device right now, so Aria is using the system mixer.
+
+## Soundboard
+
+sound-name-invalid = A sound name needs 1 to 50 characters.
+sound-limit = The soundboard holds up to { $max } sounds, so some files weren't added.
+sound-missing = The file of this sound can't be found, so nothing was played.
+sound-failed = This sound couldn't be played. The music wasn't affected.
+sound-device-failed = The second device for sounds couldn't be used.
+hotkey-not-allowed = A hotkey needs Ctrl, Alt or Win, unless its key is an F key or a numpad key.
+hotkey-taken = This hotkey is already used in Aria.
+hotkey-unavailable = The system refused this hotkey, perhaps because another program uses it. It wasn't saved.
+# $count (Number) - how many hotkeys the system refused to register
+hotkeys-inactive = { $count ->
+    [one] { $count } hotkey doesn't work: the system refused it, perhaps because another program uses it.
+   *[other] { $count } hotkeys don't work: the system refused them, perhaps because other programs use them.
+}
+hotkey-inactive-hint = The system refused this hotkey, perhaps because another program uses it. It doesn't work now.
+hotkey-dialog-title = Set a hotkey
+hotkey-dialog-hint = Press the keys together. Escape cancels; Delete or Backspace clears the hotkey.
+hotkey-dialog-clear = Clear
+hotkeys-unavailable = Global hotkeys are unavailable on this system, so none of them work.
+hotkey-dialog-numpad = Numpad key
 
 ## Local Music page
 
@@ -221,3 +245,50 @@ playlist-track-count = { $count ->
     [one] { $count } track
    *[other] { $count } tracks
 }
+
+## Output path, exclusive mode and quality
+output-bit-perfect = Bit-perfect
+output-bit-perfect-hint = Aria sends the track's samples to the device unchanged. Starting, pausing, resuming and seeking fade over 5 ms; gapless joins between tracks have no fade.
+output-resampled = Resampled
+output-resampled-hint = Exclusive output at a rate the track does not have, so the samples are resampled.
+output-converted = Converted
+output-converted-hint = Exclusive output, but the samples are not the file's: a lossy or float source, a depth that is unknown, above 24 bits or reduced, changed channels, or muted.
+output-mixed = Mixed with a sound
+output-mixed-hint = A soundboard sound is mixed into the stream, so it is not bit-perfect.
+output-system-mixer = System mixer
+output-system-mixer-hint = Playing through the system mixer, which may change the samples.
+player-volume-locked = Volume is set on the device while exclusive mode is on.
+settings-exclusive = Exclusive mode
+settings-exclusive-hint = Other programs are silent on the device while Aria plays. Set the level on the device.
+settings-exclusive-windows-only = Exclusive mode is available on Windows only.
+quality-lossless = Lossless
+quality-hi-res = Hi-Res
+local-col-quality = Quality
+local-lossless-only = Lossless only
+
+## Soundboard page and settings
+
+nav-soundboard = Soundboard
+soundboard-empty = No sounds yet
+soundboard-empty-hint = Add short audio files to play them with a click or a hotkey.
+soundboard-add = Add sounds…
+soundboard-stop-all = Stop all
+sound-rename = Rename
+sound-hotkey = Hotkey…
+sound-hotkey-none = None
+sound-volume = Volume
+sound-remove = Remove
+# $name (String) - the sound's name
+sound-remove-confirm = Remove { $name } from the soundboard? The file is not deleted.
+settings-soundboard = Soundboard
+settings-sound-device = Second device
+settings-sound-device-none = None
+settings-sound-target = Play sounds to
+settings-sound-target-mine = My device
+settings-sound-target-second = Second device
+settings-sound-target-both = Both
+settings-sound-target-note = No second device is chosen, so sounds play on your device.
+settings-global-hotkeys = Global hotkeys
+settings-global-hotkeys-hint = Hotkeys work while another program has the focus. Aria receives only the combinations you set.
+settings-stop-hotkey = Hotkey for Stop all
+settings-voice-chat-hint = To be heard in a voice chat, choose a virtual audio cable as the second device and set it as the chat's microphone. Aria does not install one. The chat hears the sounds, not your microphone.

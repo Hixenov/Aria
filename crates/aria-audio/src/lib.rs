@@ -11,6 +11,11 @@ pub mod mixer;
 mod mp4;
 pub mod output;
 pub mod resample;
+pub mod sample_format;
+mod sounds;
+mod system_output;
+#[cfg(windows)]
+mod wasapi_output;
 
 #[cfg(feature = "test-support")]
 pub mod testing;
@@ -22,5 +27,11 @@ pub use device::{DeviceId, DeviceInfo, DeviceKind, list_devices};
 pub use engine::{Engine, EngineCommand, EngineEvent, EngineHandle, IDLE_GRACE, TrackRequest};
 pub use error::AudioError;
 pub use mixer::{FADE_MS, InputHandle, MAX_INPUTS, Mixer, MixerControl};
-pub use output::{AudioOutput, DeviceLister, OutputFactory, OutputFormat};
+pub use output::{AudioOutput, DeviceLister, Opened, OutputFactory, OutputFormat, OutputRequest};
 pub use resample::{Resampler, convert_channels};
+pub use sample_format::{
+    DeviceFormat, OutputPath, OutputState, PathFacts, SampleKind, SourceFormat, choose_format,
+    nearest_rate, output_path, write_samples,
+};
+pub use sounds::{SOUNDS_AT_ONCE, SoundRoute};
+pub use system_output::SystemFactory;

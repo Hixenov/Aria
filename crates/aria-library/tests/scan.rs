@@ -561,7 +561,7 @@ fn insert_rows(db: &Path, folder: FolderId, rows: u32) {
 }
 
 #[test]
-#[ignore = "performance check, run in release by Task 15"]
+#[ignore = "performance check: cargo test --release -p aria-library --test scan -- --ignored --nocapture"]
 fn synthetic_50k_library() {
     let mut env = Env::new();
     let folder = env.add_music();
@@ -920,4 +920,63 @@ fn a_zero_duration_from_tags_keeps_the_stored_duration() {
     let s = env.scan();
     assert_eq!(s.updated, 1);
     assert_eq!(env.snap().tracks[0].duration_ms, 4321);
+}
+
+/// Puts the database in the state a 0.2.1 upgrade leaves it in: depth unknown, mtime reset.
+fn as_after_the_upgrade(env: &Env) {
+    let c = ok(rusqlite::Connection::open(
+        env.dir.path().join("library.db"),
+    ));
+    ok(c.execute("UPDATE tracks SET bits_per_sample = 0, mtime = 0", []));
+}
+
+#[test]
+fn the_first_scan_after_the_upgrade_reads_every_file_again() {
+    let mut env = Env::new();
+    env.put("depth-24.flac", "a.flac");
+    env.put("tone-alac.m4a", "b.m4a");
+    env.put("tone.mp3", "c.mp3");
+    env.add_music();
+    env.scan();
+    as_after_the_upgrade(&env);
+    let before = ids(&env.snap());
+    assert!(env.snap().tracks.iter().all(|t| t.bits_per_sample == 0));
+
+    let s = env.scan();
+    assert_eq!((s.added, s.updated, s.removed), (0, 3, 0));
+    let snap = env.snap();
+    assert_eq!(ids(&snap), before);
+    let depth = |name: &str| {
+        let t = snap.tracks.iter().find(|t| t.path.ends_with(name));
+        t.map(|t| (t.bits_per_sample, t.codec.to_string()))
+    };
+    assert_eq!(depth("a.flac"), Some((24, "flac".to_string())));
+    assert_eq!(depth("b.m4a"), Some((16, "alac".to_string())));
+    assert_eq!(depth("c.mp3"), Some((0, "mp3".to_string())));
+}
+
+#[test]
+fn a_second_scan_changes_nothing() {
+    let mut env = Env::new();
+    env.put("depth-24.flac", "a.flac");
+    env.put("tone.m4a", "b.m4a");
+    env.add_music();
+    env.scan();
+    as_after_the_upgrade(&env);
+    env.scan();
+    let before = env.snap();
+    let s = env.scan();
+    assert_eq!((s.added, s.updated, s.removed, s.skipped), (0, 0, 0, 0));
+    assert_eq!(env.snap().tracks, before.tracks);
+}
+
+#[test]
+fn caf_files_are_skipped_not_stored() {
+    let mut env = Env::new();
+    env.put("tone.caf", "a.caf");
+    env.put("tone.flac", "b.flac");
+    env.add_music();
+    let s = env.scan();
+    assert_eq!((s.added, s.skipped), (1, 1));
+    assert_eq!(env.snap().tracks.len(), 1);
 }

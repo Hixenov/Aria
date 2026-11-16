@@ -4,7 +4,7 @@
 - **Status:** Design approved in conversation; pending written-spec review
 - **Release:** 0.2.1 (pre-release)
 - **Scope:** Second part of Phase 2. Phase 2a (0.2.0) delivered the local player. Phase 2c
-  (soundboard) is specified in `2026-11-05-aria-phase2c-soundboard-design.md`.
+  (lossless output and the soundboard) is specified in `2026-11-15-aria-phase2c-lossless-soundboard-design.md`.
 
 ## 1. Context and intent
 
