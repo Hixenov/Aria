@@ -33,10 +33,12 @@ use aria_library::{LibrarySnapshot, Quality, QueueRecord, Track, TrackId};
 use crate::{
     command::Command,
     event::Event,
+    hotkey::Hotkey,
     library_service::LibraryRequest,
     notice::{Notice, NoticeLevel},
     player::{PreviousAction, Queue, RepeatMode, UpNext},
     settings::Settings,
+    soundboard::{FiredSound, SoundView, Soundboard},
 };
 
 /// The shortest time between two saves of the queue.
@@ -212,6 +214,9 @@ pub struct PlaybackService {
     /// The token of the track the last "exclusive mode unavailable" notice was shown for, so a
     /// track gets it once (0 when no track was loaded).
     unavailable_noticed: Option<u64>,
+    /// The sounds, which of them play, and where they go. Sounds share the engine with the music
+    /// but nothing else: they never touch the queue or the player.
+    soundboard: Soundboard,
     /// For the UI, until the worker takes them.
     events: Vec<Event>,
     /// For the library, until the worker takes them.
@@ -257,6 +262,7 @@ impl PlaybackService {
             repeat: RepeatMode::Off,
             output: None,
             unavailable_noticed: None,
+            soundboard: Soundboard::default(),
             events: Vec::new(),
             requests: Vec::new(),
         }
@@ -304,7 +310,16 @@ impl PlaybackService {
             Command::Next => self.next(),
             Command::Previous => self.previous(),
             Command::Seek(position_ms) => self.seek(position_ms),
-            Command::UpdateSettings(_)
+            Command::StopSounds => self.engine.send(EngineCommand::StopSounds),
+            // The library answers these, and its answers come back through `on_sounds` and
+            // `play_sound`.
+            Command::AddSounds(_)
+            | Command::RenameSound { .. }
+            | Command::SetSoundVolume { .. }
+            | Command::SetSoundHotkey { .. }
+            | Command::RemoveSound(_)
+            | Command::PlaySound(_)
+            | Command::UpdateSettings(_)
             | Command::ResetSettings
             | Command::AddFolder(_)
             | Command::RemoveFolder(_)
@@ -367,12 +382,41 @@ impl PlaybackService {
                     self.notify(EXCLUSIVE_UNAVAILABLE);
                 }
             }
-            // Only sent for sounds, which nothing here plays yet.
+            // A sound that finds no output at all is reported as `NoDevice`, above, and then
+            // ends without a word, so it gives one notice.
             EngineEvent::SoundStarted { .. }
             | EngineEvent::SoundEnded { .. }
             | EngineEvent::SoundFailed { .. }
-            | EngineEvent::SoundDeviceFailed => {}
+            | EngineEvent::SoundDeviceFailed => {
+                if let Some(event) = self.soundboard.on_engine(event) {
+                    self.events.push(event);
+                }
+            }
         }
+    }
+
+    /// Takes in the sounds the library sent, and shows them.
+    pub fn on_sounds(&mut self, sounds: Vec<SoundView>) {
+        let state = self.soundboard.on_sounds(sounds);
+        self.events.push(state);
+    }
+
+    /// Plays a sound the library found, on the outputs the settings name.
+    pub fn play_sound(&mut self, fired: FiredSound) {
+        if let Some(command) = self.soundboard.play(fired) {
+            self.engine.send(command);
+        }
+    }
+
+    /// The hotkey of "Stop all", as the settings last said, for checking a sound's against.
+    pub fn stop_hotkey(&self) -> Option<Hotkey> {
+        self.soundboard.stop_hotkey()
+    }
+
+    /// Why the "Stop all" hotkey in `settings` may not be used, as the notice that says so, or
+    /// `None` if it may, or is the one in effect.
+    pub fn stop_hotkey_refusal(&self, settings: &Settings) -> Option<Notice> {
+        self.soundboard.stop_hotkey_refusal(settings)
     }
 
     /// Takes in a new snapshot. The queue loses what is gone, but the playing track plays on even
@@ -416,6 +460,8 @@ impl PlaybackService {
         self.restore = Restore::Done;
         self.play_after_restore = false;
         self.on_snapshot(Arc::default());
+        let state = self.soundboard.clear();
+        self.events.push(state);
     }
 
     /// Applies the settings that concern playback. Only what changed goes on, because setting a
@@ -441,8 +487,13 @@ impl PlaybackService {
         if exclusive != self.exclusive {
             self.exclusive = exclusive;
             self.output = None;
+            // Turned on again, the mode may be refused again, and that is news for this track too.
+            self.unavailable_noticed = None;
             self.engine.send(EngineCommand::SetExclusive(exclusive));
             self.publish();
+        }
+        if let Some(command) = self.soundboard.on_settings(settings) {
+            self.engine.send(command);
         }
         if settings.shuffle != self.shuffle || settings.repeat != self.repeat {
             self.shuffle = settings.shuffle;
@@ -459,6 +510,9 @@ impl PlaybackService {
         self.playing = false;
         self.notify(NO_DEVICE);
         self.publish();
+        if let Some(state) = self.soundboard.silence() {
+            self.events.push(state);
+        }
     }
 
     /// The worker's regular call: ends a run of failures once a track has played long enough,
@@ -993,10 +1047,15 @@ mod tests {
         fake::{FakeControl, FakeFactory},
         testing::write_tone_wav,
     };
-    use aria_library::{FolderId, Track};
+    use aria_library::{FolderId, SoundId, Track};
     use tempfile::TempDir;
 
-    use crate::{i18n::Localizer, player::RESTART_THRESHOLD_MS, settings::Language};
+    use crate::{
+        i18n::Localizer,
+        player::RESTART_THRESHOLD_MS,
+        settings::Language,
+        soundboard::{SoundTarget, SoundboardState},
+    };
 
     use super::*;
 
@@ -1123,6 +1182,8 @@ mod tests {
         engine_events: Receiver<EngineEvent>,
         notices: Vec<Notice>,
         views: Vec<PlayerView>,
+        /// The soundboard states shown, oldest first.
+        boards: Vec<Arc<SoundboardState>>,
         requests: Vec<LibraryRequest>,
         /// When the fake device last took a chunk.
         last_pull: Cell<Option<Instant>>,
@@ -1143,6 +1204,7 @@ mod tests {
                 engine_events,
                 notices: Vec::new(),
                 views: Vec::new(),
+                boards: Vec::new(),
                 requests: Vec::new(),
                 last_pull: Cell::new(None),
             }
@@ -1165,6 +1227,7 @@ mod tests {
                 match event {
                     Event::Notice(notice) => self.notices.push(notice),
                     Event::Player(view) => self.views.push(view),
+                    Event::Soundboard(board) => self.boards.push(board),
                     other => panic!("the service does not send {other:?}"),
                 }
             }
@@ -3248,5 +3311,251 @@ mod tests {
         assert!(rig.view().playing);
         assert!(rig.upcoming().is_empty());
         rig.run_until("the stop", stopped);
+    }
+
+    #[test]
+    fn turning_exclusive_off_and_on_lets_the_notice_come_again() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.settings(&exclusive());
+        rig.play(&[1], 0);
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        rig.settings(&Settings::default());
+        rig.settings(&exclusive());
+        rig.engine(EngineEvent::ExclusiveUnavailable);
+        let expected = if EXCLUSIVE_SUPPORTED { 2 } else { 0 };
+        assert_eq!(rig.notices("exclusive-unavailable").len(), expected);
+    }
+
+    // Soundboard.
+
+    /// Sound files, in a folder of their own.
+    struct Sounds {
+        dir: TempDir,
+    }
+
+    impl Sounds {
+        fn new() -> Self {
+            Self {
+                dir: tempfile::tempdir().unwrap(),
+            }
+        }
+
+        /// A tone of `ms` milliseconds, as sound `id` with `gain`.
+        fn tone(&self, id: i64, ms: u64, gain: f32) -> FiredSound {
+            let path = self.dir.path().join(format!("{id}.wav"));
+            write_tone_wav(&path, 44_100, 2, ms * 441 / 10, 440.0).unwrap();
+            FiredSound {
+                id: SoundId(id),
+                path,
+                gain,
+            }
+        }
+    }
+
+    fn sound_view(id: i64) -> SoundView {
+        SoundView {
+            id: SoundId(id),
+            name: format!("Sound {id}"),
+            volume: 1.0,
+            hotkey: None,
+            missing: false,
+            playing: false,
+        }
+    }
+
+    fn sounds_to(target: SoundTarget, device: Option<&DeviceId>) -> Settings {
+        Settings {
+            soundboard_target: target,
+            soundboard_device: device.cloned(),
+            ..Settings::default()
+        }
+    }
+
+    impl Rig {
+        /// A service that knows of sounds 1 and 2.
+        fn with_sounds() -> Self {
+            let mut rig = Self::idle();
+            rig.service.on_sounds(vec![sound_view(1), sound_view(2)]);
+            rig.collect();
+            rig
+        }
+
+        fn fire(&mut self, fired: FiredSound) {
+            self.service.play_sound(fired);
+            self.collect();
+        }
+
+        fn board(&self) -> &SoundboardState {
+            self.boards.last().unwrap()
+        }
+
+        fn sounding(&self) -> Vec<i64> {
+            self.boards.last().map_or_else(Vec::new, |board| {
+                board
+                    .sounds
+                    .iter()
+                    .filter(|sound| sound.playing)
+                    .map(|sound| sound.id.0)
+                    .collect()
+            })
+        }
+    }
+
+    #[test]
+    fn the_sounds_the_library_sends_are_shown() {
+        let rig = Rig::with_sounds();
+        assert_eq!(rig.boards.len(), 1);
+        assert_eq!(rig.board().sounds, [sound_view(1), sound_view(2)]);
+        assert!(rig.views.is_empty(), "the player is not touched");
+    }
+
+    #[test]
+    fn playing_a_sound_sends_its_path_gain_and_route() {
+        let sounds = Sounds::new();
+        let cable = DeviceId("cable".into());
+        let mut rig = Rig::with_sounds();
+        rig.settings(&sounds_to(SoundTarget::Second, Some(&cable)));
+
+        rig.fire(sounds.tone(1, 3_000, 0.5));
+        rig.wait_until("the sound to start", |rig| rig.sounding() == [1]);
+        // Only the second device opened: the music's output was not needed.
+        let outputs = rig.factory.outputs();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].device(), Some(cable.clone()));
+
+        rig.settings(&sounds_to(SoundTarget::Both, Some(&cable)));
+        rig.fire(sounds.tone(2, 3_000, 1.0));
+        rig.wait_until("the second sound", |rig| rig.sounding().len() == 2);
+        assert_eq!(
+            rig.factory.outputs_on(None).len(),
+            1,
+            "the music's device too"
+        );
+        assert_eq!(rig.factory.outputs_on(Some(&cable)).len(), 1);
+        assert!(rig.views.is_empty(), "sounds do not move the player");
+        assert!(rig.notices.is_empty(), "{:?}", rig.notices);
+    }
+
+    #[test]
+    fn playing_marks_the_sound_and_ending_unmarks_it() {
+        let sounds = Sounds::new();
+        let mut rig = Rig::with_sounds();
+        rig.fire(sounds.tone(2, 100, 1.0));
+        rig.wait_until("the sound to start", |rig| rig.sounding() == [2]);
+        assert!(!rig.board().sounds[0].playing);
+
+        rig.run_until("the sound to end", |rig| rig.sounding().is_empty());
+        assert_eq!(rig.board().sounds.len(), 2);
+        assert!(rig.views.is_empty(), "sounds do not move the player");
+    }
+
+    #[test]
+    fn stop_sounds_reaches_the_engine() {
+        let sounds = Sounds::new();
+        let mut rig = Rig::with_sounds();
+        rig.fire(sounds.tone(1, 5_000, 1.0));
+        rig.fire(sounds.tone(2, 5_000, 1.0));
+        rig.wait_until("both sounds", |rig| rig.sounding().len() == 2);
+
+        rig.send(Command::StopSounds);
+        rig.wait_until("the sounds to stop", |rig| rig.sounding().is_empty());
+    }
+
+    #[test]
+    fn the_sound_device_is_sent_at_startup_and_on_change() {
+        let sounds = Sounds::new();
+        let (cable, other) = (DeviceId("cable".into()), DeviceId("other".into()));
+        // As at startup: the settings come before anything plays.
+        let mut rig = Rig::idle();
+        rig.settings(&sounds_to(SoundTarget::Second, Some(&cable)));
+        rig.service.on_sounds(vec![sound_view(1)]);
+        rig.collect();
+
+        rig.fire(sounds.tone(1, 3_000, 1.0));
+        rig.wait_until("the sound", |rig| rig.sounding() == [1]);
+        assert_eq!(rig.factory.outputs_on(Some(&cable)).len(), 1);
+
+        rig.settings(&sounds_to(SoundTarget::Second, Some(&other)));
+        // The output on the old device closes, and the sound on it ends.
+        rig.wait_until("the sound to be cut", |rig| rig.sounding().is_empty());
+        rig.fire(sounds.tone(1, 3_000, 1.0));
+        rig.wait_until("the sound again", |rig| rig.sounding() == [1]);
+        assert_eq!(rig.factory.outputs_on(Some(&other)).len(), 1);
+        assert_eq!(rig.factory.outputs_on(Some(&cable)).len(), 1, "no new one");
+    }
+
+    #[test]
+    fn a_sound_that_cannot_be_decoded_gives_a_notice() {
+        let sounds = Sounds::new();
+        let path = sounds.dir.path().join("broken.wav");
+        std::fs::write(&path, b"not audio").unwrap();
+        let mut rig = Rig::with_sounds();
+        rig.fire(FiredSound {
+            id: SoundId(1),
+            path,
+            gain: 1.0,
+        });
+        rig.wait_until("the notice", |rig| !rig.notices("sound-failed").is_empty());
+        assert!(rig.sounding().is_empty());
+        assert!(
+            rig.factory.outputs().is_empty(),
+            "nothing was opened for it"
+        );
+    }
+
+    #[test]
+    fn a_sound_with_no_device_gives_one_notice() {
+        let sounds = Sounds::new();
+        let mut rig = Rig::with_sounds();
+        rig.factory.fail_open(2);
+        rig.fire(sounds.tone(1, 3_000, 1.0));
+        rig.wait_until("the notice", |rig| !rig.notices.is_empty());
+        // Leave room for a second notice to arrive, were there one.
+        thread::sleep(Duration::from_millis(50));
+        rig.pump();
+        let keys: Vec<&str> = rig.notices.iter().map(|notice| notice.key).collect();
+        assert_eq!(keys, ["playback-no-device"]);
+        assert!(rig.sounding().is_empty());
+    }
+
+    #[test]
+    fn the_second_device_failing_gives_a_notice() {
+        let sounds = Sounds::new();
+        let cable = DeviceId("cable".into());
+        let mut rig = Rig::with_sounds();
+        rig.factory.remove_device(cable.clone());
+        rig.settings(&sounds_to(SoundTarget::Second, Some(&cable)));
+        rig.fire(sounds.tone(1, 3_000, 1.0));
+        rig.wait_until("the notice", |rig| {
+            !rig.notices("sound-device-failed").is_empty()
+        });
+        assert!(
+            rig.sounding().is_empty(),
+            "with Second only, it plays nowhere"
+        );
+        assert!(
+            rig.notices("playback-no-device").is_empty(),
+            "the music is fine"
+        );
+    }
+
+    #[test]
+    fn a_lost_library_empties_the_soundboard() {
+        let mut rig = Rig::with_sounds();
+        rig.service.library_lost();
+        rig.collect();
+        assert!(rig.board().sounds.is_empty());
+    }
+
+    #[test]
+    fn the_stop_hotkey_is_the_one_in_the_settings() {
+        let mut rig = Rig::with_sounds();
+        let hotkey: Hotkey = "Ctrl+F12".parse().unwrap();
+        rig.settings(&Settings {
+            stop_sounds_hotkey: Some(hotkey),
+            ..Settings::default()
+        });
+        assert_eq!(rig.service.stop_hotkey(), Some(hotkey));
     }
 }

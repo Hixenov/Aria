@@ -331,6 +331,13 @@ mod tests {
         "playback-device-fallback",
         "playback-no-device",
         "exclusive-unavailable",
+        "sound-name-invalid",
+        "sound-limit",
+        "sound-missing",
+        "sound-failed",
+        "sound-device-failed",
+        "hotkey-not-allowed",
+        "hotkey-taken",
         "error-startup-title",
         "error-startup-window",
         "home-recent",
@@ -465,6 +472,7 @@ mod tests {
         args.set("folder", "777");
         args.set("title", "777");
         args.set("name", "777");
+        args.set("max", 777);
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use aria_audio::DeviceInfo;
 use aria_library::{Collections, LibrarySnapshot, ScanProgress};
 
-use crate::{notice::Notice, playback_service::PlayerView, settings::Settings};
+use crate::{
+    notice::Notice, playback_service::PlayerView, settings::Settings, soundboard::SoundboardState,
+};
 
 /// Something the backend reports to the UI thread.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +30,9 @@ pub enum Event {
     ScanProgress(Option<ScanProgress>),
     /// The player changed; this is how it now is.
     Player(PlayerView),
+    /// The soundboard: its sounds, which are playing and which files are missing. Sent once
+    /// after the library opens and after every change, a sound starting or ending included.
+    Soundboard(Arc<SoundboardState>),
     /// The output devices, as asked for with
     /// [`Command::ListDevices`](crate::command::Command::ListDevices). Empty if they could not be
     /// listed.

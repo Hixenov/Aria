@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use aria_library::{FolderId, PlaylistId, TrackId};
+use aria_library::{FolderId, PlaylistId, SoundId, TrackId};
 
-use crate::settings::Settings;
+use crate::{hotkey::Hotkey, settings::Settings};
 
 /// A request from the UI thread to the backend.
 #[derive(Debug, Clone)]
@@ -103,6 +103,38 @@ pub enum Command {
     Previous,
     /// Move within the current track, to this many milliseconds.
     Seek(u64),
+    /// Add sounds to the soundboard, named after their files, in this order. Past the limit of
+    /// 100, the rest are left out with a notice.
+    AddSounds(Vec<PathBuf>),
+    /// Give a sound a new name: 1 to 50 characters after trimming, or a notice.
+    RenameSound {
+        /// The sound.
+        id: SoundId,
+        /// The new name, trimmed by the library.
+        name: String,
+    },
+    /// Set a sound's volume, 0.0 to 1.0.
+    SetSoundVolume {
+        /// The sound.
+        id: SoundId,
+        /// The volume; out of range, it is clamped.
+        volume: f32,
+    },
+    /// Set or clear a sound's hotkey. A hotkey that takes a typing key, or one used by another
+    /// sound or by "Stop all", is refused with a notice.
+    SetSoundHotkey {
+        /// The sound.
+        id: SoundId,
+        /// The hotkey, or `None` to clear it.
+        hotkey: Option<Hotkey>,
+    },
+    /// Remove a sound from the soundboard. Its file is not touched.
+    RemoveSound(SoundId),
+    /// Play a sound from its start, or start it again if it is playing. A missing file gives a
+    /// notice and plays nothing.
+    PlaySound(SoundId),
+    /// Stop every sound. The music plays on.
+    StopSounds,
     /// List the output devices, answered with
     /// [`Event::OutputDevices`](crate::event::Event::OutputDevices).
     ListDevices,

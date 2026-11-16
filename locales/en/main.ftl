@@ -147,6 +147,16 @@ playback-device-fallback = The audio device isn't available, so Aria switched to
 playback-no-device = No audio device is available, so playback is paused.
 exclusive-unavailable = Exclusive mode isn't available on this device right now, so Aria is using the system mixer.
 
+## Soundboard
+
+sound-name-invalid = A sound name needs 1 to 50 characters.
+sound-limit = The soundboard holds up to { $max } sounds, so some files weren't added.
+sound-missing = The file of this sound can't be found, so nothing was played.
+sound-failed = This sound couldn't be played. The music wasn't affected.
+sound-device-failed = The second device for sounds couldn't be used.
+hotkey-not-allowed = A hotkey needs Ctrl, Alt or Win, unless its key is an F key or a numpad key.
+hotkey-taken = This hotkey is already used in Aria.
+
 ## Local Music page
 
 local-add-folder = Add folder

@@ -3,6 +3,7 @@
 pub mod command;
 pub mod error;
 pub mod event;
+pub mod hotkey;
 pub mod i18n;
 pub mod library_service;
 pub mod logging;
@@ -13,6 +14,7 @@ pub mod player;
 pub mod redact;
 pub mod runtime;
 pub mod settings;
+pub mod soundboard;
 
 // What `aria-app` needs from the crates below it, which it reaches only through this one.
 pub use aria_audio::{
@@ -21,5 +23,6 @@ pub use aria_audio::{
 };
 pub use aria_library::{
     Collections, Folder, FolderId, LibrarySnapshot, PLAYLIST_NAME_MAX, Playlist, PlaylistId,
-    PlaylistItem, ScanProgress, TrackId, playlist_name,
+    PlaylistItem, SOUND_NAME_MAX, SOUNDS_MAX, ScanProgress, SoundId, TrackId, playlist_name,
+    sound_name,
 };

@@ -19,6 +19,7 @@ use aria_core::{
     player::queue::RepeatMode,
     runtime::BackendHandle,
     settings::{SIDEBAR_MAX, SIDEBAR_MIN, Settings},
+    soundboard::SoundboardState,
 };
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
@@ -116,6 +117,8 @@ pub struct AriaApp {
     /// Favorites, playlists and recent plays as the backend last reported them. Empty until
     /// it does.
     collections: Arc<Collections>,
+    /// The soundboard as the backend last reported it. Empty until it does.
+    soundboard: Arc<SoundboardState>,
     /// The playlist name dialog, while it is open: what it is for and the text typed so far.
     name_dialog: Option<(NameFor, String)>,
     /// The output devices the backend last listed. Empty until it answers.
@@ -178,6 +181,7 @@ impl AriaApp {
             library: LibraryView::default(),
             player: PlayerView::default(),
             collections: Arc::default(),
+            soundboard: Arc::default(),
             name_dialog: None,
             devices: Vec::new(),
             on_settings: false,
@@ -209,6 +213,11 @@ impl AriaApp {
     /// The settings in effect.
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// The soundboard as the backend last reported it.
+    pub fn soundboard(&self) -> &SoundboardState {
+        &self.soundboard
     }
 
     /// Startup notices not shown yet, oldest first. The first frame shows them as toasts.
@@ -395,6 +404,7 @@ impl AriaApp {
                 self.library.snapshot = snapshot;
             }
             Event::Collections(collections) => self.collections = collections,
+            Event::Soundboard(soundboard) => self.soundboard = soundboard,
             Event::ScanProgress(scan) => {
                 // Covers that were missing may have been written by the scan that just ended;
                 // between snapshots, a missing cover stays missing.
@@ -1038,6 +1048,25 @@ mod tests {
         };
         app.handle_event(&ctx, Event::OutputDevices(vec![device.clone()]));
         assert_eq!(app.devices, [device]);
+    }
+
+    #[test]
+    fn the_soundboard_is_kept() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        assert!(app.soundboard().sounds.is_empty());
+        let state = SoundboardState {
+            sounds: vec![aria_core::soundboard::SoundView {
+                id: aria_core::SoundId(1),
+                name: "Horn".into(),
+                volume: 0.5,
+                hotkey: None,
+                missing: false,
+                playing: true,
+            }],
+        };
+        app.handle_event(&ctx, Event::Soundboard(Arc::new(state.clone())));
+        assert_eq!(*app.soundboard(), state);
     }
 
     fn space_harness() -> Harness<'static, AriaApp> {
