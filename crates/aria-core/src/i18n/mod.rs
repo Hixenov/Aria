@@ -443,6 +443,26 @@ mod tests {
     }
 
     #[test]
+    fn the_converted_hint_names_every_cause() {
+        // "Converted" is shown for each of these (spec 3.4: the tooltip explains the state).
+        let hint = Localizer::new(Language::En)
+            .unwrap()
+            .tr("output-converted-hint")
+            .into_owned();
+        for cause in [
+            "lossy",
+            "float",
+            "unknown",
+            "above 24 bits",
+            "reduced",
+            "channels",
+            "muted",
+        ] {
+            assert!(hint.contains(cause), "{cause:?} is missing from {hint:?}");
+        }
+    }
+
+    #[test]
     fn falls_back_to_english_then_key() {
         let l = Localizer::new(Language::Ru).unwrap();
         assert_eq!(l.tr("definitely-not-a-key"), "definitely-not-a-key");
