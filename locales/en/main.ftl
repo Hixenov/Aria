@@ -167,6 +167,8 @@ hotkey-inactive-hint = The system refused this hotkey, perhaps because another p
 hotkey-dialog-title = Set a hotkey
 hotkey-dialog-hint = Press the keys together. Escape cancels; Delete or Backspace clears the hotkey.
 hotkey-dialog-clear = Clear
+hotkeys-unavailable = Global hotkeys are unavailable on this system, so none of them work.
+hotkey-dialog-numpad = Numpad key
 
 ## Local Music page
 

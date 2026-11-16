@@ -150,10 +150,11 @@ fn main() -> anyhow::Result<()> {
     };
     log_stage("backend", stage.elapsed());
 
-    // 6. Global hotkeys. Their manager must be made here, on the main thread, before the event
-    // loop starts. Without it Aria runs with every hotkey refused.
+    // 6. Global hotkeys. Their manager and press handler must be made here, on the main thread,
+    // before the event loop starts and before any hotkey is registered. A press wakes the
+    // window, minimized or not. Without them Aria runs with global hotkeys unavailable.
     let stage = Instant::now();
-    let hotkeys = match SystemHotkeys::new() {
+    let hotkeys = match SystemHotkeys::new(repaint_waker(Arc::clone(&egui_ctx))) {
         Ok(hotkeys) => Some(hotkeys),
         Err(err) => {
             tracing::warn!(%err, "global hotkeys are unavailable");

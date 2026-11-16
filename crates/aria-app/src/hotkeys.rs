@@ -3,10 +3,23 @@
 //! [`Hotkeys`] keeps the registered set equal to the one wanted, and turns presses into what they
 //! are for. The system behind it is a [`HotkeyBackend`]: [`SystemHotkeys`] in the app, a fake in
 //! tests. Aria receives only the combinations it registered; it reads no other keystrokes.
+//!
+//! A press wakes the window itself: `global-hotkey` hands each press to Aria's handler, which
+//! queues it and asks for a repaint. eframe then runs [`eframe::App::logic`] even while the window
+//! is minimized, and the app reads the presses there. Nothing polls.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
+    },
+};
 
-use aria_core::hotkey::{Hotkey, HotkeyKey};
+use aria_core::{
+    hotkey::{Hotkey, HotkeyKey},
+    runtime::Waker,
+};
 use aria_library::SoundId;
 use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
@@ -139,10 +152,15 @@ impl<B: HotkeyBackend> Hotkeys<B> {
     }
 
     /// Whether the system holds any hotkey for Aria now.
+    #[cfg(test)]
     pub(crate) fn any_registered(&self) -> bool {
         !self.registered.is_empty()
     }
 }
+
+/// Whether the process's one press handler has been installed. `global-hotkey` keeps a single
+/// handler for the whole process, so only one [`SystemHotkeys`] can ever receive presses.
+static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// The system's hotkeys, through `global-hotkey`. The manager must be made on the main thread,
 /// before the window opens, and lives as long as the window: dropping it unregisters everything.
@@ -150,15 +168,33 @@ pub struct SystemHotkeys {
     manager: GlobalHotKeyManager,
     /// The system's id of each registered hotkey.
     ids: HashMap<u32, Hotkey>,
+    /// The ids of the hotkeys pressed, as the handler queued them.
+    presses: Receiver<u32>,
 }
 
 impl SystemHotkeys {
-    /// Makes the manager. Call it on the main thread, before the event loop starts.
-    pub fn new() -> Result<Self, String> {
+    /// Makes the manager and installs the press handler, which queues each key-down and calls
+    /// `wake`. Call it once, on the main thread, before the event loop starts: the handler must
+    /// be in place before any hotkey is registered, or `global-hotkey` fixes it at none.
+    pub fn new(wake: Waker) -> Result<Self, String> {
+        if HANDLER_INSTALLED.swap(true, Ordering::SeqCst) {
+            return Err("the hotkey handler is already installed".to_owned());
+        }
         let manager = GlobalHotKeyManager::new().map_err(|err| err.to_string())?;
+        let (sender, presses) = mpsc::channel();
+        GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+            // A release comes from a thread of the crate's own; only presses matter.
+            if event.state != HotKeyState::Pressed {
+                return;
+            }
+            if sender.send(event.id).is_ok() {
+                wake();
+            }
+        }));
         Ok(Self {
             manager,
             ids: HashMap::new(),
+            presses,
         })
     }
 }
@@ -185,10 +221,9 @@ impl HotkeyBackend for SystemHotkeys {
     }
 
     fn pressed(&mut self) -> Vec<Hotkey> {
-        GlobalHotKeyEvent::receiver()
+        self.presses
             .try_iter()
-            .filter(|event| event.state == HotKeyState::Pressed)
-            .filter_map(|event| self.ids.get(&event.id).copied())
+            .filter_map(|id| self.ids.get(&id).copied())
             .collect()
     }
 }
@@ -567,9 +602,12 @@ mod tests {
                 key: hotkey_key,
             };
             let system = to_system(hotkey).unwrap_or_else(|| panic!("{hotkey_key:?} unmapped"));
-            // The system's own name of the key reads back as ours, so each maps to its own key.
-            let name = system.key.to_string();
-            assert!(codes.insert(system.key), "{hotkey_key:?} shares {name}");
+            // No two keys of ours share a system key.
+            assert!(
+                codes.insert(system.key),
+                "{hotkey_key:?} shares {}",
+                system.key
+            );
             assert_eq!(system.mods, Modifiers::CONTROL, "{hotkey_key:?}");
         }
         assert_eq!(

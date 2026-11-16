@@ -170,6 +170,8 @@ hotkey-inactive-hint = Система отклонила это сочетани
 hotkey-dialog-title = Задать сочетание клавиш
 hotkey-dialog-hint = Нажмите клавиши одновременно. Escape — отмена, Delete или Backspace — убрать сочетание.
 hotkey-dialog-clear = Убрать
+hotkeys-unavailable = Глобальные сочетания клавиш недоступны в этой системе, поэтому ни одно из них не работает.
+hotkey-dialog-numpad = Клавиша цифрового блока
 
 ## Local Music page
 

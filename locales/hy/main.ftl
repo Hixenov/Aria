@@ -169,6 +169,8 @@ hotkey-inactive-hint = Համակարգը մերժել է այս համակցո�
 hotkey-dialog-title = Սահմանել ստեղների համակցություն
 hotkey-dialog-hint = Սեղմեք ստեղները միասին։ Escape-ը չեղարկում է, Delete-ը կամ Backspace-ը հեռացնում է համակցությունը։
 hotkey-dialog-clear = Հեռացնել
+hotkeys-unavailable = Գլոբալ ստեղների համակցությունները հասանելի չեն այս համակարգում, ուստի դրանցից ոչ մեկը չի աշխատում։
+hotkey-dialog-numpad = Թվային բլոկի ստեղն
 
 ## Local Music page
 

@@ -3,16 +3,19 @@
 //!
 //! The dialog sees only what reaches the window while it is open. The app unregisters every
 //! global hotkey for that time, so the combination being typed comes here and fires nothing.
-//! The window toolkit reports neither the Windows key nor whether a digit came from the numpad,
-//! so the combinations caught here hold Ctrl, Alt and Shift with a letter, a digit or F1 to F24.
+//!
+//! The window toolkit does not tell a numpad key from its twin on the main keyboard, so the
+//! "Numpad key" switch says which was meant: with it on, a digit, `+`, `-` or `/` becomes the
+//! numpad's. The numpad's `*` and `.` arrive as no key at all and cannot be caught. Neither can
+//! the Windows key, which the toolkit does not report on Windows; on a Mac, Command counts as it.
 
 use aria_core::{
     hotkey::{Hotkey, HotkeyKey},
     i18n::Localizer,
 };
 use eframe::egui::{
-    Align, Button, Context, Event, Frame, Id, Key, Label, Layout, Margin, Modal, RichText, Stroke,
-    WidgetInfo, accesskit::Role, vec2,
+    Align, Button, Checkbox, Context, Event, Frame, Id, Key, Label, Layout, Margin, Modal,
+    Modifiers, RichText, Stroke, WidgetInfo, accesskit::Role, vec2,
 };
 
 use crate::ui::theme::{
@@ -52,6 +55,67 @@ pub struct HotkeyDialog<'a> {
     pub taken: &'a [Hotkey],
 }
 
+/// A key press as the window reported it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pressed {
+    /// The key as the keyboard layout names it.
+    logical: Key,
+    /// The key by its place on a US keyboard, when the window knows it.
+    physical: Option<Key>,
+    modifiers: Modifiers,
+}
+
+/// What has been pressed in the dialog so far, and whether a numpad key is meant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HotkeyCapture {
+    pressed: Option<Pressed>,
+    /// The "Numpad key" switch.
+    numpad: bool,
+}
+
+impl HotkeyCapture {
+    /// Nothing pressed yet. The switch starts on when `current` is a numpad key.
+    pub fn new(current: Option<Hotkey>) -> Self {
+        Self {
+            pressed: None,
+            numpad: current.is_some_and(|hotkey| is_numpad(hotkey.key)),
+        }
+    }
+
+    /// The hotkey pressed, as the switch reads it, if the key can be one.
+    pub fn hotkey(&self) -> Option<Hotkey> {
+        let pressed = self.pressed?;
+        Some(Hotkey {
+            ctrl: pressed.modifiers.ctrl,
+            alt: pressed.modifiers.alt,
+            shift: pressed.modifiers.shift,
+            // The Command key on a Mac; Windows does not report its key here.
+            win: pressed.modifiers.mac_cmd,
+            key: resolve(pressed, self.numpad)?,
+        })
+    }
+
+    /// Whether the switch can change the hotkey: nothing is pressed yet, or the key pressed has a
+    /// numpad twin.
+    fn numpad_applies(&self) -> bool {
+        self.pressed
+            .is_none_or(|pressed| letter(pressed).is_none() && numpad_key(place(pressed)).is_some())
+    }
+}
+
+/// Whether `key` is on the numpad.
+fn is_numpad(key: HotkeyKey) -> bool {
+    matches!(
+        key,
+        HotkeyKey::Numpad(_)
+            | HotkeyKey::NumpadAdd
+            | HotkeyKey::NumpadSubtract
+            | HotkeyKey::NumpadMultiply
+            | HotkeyKey::NumpadDivide
+            | HotkeyKey::NumpadDecimal
+    )
+}
+
 /// Why a combination cannot be confirmed, as the key of the text that says so.
 fn refusal(hotkey: Hotkey, taken: &[Hotkey]) -> Option<&'static str> {
     if !hotkey.is_allowed() {
@@ -71,16 +135,52 @@ fn hotkey_key(key: Key) -> Option<HotkeyKey> {
     }
 }
 
-/// What the key presses of this frame ask for: an answer, a newly caught combination, or both
-/// when Escape or Delete follows one.
-fn read_keys(events: &[Event], captured: &mut Option<Hotkey>) -> Option<HotkeyAnswer> {
+/// The numpad key that `key` may stand for: a digit, `+`, `-` or `/`.
+fn numpad_key(key: Key) -> Option<HotkeyKey> {
+    match key {
+        Key::Plus => Some(HotkeyKey::NumpadAdd),
+        Key::Minus => Some(HotkeyKey::NumpadSubtract),
+        Key::Slash => Some(HotkeyKey::NumpadDivide),
+        other => match hotkey_key(other) {
+            Some(HotkeyKey::Digit(d)) => Some(HotkeyKey::Numpad(d)),
+            _ => None,
+        },
+    }
+}
+
+/// The letter pressed, as the layout names it. The system's hotkeys follow the layout's
+/// letters, so a letter is taken from the logical key.
+fn letter(pressed: Pressed) -> Option<HotkeyKey> {
+    hotkey_key(pressed.logical).filter(|key| matches!(key, HotkeyKey::Letter(_)))
+}
+
+/// The key by its place, so that Shift+1 is still 1 and not `!`.
+fn place(pressed: Pressed) -> Key {
+    pressed.physical.unwrap_or(pressed.logical)
+}
+
+/// The hotkey key of a press, with the "Numpad key" switch as `numpad`.
+fn resolve(pressed: Pressed, numpad: bool) -> Option<HotkeyKey> {
+    if let Some(found) = letter(pressed) {
+        return Some(found);
+    }
+    let key = place(pressed);
+    if numpad && let Some(found) = numpad_key(key) {
+        return Some(found);
+    }
+    hotkey_key(key)
+}
+
+/// What the key presses of this frame ask for: an answer, or none while the dialog stays open.
+/// A press of a key that can be part of a hotkey is kept in `capture`.
+fn read_keys(events: &[Event], capture: &mut HotkeyCapture) -> Option<HotkeyAnswer> {
     for event in events {
         let Event::Key {
             key,
+            physical_key,
             pressed: true,
             repeat: false,
             modifiers,
-            ..
         } = event
         else {
             continue;
@@ -88,16 +188,15 @@ fn read_keys(events: &[Event], captured: &mut Option<Hotkey>) -> Option<HotkeyAn
         match key {
             Key::Escape => return Some(HotkeyAnswer::Cancelled),
             Key::Delete | Key::Backspace => return Some(HotkeyAnswer::Cleared),
-            other => {
-                if let Some(found) = hotkey_key(*other) {
-                    *captured = Some(Hotkey {
-                        ctrl: modifiers.ctrl,
-                        alt: modifiers.alt,
-                        shift: modifiers.shift,
-                        // The Command key on a Mac; Windows does not report its key here.
-                        win: modifiers.mac_cmd,
-                        key: found,
-                    });
+            _ => {
+                let pressed = Pressed {
+                    logical: *key,
+                    physical: *physical_key,
+                    modifiers: *modifiers,
+                };
+                // Kept when some position of the switch makes a hotkey of it.
+                if resolve(pressed, true).is_some() {
+                    capture.pressed = Some(pressed);
                 }
             }
         }
@@ -106,14 +205,14 @@ fn read_keys(events: &[Event], captured: &mut Option<Hotkey>) -> Option<HotkeyAn
 }
 
 impl HotkeyDialog<'_> {
-    /// Draws the dialog. `captured` is the combination pressed so far; the confirm button works
-    /// only while it is allowed and not used elsewhere in Aria.
+    /// Draws the dialog. `capture` is what was pressed so far; the confirm button works only
+    /// while it makes a hotkey that is allowed and not used elsewhere in Aria.
     pub fn show(
         &self,
         ctx: &Context,
         tr: &Localizer,
         p: &Palette,
-        captured: &mut Option<Hotkey>,
+        capture: &mut HotkeyCapture,
     ) -> HotkeyAnswer {
         let frame = Frame::new()
             .fill(p.surface)
@@ -123,7 +222,7 @@ impl HotkeyDialog<'_> {
             .shadow(ctx.global_style().visuals.window_shadow);
         let result = Modal::new(Id::unique(ID)).frame(frame).show(ctx, |ui| {
             ui.set_width(WIDTH);
-            let pressed = ui.input(|input| read_keys(&input.events, captured));
+            let pressed = ui.input(|input| read_keys(&input.events, capture));
 
             let title = tr.tr("hotkey-dialog-title");
             let heading = RichText::new(&*title)
@@ -138,10 +237,15 @@ impl HotkeyDialog<'_> {
                     .selectable(false)
                     .wrap(),
             );
-            ui.add_space(SPACE[3]);
+            ui.add_space(SPACE[2]);
+            let applies = capture.numpad_applies();
+            let numpad = Checkbox::new(&mut capture.numpad, tr.tr("hotkey-dialog-numpad"));
+            ui.add_enabled(applies, numpad);
+            ui.add_space(SPACE[2]);
 
             // The combination pressed, or else the hotkey as it is now.
-            let (shown, color) = match (*captured, self.current) {
+            let captured = capture.hotkey();
+            let (shown, color) = match (captured, self.current) {
                 (Some(hotkey), _) => (hotkey.to_string(), p.text),
                 (None, Some(hotkey)) => (hotkey.to_string(), p.text_muted),
                 (None, None) => (tr.tr("sound-hotkey-none").into_owned(), p.text_muted),
@@ -210,16 +314,17 @@ mod tests {
         tr: Localizer,
         current: Option<Hotkey>,
         taken: Vec<Hotkey>,
-        captured: Option<Hotkey>,
+        capture: HotkeyCapture,
         answer: HotkeyAnswer,
     }
 
-    fn harness(current: Option<Hotkey>, taken: Vec<Hotkey>) -> Harness<'static, World> {
+    /// The dialog over `current` and `taken`, drawn once.
+    fn dialog(current: Option<Hotkey>, taken: Vec<Hotkey>) -> Harness<'static, World> {
         let world = World {
             tr: Localizer::new(Language::En).unwrap_or_else(|err| panic!("English: {err}")),
             current,
             taken,
-            captured: None,
+            capture: HotkeyCapture::new(current),
             answer: HotkeyAnswer::Open,
         };
         let mut harness = Harness::builder()
@@ -236,7 +341,7 @@ mod tests {
                         current: world.current,
                         taken: &world.taken,
                     };
-                    world.answer = dialog.show(ui.ctx(), &world.tr, &palette, &mut world.captured);
+                    world.answer = dialog.show(ui.ctx(), &world.tr, &palette, &mut world.capture);
                 },
                 world,
             );
@@ -258,7 +363,7 @@ mod tests {
 
     #[test]
     fn pressing_a_combination_shows_it_and_confirm_sends_it() {
-        let mut harness = harness(None, vec![]);
+        let mut harness = dialog(None, vec![]);
         harness.get_by_label(&en(&harness, "hotkey-dialog-title"));
         harness.get_by_label(&en(&harness, "sound-hotkey-none"));
         assert!(confirm_disabled(&harness), "nothing pressed yet");
@@ -285,7 +390,7 @@ mod tests {
 
     #[test]
     fn escape_cancels() {
-        let mut harness = harness(Some(key("F9")), vec![]);
+        let mut harness = dialog(Some(key("F9")), vec![]);
         harness.get_by_label("F9");
         harness.key_press_modifiers(Modifiers::CTRL, Key::A);
         harness.run();
@@ -297,13 +402,13 @@ mod tests {
     #[test]
     fn delete_clears_the_hotkey() {
         for clear in [Key::Delete, Key::Backspace] {
-            let mut harness = harness(Some(key("F9")), vec![]);
+            let mut harness = dialog(Some(key("F9")), vec![]);
             harness.key_press(clear);
             harness.run();
             assert_eq!(harness.state().answer, HotkeyAnswer::Cleared, "{clear:?}");
         }
         // And the button does the same.
-        let mut harness = harness(Some(key("F9")), vec![]);
+        let mut harness = dialog(Some(key("F9")), vec![]);
         let label = en(&harness, "hotkey-dialog-clear");
         harness.get_by_role_and_label(Role::Button, &label).click();
         harness.run();
@@ -312,7 +417,7 @@ mod tests {
 
     #[test]
     fn a_combination_that_is_not_allowed_cannot_be_confirmed() {
-        let mut harness = harness(None, vec![]);
+        let mut harness = dialog(None, vec![]);
         for (modifiers, pressed, text) in [
             (Modifiers::NONE, Key::A, "A"),
             (Modifiers::SHIFT, Key::Num3, "Shift+3"),
@@ -336,7 +441,7 @@ mod tests {
 
     #[test]
     fn a_combination_used_elsewhere_in_aria_cannot_be_confirmed() {
-        let mut harness = harness(None, vec![key("Ctrl+1")]);
+        let mut harness = dialog(None, vec![key("Ctrl+1")]);
         harness.key_press_modifiers(Modifiers::CTRL, Key::Num1);
         harness.run();
         harness.get_by_label(&en(&harness, "hotkey-taken"));
@@ -359,5 +464,102 @@ mod tests {
         ] {
             assert_eq!(hotkey_key(other), None, "{other:?}");
         }
+    }
+
+    fn click(harness: &mut Harness<'_, World>, role: Role, key: &str) {
+        let label = en(harness, key);
+        harness.get_by_role_and_label(role, &label).click();
+        harness.run();
+    }
+
+    #[test]
+    fn a_numpad_digit_can_be_set_with_the_numpad_toggle() {
+        // A bare numpad digit arrives as a digit, which may not stand alone; the switch says
+        // it was the numpad's.
+        let mut harness = dialog(None, vec![]);
+        harness.key_press(Key::Num3);
+        harness.run();
+        harness.get_by_label("3");
+        assert!(confirm_disabled(&harness));
+        click(&mut harness, Role::CheckBox, "hotkey-dialog-numpad");
+        harness.get_by_label("Numpad3");
+        assert!(!confirm_disabled(&harness));
+        click(&mut harness, Role::Button, "settings-confirm");
+        assert_eq!(
+            harness.state().answer,
+            HotkeyAnswer::Confirmed(key("Numpad3"))
+        );
+
+        // With the switch on first, Ctrl and a numpad digit, or the numpad's +, are numpad keys:
+        // never Ctrl and a main-keyboard digit.
+        let mut harness = dialog(None, vec![]);
+        click(&mut harness, Role::CheckBox, "hotkey-dialog-numpad");
+        harness.key_press_modifiers(Modifiers::CTRL, Key::Num1);
+        harness.run();
+        harness.get_by_label("Ctrl+Numpad1");
+        assert!(harness.query_by_label("Ctrl+1").is_none());
+        harness.key_press(Key::Plus);
+        harness.run();
+        harness.get_by_label("NumpadAdd");
+        click(&mut harness, Role::Button, "settings-confirm");
+        assert_eq!(
+            harness.state().answer,
+            HotkeyAnswer::Confirmed(key("NumpadAdd"))
+        );
+    }
+
+    #[test]
+    fn the_numpad_toggle_starts_on_for_a_numpad_hotkey_and_leaves_letters_alone() {
+        let mut harness = dialog(Some(key("Ctrl+Numpad5")), vec![]);
+        harness.key_press_modifiers(Modifiers::CTRL, Key::Num7);
+        harness.run();
+        harness.get_by_label("Ctrl+Numpad7");
+
+        harness.key_press_modifiers(Modifiers::CTRL, Key::K);
+        harness.run();
+        harness.get_by_label("Ctrl+K");
+        let label = en(&harness, "hotkey-dialog-numpad");
+        let toggle = harness.get_by_role_and_label(Role::CheckBox, &label);
+        assert!(
+            toggle.accesskit_node().is_disabled(),
+            "a letter has no numpad twin"
+        );
+    }
+
+    #[test]
+    fn shift_with_a_digit_is_caught_by_its_physical_key() {
+        // On a US layout Shift+1 types `!`; the key is still 1.
+        let mut harness = dialog(None, vec![]);
+        let modifiers = Modifiers::CTRL | Modifiers::SHIFT;
+        harness.event_modifiers(
+            egui::Event::Key {
+                key: Key::Exclamationmark,
+                physical_key: Some(Key::Num1),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            },
+            modifiers,
+        );
+        harness.run();
+        harness.get_by_label("Ctrl+Shift+1");
+        click(&mut harness, Role::Button, "settings-confirm");
+        assert_eq!(
+            harness.state().answer,
+            HotkeyAnswer::Confirmed(key("Ctrl+Shift+1"))
+        );
+    }
+
+    #[test]
+    fn a_letter_follows_the_layout_not_the_place() {
+        // On a French layout the key in the place of Q types A: the system's hotkeys follow
+        // the layout, so it is A.
+        let pressed = Pressed {
+            logical: Key::A,
+            physical: Some(Key::Q),
+            modifiers: Modifiers::CTRL,
+        };
+        assert_eq!(resolve(pressed, false), Some(HotkeyKey::Letter('A')));
+        assert_eq!(resolve(pressed, true), Some(HotkeyKey::Letter('A')));
     }
 }

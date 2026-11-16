@@ -42,7 +42,7 @@ use crate::{
             Palette, fonts,
             visuals::{self, SPACE},
         },
-        widgets::{HotkeyAnswer, HotkeyDialog, NameAnswer, NameDialog, Toasts},
+        widgets::{HotkeyAnswer, HotkeyCapture, HotkeyDialog, NameAnswer, NameDialog, Toasts},
     },
     whole_ms,
 };
@@ -53,11 +53,11 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const SETTLE_FOR: f64 = 1.0;
 /// How often it redraws then.
 const SETTLE_REPAINT: Duration = Duration::from_millis(50);
-/// How often the app looks for hotkey presses while any hotkey is registered. A press reaches
-/// no window of Aria's, so nothing else would wake it to look.
-const HOTKEY_POLL: Duration = Duration::from_millis(50);
 /// Shown when the system refused a hotkey the user chose, which is then not saved.
 const HOTKEY_UNAVAILABLE: Notice = Notice::new(NoticeLevel::Warning, "hotkey-unavailable");
+
+/// Shown when global hotkeys cannot be had at all this session, and some are set.
+const HOTKEYS_UNAVAILABLE: Notice = Notice::new(NoticeLevel::Warning, "hotkeys-unavailable");
 
 /// Shown when the system refused `count` of the hotkeys Aria has, which do not work now.
 fn hotkeys_inactive(count: usize) -> Notice {
@@ -157,9 +157,12 @@ pub struct AriaApp {
     /// The playlist name dialog, while it is open: what it is for and the text typed so far.
     name_dialog: Option<(NameFor, String)>,
     /// The hotkey dialog, while it is open: what it is for and the combination pressed so far.
-    hotkey_dialog: Option<(HotkeyFor, Option<Hotkey>)>,
+    hotkey_dialog: Option<(HotkeyFor, HotkeyCapture)>,
     /// The global hotkeys registered with the system.
     hotkeys: Hotkeys<Box<dyn HotkeyBackend>>,
+    /// Whether the system's hotkey manager could be made. Without it every hotkey is refused,
+    /// and the notice says so rather than blaming other programs.
+    hotkeys_available: bool,
     /// What the hotkeys are for changed, or the dialog opened or closed: they are synced at the
     /// end of the frame.
     hotkeys_dirty: bool,
@@ -205,6 +208,7 @@ impl AriaApp {
         mut deps: AppDeps,
         startup_notices: Vec<Notice>,
     ) -> AriaApp {
+        let hotkeys_available = deps.hotkeys.is_some();
         let hotkeys: Box<dyn HotkeyBackend> = match deps.hotkeys.take() {
             Some(system) => Box::new(system),
             None => Box::new(NoHotkeys),
@@ -234,6 +238,7 @@ impl AriaApp {
             name_dialog: None,
             hotkey_dialog: None,
             hotkeys: Hotkeys::new(hotkeys),
+            hotkeys_available,
             hotkeys_dirty: true,
             inactive_hotkeys: Vec::new(),
             devices: Vec::new(),
@@ -733,18 +738,18 @@ impl AriaApp {
     /// Opens the hotkey dialog for `target`, unless it is a sound the soundboard does not have.
     /// The hotkeys are unregistered while it is open, so the combination reaches the dialog.
     fn open_hotkey_dialog(&mut self, target: HotkeyFor) {
-        if self.hotkey_of(target).is_none() {
+        let Some(current) = self.hotkey_of(target) else {
             tracing::debug!(?target, "no such sound to set a hotkey for");
             return;
-        }
-        self.hotkey_dialog = Some((target, None));
+        };
+        self.hotkey_dialog = Some((target, HotkeyCapture::new(current)));
         self.hotkeys_dirty = true;
     }
 
     /// Draws the hotkey dialog while it is open, and saves what it was confirmed with. A hotkey
     /// the system refuses is not saved.
     fn show_hotkey_dialog(&mut self, ctx: &egui::Context, palette: &Palette) {
-        let Some((target, mut captured)) = self.hotkey_dialog.take() else {
+        let Some((target, mut capture)) = self.hotkey_dialog.take() else {
             return;
         };
         // A sound removed while its dialog was open has nothing left to set.
@@ -767,9 +772,9 @@ impl AriaApp {
             current,
             taken: &taken,
         };
-        match dialog.show(ctx, &self.localizer, palette, &mut captured) {
+        match dialog.show(ctx, &self.localizer, palette, &mut capture) {
             HotkeyAnswer::Open => {
-                self.hotkey_dialog = Some((target, captured));
+                self.hotkey_dialog = Some((target, capture));
                 return;
             }
             HotkeyAnswer::Cancelled => {}
@@ -802,20 +807,23 @@ impl AriaApp {
         }
     }
 
-    /// Syncs the hotkeys with the system when that is due, and fires what was pressed. While any
-    /// hotkey is registered, the app looks again every [`HOTKEY_POLL`].
+    /// Syncs the hotkeys with the system when that is due, and fires what was pressed.
     fn run_hotkeys(&mut self, ctx: &egui::Context) {
         if mem::take(&mut self.hotkeys_dirty) {
             self.sync_hotkeys(ctx);
         }
+        self.fire_hotkeys();
+    }
+
+    /// Sends what the hotkeys pressed since the last look are for. A press wakes the window
+    /// itself, and eframe then runs [`eframe::App::logic`], which calls this, even while the
+    /// window is minimized and draws nothing.
+    fn fire_hotkeys(&mut self) {
         for action in self.hotkeys.poll() {
             self.send(match action {
                 HotkeyAction::Play(id) => Command::PlaySound(id),
                 HotkeyAction::StopAll => Command::StopSounds,
             });
-        }
-        if self.hotkeys.any_registered() {
-            ctx.request_repaint_after(HOTKEY_POLL);
         }
     }
 
@@ -835,10 +843,14 @@ impl AriaApp {
             .iter()
             .any(|hotkey| !self.inactive_hotkeys.contains(hotkey));
         if newly {
-            // One notice counts them all, in place of one that counted fewer.
             let now = ctx.input(|input| input.time);
-            self.toasts
-                .push_replacing(hotkeys_inactive(refused.len()), now);
+            if self.hotkeys_available {
+                // One notice counts them all, in place of one that counted fewer.
+                self.toasts
+                    .push_replacing(hotkeys_inactive(refused.len()), now);
+            } else {
+                self.toasts.push(HOTKEYS_UNAVAILABLE, now);
+            }
         }
         self.inactive_hotkeys = refused;
     }
@@ -973,6 +985,11 @@ impl AriaApp {
 }
 
 impl eframe::App for AriaApp {
+    /// Runs before every [`Self::ui`], and alone while the window is minimized.
+    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.fire_hotkeys();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
@@ -1744,6 +1761,7 @@ mod tests {
     ) -> Harness<'static, AriaApp> {
         let mut app = app(vec![]);
         app.hotkeys = Hotkeys::new(Box::new(fake.clone()));
+        app.hotkeys_available = true;
         let ctx = egui::Context::default();
         app.handle_event(
             &ctx,
@@ -1960,7 +1978,7 @@ mod tests {
         let notices = inactive(&harness);
         assert_eq!(notices, [hotkeys_inactive(2)]);
         let text = Localizer::new(Language::En)
-            .unwrap()
+            .expect("the English locale loads")
             .tr_args(notices[0].key, &notices[0].fluent_args())
             .into_owned();
         assert!(text.starts_with("2 hotkeys don't work"), "{text}");
@@ -2027,5 +2045,26 @@ mod tests {
         app.run_hotkeys(&ctx);
         assert_eq!(app.inactive_hotkeys, [key("Ctrl+1")]);
         assert!(!app.hotkeys.any_registered());
+        // The notice does not blame other programs.
+        let keys: Vec<&str> = app.toasts.notices().map(|notice| notice.key).collect();
+        assert_eq!(keys, ["hotkeys-unavailable"]);
+    }
+
+    #[test]
+    fn a_press_fires_while_the_window_is_hidden() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        // One frame registers the hotkey; after that the window is minimized and eframe runs
+        // only `logic`.
+        let harness = hotkey_harness(vec![keyed(1, "Airhorn", "Ctrl+1")], &fake);
+        let ctx = harness.ctx.clone();
+        let mut app = harness.into_state();
+        assert_eq!(fake.registered(), [key("Ctrl+1")].into());
+
+        fake.press(key("Ctrl+1"));
+        let mut frame = eframe::Frame::_new_kittest();
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(plays_sent(&app, 1), 1, "the press waited for a drawn frame");
+        eframe::App::logic(&mut app, &ctx, &mut frame);
+        assert_eq!(plays_sent(&app, 1), 1, "a press fired twice");
     }
 }

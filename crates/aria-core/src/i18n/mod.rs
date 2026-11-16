@@ -345,6 +345,8 @@ mod tests {
         "hotkey-dialog-title",
         "hotkey-dialog-hint",
         "hotkey-dialog-clear",
+        "hotkeys-unavailable",
+        "hotkey-dialog-numpad",
         "nav-soundboard",
         "soundboard-empty",
         "soundboard-empty-hint",
