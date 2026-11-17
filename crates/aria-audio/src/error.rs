@@ -26,6 +26,13 @@ pub enum AudioError {
     /// There is no output device.
     #[error("no audio output device")]
     NoDevice,
+    /// The operating system refuses this program the device, as it can for a microphone.
+    #[error("access to the audio device denied")]
+    PermissionDenied,
+    /// The microphone asked for is a virtual cable's recording side. Sending it into the cable
+    /// would feed the chat's sound back into itself, so it is never opened.
+    #[error("a virtual cable is not a microphone")]
+    CableAsMicrophone,
     /// The named output device is not present.
     #[error("audio device not found: {0}")]
     DeviceNotFound(String),

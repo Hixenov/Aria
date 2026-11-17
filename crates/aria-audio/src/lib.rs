@@ -1,5 +1,6 @@
 //! Audio decoding and playback.
 
+pub mod capture;
 pub mod clock;
 mod cpal_output;
 pub mod decode;
@@ -12,6 +13,7 @@ mod mp4;
 pub mod output;
 pub mod resample;
 pub mod sample_format;
+mod share;
 mod sounds;
 mod system_output;
 #[cfg(windows)]
@@ -20,10 +22,11 @@ mod wasapi_output;
 #[cfg(feature = "test-support")]
 pub mod testing;
 
+pub use capture::{CaptureFactory, CaptureFormat, CaptureReader, CpalCapture};
 pub use clock::{ClockReading, PlaybackClock};
 pub use cpal_output::CpalFactory;
 pub use decode::{Clip, StreamInfo, TrackDecoder, decode_clip};
-pub use device::{DeviceId, DeviceInfo, DeviceKind, list_devices};
+pub use device::{DeviceId, DeviceInfo, DeviceKind, is_virtual_cable, list_devices};
 pub use engine::{Engine, EngineCommand, EngineEvent, EngineHandle, IDLE_GRACE, TrackRequest};
 pub use error::AudioError;
 pub use mixer::{FADE_MS, InputHandle, MAX_INPUTS, Mixer, MixerControl};

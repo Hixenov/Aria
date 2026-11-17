@@ -101,6 +101,7 @@ fn page(route: Route, settings: Settings, sounds: Vec<SoundView>) -> Harness<'st
                     soundboard: &page.soundboard,
                     inactive_hotkeys: &[],
                     devices: &page.devices,
+                    input_devices: &[],
                     artwork: None,
                 };
                 pages::show(page.route, ui, &mut ctx);

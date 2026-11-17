@@ -5,6 +5,45 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.3] - unreleased (music and microphone to the chat)
+
+Nobody has run this version by hand, nobody has listened to it, and no virtual cable or chat program was tried: see `docs/testing/music-to-chat-manual-check.md`, where every line for a person is pending. No test opens a real microphone; the microphone is tested with a fake capture only.
+
+### Added
+
+- "Music also to the second device" (Settings, Soundboard, off by default): the music that plays on your device is copied into the second device, for a chat that uses a virtual cable as its microphone. It has its own volume, "Music volume in the chat" (0 to 100 %, default 50 %); the player's volume and mute do not change it. Pause, seek, stop and track changes act on the copy too. The copy goes through a shared output, resampled if needed, so your own output can stay exclusive and bit-perfect.
+- "Send my microphone to the second device" (off by default) and a "Microphone" choice (System default first): the microphone is captured in shared mode and mixed into the second device only, never into your own. "Microphone volume" goes from 0 to 200 %, clipped at full scale. At most 40 ms of microphone audio waits in the mix; older audio is dropped rather than letting the delay grow.
+- A global hotkey that turns the microphone on and off, with a short "Microphone on" / "Microphone off" notice, checked against the sound hotkeys, "Stop all" and Aria's own shortcuts both ways.
+- A microphone icon in the player bar while the microphone is open (a click turns it off), and a crossed-out one when it could not be opened.
+- Finding the virtual cable: with no second device chosen, Settings, Soundboard offers an installed cable (a device whose name contains "CABLE Input", "VB-Audio", "Voicemeeter" or "Virtual Audio Cable") with a "Use it" button, or shows a three-step guide with a link to VB-CABLE's official page. With a cable chosen, it says which recording device to pick in the chat program ("CABLE Output" for VB-CABLE). Aria makes no network request; the link only opens your browser. Aria installs and changes no driver.
+- Notices when the microphone cannot be opened, and when the system refuses it, with where to allow microphone access. On Windows a refusal is recognised by the access-denied code (E_ACCESSDENIED) that CPAL passes on; this was not tried on a real refusal.
+- A virtual cable's recording side ("CABLE Output", or any device whose name marks it as a cable) is never opened as the microphone, chosen or as the system default, since the chat would hear itself; Settings warns, and a notice says so.
+- If the second device fails while the microphone is on, the microphone shows as failed and opens again with the second device (the next sound or Play), or when it is toggled.
+- English, Russian and Armenian texts for all of the above, written by the coding agent and not read by a native speaker.
+- `docs/testing/music-to-chat-manual-check.md`.
+
+### Changed
+
+- Version 0.2.3. No database change; the settings schema version stays 1, and a 0.2.2 settings file loads with sharing and the microphone off.
+- `docs/PRIVACY.md`: Aria now reads the microphone when, and only when, you turn it on with a second device chosen.
+
+### Known limitations
+
+- A virtual cable must be installed separately; Aria only finds it and guides. In the chat program the cable, not the real microphone, must be chosen. Playing into the real microphone without a cable is not supported. A cable whose name matches none of the known names is not found, but can be chosen by hand.
+- You do not hear your own voice. There is no noise suppression or other voice processing in Aria; the chat program's own processing applies.
+- The copy and your own music can drift by tens of milliseconds (the difference between the two devices' buffers); this is not corrected.
+- When your output reopens, for example at a rate change in exclusive mode, the chat hears the same short silence.
+- When sharing starts in the middle of a track, the chat hears up to about a second of silence first, so that the copy plays in step with your own music; your own music is not touched.
+- If the second device does not keep up, the copy drops audio rather than hold up your music.
+- Choosing your own music device as the second device disables the copy and the microphone.
+- A microphone that fails or is refused is tried again only at the next change of the microphone, its switch, the second device or the music device (or, after a failure of the second device, when that opens again).
+- When the microphone and the cable run at different rates, the resampler adds up to about 21 ms. The latency target of under 60 ms has not been measured.
+- Assistive technology reads the microphone volume bar as a share of its 200 % range (50 % at 100 %); the shown label is right.
+- The microphone icons (Phosphor "microphone" and "microphone-slash") have not been looked at.
+- Checked by automated tests only, with fake devices, on Windows; built for Linux and macOS. On macOS microphone permission must be granted to Aria.
+- The Russian and Armenian texts are not reviewed by a native speaker.
+- The limitations listed for 0.2.2 and earlier still apply.
+
 ## [0.2.2] - 2026-11-16 (Phase 2c, lossless output and the soundboard)
 
 Nobody has run this version by hand yet, and nobody has listened to it: see `docs/testing/phase2c-manual-check.md`, where every line for a person is still pending. The Windows installer and release `aria.exe` for 0.2.2 are not covered by this entry: they are built and tested separately before any release.

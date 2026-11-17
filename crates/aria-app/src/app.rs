@@ -92,6 +92,8 @@ enum HotkeyFor {
     Sound(SoundId),
     /// The one of "Stop all".
     StopAll,
+    /// The one that turns the microphone on and off.
+    Microphone,
 }
 
 /// The handles the shell drives. Each is optional, so tests, and a start-up that lost one,
@@ -170,6 +172,8 @@ pub struct AriaApp {
     inactive_hotkeys: Vec<Hotkey>,
     /// The output devices the backend last listed. Empty until it answers.
     devices: Vec<DeviceInfo>,
+    /// The microphones, as the backend last listed them.
+    input_devices: Vec<DeviceInfo>,
     /// Whether the Settings page was on screen last frame, so that entering it asks for the
     /// devices once, not on every frame.
     on_settings: bool,
@@ -242,6 +246,7 @@ impl AriaApp {
             hotkeys_dirty: true,
             inactive_hotkeys: Vec::new(),
             devices: Vec::new(),
+            input_devices: Vec::new(),
             on_settings: false,
             clock,
             artwork: None,
@@ -400,6 +405,7 @@ impl AriaApp {
             PlayerAction::Previous => return self.send(Command::Previous),
             PlayerAction::Seek(position_ms) => return self.send(Command::Seek(position_ms)),
             PlayerAction::ToggleQueue => return self.toggle_right_panel(ctx),
+            PlayerAction::ToggleMicrophone => return self.send(Command::ToggleMicrophone),
             PlayerAction::SetFavorite { track, favorite } => {
                 return self.send(Command::SetFavorite { track, favorite });
             }
@@ -484,6 +490,7 @@ impl AriaApp {
                 self.player = player;
             }
             Event::OutputDevices(devices) => self.devices = devices,
+            Event::InputDevices(devices) => self.input_devices = devices,
         }
     }
 
@@ -598,6 +605,7 @@ impl AriaApp {
             soundboard: &self.soundboard,
             inactive_hotkeys: &self.inactive_hotkeys,
             devices: &self.devices,
+            input_devices: &self.input_devices,
             artwork: self.artwork.as_mut(),
         };
         let route = self.history.current();
@@ -614,12 +622,14 @@ impl AriaApp {
         self.list_devices_on_entering_settings(route);
     }
 
-    /// Asks the backend for the output devices once per entry into the Settings route, so
-    /// the list is as fresh as the user's last visit and no frame waits for it.
+    /// Asks the backend for the output devices and the microphones once per entry into the
+    /// Settings route, so the lists are as fresh as the user's last visit and no frame waits for
+    /// them. A cable installed since is found this way too.
     fn list_devices_on_entering_settings(&mut self, route: Route) {
         let on_settings = route == Route::Settings;
         if on_settings && !self.on_settings {
             self.send(Command::ListDevices);
+            self.send(Command::ListInputDevices);
         }
         self.on_settings = on_settings;
     }
@@ -668,6 +678,7 @@ impl AriaApp {
             PageAction::StopSounds => self.send(Command::StopSounds),
             PageAction::AskSoundHotkey(id) => self.open_hotkey_dialog(HotkeyFor::Sound(id)),
             PageAction::AskStopHotkey => self.open_hotkey_dialog(HotkeyFor::StopAll),
+            PageAction::AskMicHotkey => self.open_hotkey_dialog(HotkeyFor::Microphone),
         }
     }
 
@@ -721,10 +732,12 @@ impl AriaApp {
                 sounds.iter().find(|sound| sound.id == id).map(|s| s.hotkey)
             }
             HotkeyFor::StopAll => Some(self.settings.stop_sounds_hotkey),
+            HotkeyFor::Microphone => Some(self.settings.mic_toggle_hotkey),
         }
     }
 
-    /// What each hotkey is for: the sounds' first, then the one of Stop all.
+    /// What each hotkey is for: the sounds' first, then the one of Stop all, then the
+    /// microphone's.
     fn wanted_hotkeys(&self) -> Vec<(Hotkey, HotkeyAction)> {
         let sounds = self.soundboard.sounds.iter();
         let sounds = sounds.filter_map(|sound| Some((sound.hotkey?, HotkeyAction::Play(sound.id))));
@@ -732,7 +745,11 @@ impl AriaApp {
             .settings
             .stop_sounds_hotkey
             .map(|hotkey| (hotkey, HotkeyAction::StopAll));
-        sounds.chain(stop).collect()
+        let microphone = self
+            .settings
+            .mic_toggle_hotkey
+            .map(|hotkey| (hotkey, HotkeyAction::ToggleMicrophone));
+        sounds.chain(stop).chain(microphone).collect()
     }
 
     /// Opens the hotkey dialog for `target`, unless it is a sound the soundboard does not have.
@@ -763,7 +780,8 @@ impl AriaApp {
             .into_iter()
             .filter(|(_, action)| match (target, action) {
                 (HotkeyFor::Sound(id), HotkeyAction::Play(other)) => *other != id,
-                (HotkeyFor::StopAll, HotkeyAction::StopAll) => false,
+                (HotkeyFor::StopAll, HotkeyAction::StopAll)
+                | (HotkeyFor::Microphone, HotkeyAction::ToggleMicrophone) => false,
                 _ => true,
             })
             .map(|(hotkey, _)| hotkey)
@@ -804,6 +822,11 @@ impl AriaApp {
                 settings.stop_sounds_hotkey = hotkey;
                 self.update_settings(ctx, settings);
             }
+            HotkeyFor::Microphone => {
+                let mut settings = self.settings.clone();
+                settings.mic_toggle_hotkey = hotkey;
+                self.update_settings(ctx, settings);
+            }
         }
     }
 
@@ -823,6 +846,7 @@ impl AriaApp {
             self.send(match action {
                 HotkeyAction::Play(id) => Command::PlaySound(id),
                 HotkeyAction::StopAll => Command::StopSounds,
+                HotkeyAction::ToggleMicrophone => Command::ToggleMicrophone,
             });
         }
     }
@@ -969,6 +993,7 @@ impl AriaApp {
         }
         if old.global_hotkeys != new.global_hotkeys
             || old.stop_sounds_hotkey != new.stop_sounds_hotkey
+            || old.mic_toggle_hotkey != new.mic_toggle_hotkey
         {
             self.hotkeys_dirty = true;
         }
@@ -1023,7 +1048,7 @@ mod tests {
     };
 
     use aria_core::{
-        FakeFactory, OutputFormat,
+        CaptureFormat, FakeCapture, FakeFactory, OutputFormat,
         notice::NoticeLevel,
         runtime::{Backend, BackendConfig, BackendServices, Waker},
         settings::{Language, Theme},
@@ -1084,6 +1109,13 @@ mod tests {
                 sample_rate: 48_000,
                 channels: 2,
             })),
+            capture: Box::new(
+                FakeCapture::new(CaptureFormat {
+                    sample_rate: 48_000,
+                    channels: 1,
+                })
+                .0,
+            ),
             settings: Settings::default(),
         };
         let backend = Backend::start(None, services, waker, BackendConfig::default()).unwrap();
@@ -1319,6 +1351,94 @@ mod tests {
         };
         app.handle_event(&ctx, Event::OutputDevices(vec![device.clone()]));
         assert_eq!(app.devices, [device]);
+    }
+
+    #[test]
+    fn the_microphone_list_requests_input_devices() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 780.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app(vec![]));
+        harness.run();
+        let listed =
+            |harness: &Harness<'_, AriaApp>| sent_like(harness.state(), &Command::ListInputDevices);
+        assert_eq!(listed(&harness), 0, "listed away from Settings");
+        harness.state_mut().history.navigate(Route::Settings);
+        harness.run();
+        harness.run();
+        assert_eq!(listed(&harness), 1);
+
+        let ctx = harness.ctx.clone();
+        let mic = DeviceInfo {
+            id: aria_core::DeviceId("mic".into()),
+            name: "Microphone".into(),
+            is_default: true,
+        };
+        harness
+            .state_mut()
+            .handle_event(&ctx, Event::InputDevices(vec![mic.clone()]));
+        assert_eq!(harness.state().input_devices, [mic]);
+    }
+
+    #[test]
+    fn the_microphone_hotkey_sends_toggle() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        let mut harness = hotkey_harness(vec![], &fake);
+        let ctx = harness.ctx.clone();
+        let mut settings = harness.state().settings.clone();
+        settings.mic_toggle_hotkey = Some(key("Ctrl+Alt+M"));
+        harness.state_mut().update_settings(&ctx, settings);
+        harness.run();
+        assert_eq!(fake.registered(), [key("Ctrl+Alt+M")].into());
+
+        fake.press(key("Ctrl+Alt+M"));
+        harness.run();
+
+        assert_eq!(sent_like(harness.state(), &Command::ToggleMicrophone), 1);
+    }
+
+    #[test]
+    fn the_microphone_hotkey_is_saved_in_the_settings() {
+        let fake = crate::hotkeys::fake::Fake::default();
+        let mut harness = hotkey_harness(vec![], &fake);
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskMicHotkey);
+        harness.run();
+        harness.key_press(egui::Key::F8);
+        harness.run();
+        click(&mut harness, "settings-confirm");
+
+        assert_eq!(harness.state().settings.mic_toggle_hotkey, Some(key("F8")));
+        assert_eq!(fake.registered(), [key("F8")].into());
+    }
+
+    #[test]
+    fn the_dialog_refuses_a_hotkey_taken_by_a_sound() {
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let fake = crate::hotkeys::fake::Fake::default();
+        let mut harness = hotkey_harness(vec![keyed(1, "Airhorn", "Ctrl+1")], &fake);
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .handle_page_action(&ctx, PageAction::AskMicHotkey);
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Num1);
+        harness.run();
+
+        harness.get_by_label(&english("hotkey-taken"));
+        let label = english("settings-confirm");
+        let confirm = harness.get_by_role_and_label(egui::accesskit::Role::Button, &label);
+        assert!(confirm.accesskit_node().is_disabled());
+        assert_eq!(harness.state().settings.mic_toggle_hotkey, None);
+    }
+
+    #[test]
+    fn the_microphone_icon_click_toggles() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        app.handle_player_action(&ctx, PlayerAction::ToggleMicrophone);
+        assert_eq!(sent_like(&app, &Command::ToggleMicrophone), 1);
     }
 
     #[test]
@@ -2065,6 +2185,13 @@ mod tests {
                 sample_rate: 48_000,
                 channels: 2,
             })),
+            capture: Box::new(
+                FakeCapture::new(CaptureFormat {
+                    sample_rate: 48_000,
+                    channels: 1,
+                })
+                .0,
+            ),
             settings: Settings::default(),
         };
         let backend = Backend::start(None, services, waker, BackendConfig::default())

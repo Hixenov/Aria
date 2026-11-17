@@ -14,7 +14,7 @@ use crate::error::AudioError;
 use crate::output::OutputFormat;
 
 /// The most inputs one output can hold.
-pub const MAX_INPUTS: usize = 8;
+pub const MAX_INPUTS: usize = 12;
 /// How long a fade lasts when clearing, pausing and resuming, in milliseconds.
 pub const FADE_MS: u32 = 5;
 

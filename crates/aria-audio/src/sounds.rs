@@ -28,6 +28,10 @@ pub const SOUNDS_AT_ONCE: usize = 6;
 // The music's output holds one input for the music, one for each sound, and one more for a sound
 // that is set up before the one it replaces lets go of its input.
 const _: () = assert!(SOUNDS_AT_ONCE + 2 <= MAX_INPUTS);
+// The second output holds one input for each sound and one being set up, as the music's does, and
+// one each for the music's copy and the microphone. A copy let go of keeps its input until it has
+// faded out, so there is room for one more.
+const _: () = assert!(SOUNDS_AT_ONCE + 4 <= MAX_INPUTS);
 
 /// One of the outputs a sound can play on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

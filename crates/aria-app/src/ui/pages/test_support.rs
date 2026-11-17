@@ -1,6 +1,7 @@
 //! What page tests share: a world to draw a page in, and a harness that does it.
 
 use aria_core::{
+    DeviceInfo,
     i18n::{FluentArgs, Localizer},
     settings::{Language, Settings},
     soundboard::SoundboardState,
@@ -20,8 +21,11 @@ pub struct World {
     /// The requests the page made, in order.
     pub out: Vec<PageAction>,
     pub modal_open: bool,
+    /// The output devices and the microphones the page is shown.
+    pub devices: Vec<DeviceInfo>,
+    pub input_devices: Vec<DeviceInfo>,
+    pub settings: Settings,
     tr: Localizer,
-    settings: Settings,
 }
 
 impl World {
@@ -32,8 +36,10 @@ impl World {
             soundboard: SoundboardState::default(),
             out: Vec::new(),
             modal_open: false,
-            tr: Localizer::new(Language::En).expect("the English locale loads"),
+            devices: Vec::new(),
+            input_devices: Vec::new(),
             settings: Settings::default(),
+            tr: Localizer::new(Language::En).expect("the English locale loads"),
         }
     }
 
@@ -51,7 +57,8 @@ impl World {
             collections: &self.collections,
             soundboard: &self.soundboard,
             inactive_hotkeys: &[],
-            devices: &[],
+            devices: &self.devices,
+            input_devices: &self.input_devices,
             artwork: None,
         };
         draw(ui, &mut ctx)
@@ -77,8 +84,17 @@ pub fn harness<S: 'static>(
     state: S,
     draw: impl FnMut(&mut Ui, &mut S) + 'static,
 ) -> Harness<'static, S> {
+    harness_sized(eframe::egui::vec2(1000.0, 600.0), state, draw)
+}
+
+/// [`harness`], with a window of `size`.
+pub fn harness_sized<S: 'static>(
+    size: eframe::egui::Vec2,
+    state: S,
+    draw: impl FnMut(&mut Ui, &mut S) + 'static,
+) -> Harness<'static, S> {
     let mut harness = Harness::builder()
-        .with_size(eframe::egui::vec2(1000.0, 600.0))
+        .with_size(size)
         .with_step_dt(STEP_DT)
         .with_context_setup(fonts::install)
         .build_ui_state(draw, state);

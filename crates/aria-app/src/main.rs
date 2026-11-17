@@ -25,7 +25,7 @@ use aria_app::{
     whole_ms,
 };
 use aria_core::{
-    SystemFactory,
+    CpalCapture, SystemFactory,
     error::I18nError,
     i18n::{Localizer, os_language},
     logging::{self, LoggingHandle},
@@ -132,6 +132,8 @@ fn main() -> anyhow::Result<()> {
     let services = BackendServices {
         library,
         output: Box::new(SystemFactory),
+        // Opens the microphone only while the user has it on and a second device is set.
+        capture: Box::new(CpalCapture),
         settings: settings.clone().sanitized(),
     };
     let backend = match Backend::start(

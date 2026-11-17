@@ -78,6 +78,27 @@ pub fn list_devices(kind: DeviceKind) -> Result<Vec<DeviceInfo>, AudioError> {
         .collect())
 }
 
+/// Parts of a device name that mark a virtual audio cable, either side of it, in lower case.
+const CABLE_MARKS: [&str; 5] = [
+    "cable input",
+    "cable output",
+    "vb-audio",
+    "voicemeeter",
+    "virtual audio cable",
+];
+
+/// Whether a device named `name` is a virtual audio cable: its playing side (where Aria sends
+/// the chat's sound) or its recording side (what a chat program listens to).
+pub fn is_virtual_cable(name: &str) -> bool {
+    let name = name.to_lowercase();
+    CABLE_MARKS.iter().any(|mark| name.contains(mark))
+}
+
+/// The name of an input device, or `None` if it has just disconnected.
+pub(crate) fn device_name(device: &cpal::Device) -> Option<String> {
+    describe(device).map(|(_, name)| name)
+}
+
 /// The identifier of the system default output device, found without listing the others. It is
 /// made as [`list_devices`] makes it, so the two can be compared.
 pub(crate) fn default_output_id() -> Option<DeviceId> {
@@ -90,14 +111,32 @@ pub(crate) fn find_output_device(
     host: &cpal::Host,
     id: Option<&DeviceId>,
 ) -> Result<cpal::Device, AudioError> {
+    find_device(host, DeviceKind::Output, id)
+}
+
+/// Find a device of `kind`, or the system default for that kind when `id` is `None`.
+pub(crate) fn find_device(
+    host: &cpal::Host,
+    kind: DeviceKind,
+    id: Option<&DeviceId>,
+) -> Result<cpal::Device, AudioError> {
     let Some(id) = id else {
-        return host.default_output_device().ok_or(AudioError::NoDevice);
+        let default = match kind {
+            DeviceKind::Input => host.default_input_device(),
+            DeviceKind::Output => host.default_output_device(),
+        };
+        return default.ok_or(AudioError::NoDevice);
     };
     let found = match id.0.strip_prefix(NAME_PREFIX) {
-        Some(name) => host
-            .output_devices()
-            .map_err(device_error)?
-            .find(|device| describe(device).is_some_and(|(_, found)| found == name)),
+        Some(name) => {
+            let devices = match kind {
+                DeviceKind::Input => host.input_devices(),
+                DeviceKind::Output => host.output_devices(),
+            };
+            devices
+                .map_err(device_error)?
+                .find(|device| describe(device).is_some_and(|(_, found)| found == name))
+        }
         None => cpal::DeviceId::from_str(&id.0)
             .ok()
             .and_then(|id| host.device_by_id(&id)),

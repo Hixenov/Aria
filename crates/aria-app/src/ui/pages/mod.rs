@@ -62,6 +62,8 @@ pub struct PageCtx<'a> {
     pub inactive_hotkeys: &'a [Hotkey],
     /// The output devices as the backend last listed them. Empty until it answers.
     pub devices: &'a [DeviceInfo],
+    /// The microphones as the backend last listed them. Empty until it answers.
+    pub input_devices: &'a [DeviceInfo],
     /// Cover textures, when the thumbnails' folder is known. Without it, covers show as
     /// placeholders.
     pub artwork: Option<&'a mut ArtworkTextures>,
@@ -154,6 +156,8 @@ pub enum PageAction {
     AskSoundHotkey(SoundId),
     /// Ask for a new hotkey for "Stop all".
     AskStopHotkey,
+    /// Ask for a new hotkey that turns the microphone on and off.
+    AskMicHotkey,
 }
 
 /// What the playlist name dialog is asked for.

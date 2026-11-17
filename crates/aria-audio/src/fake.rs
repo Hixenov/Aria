@@ -1,8 +1,10 @@
 //! An output with no device behind it, for tests. Nothing plays until [`FakeControl::pull`].
+//! And a capture with no device behind it, which captures what a test pushes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::capture::{CaptureFactory, CaptureFormat, CaptureReader, CaptureWriter, capture_ring};
 use crate::device::{DeviceId, DeviceInfo};
 use crate::error::AudioError;
 use crate::mixer::{InputHandle, Mixer, MixerControl};
@@ -27,6 +29,8 @@ struct FactoryState {
     refuse_exclusive: bool,
     /// Devices that never open, as unplugged ones would not.
     missing: Vec<DeviceId>,
+    /// Devices whose shared outputs run at another format than the factory's.
+    shared_formats: Vec<(DeviceId, OutputFormat)>,
 }
 
 impl Default for FactoryState {
@@ -40,6 +44,7 @@ impl Default for FactoryState {
             exclusive_channels: None,
             refuse_exclusive: false,
             missing: Vec::new(),
+            shared_formats: Vec::new(),
         }
     }
 }
@@ -100,6 +105,11 @@ impl FakeFactory {
         self.state().missing.push(device);
     }
 
+    /// Make shared outputs on `device` run at `format`, instead of the factory's.
+    pub fn set_shared_format(&self, device: DeviceId, format: OutputFormat) {
+        self.state().shared_formats.push((device, format));
+    }
+
     /// A control for every output opened so far, oldest first.
     pub fn outputs(&self) -> Vec<FakeControl> {
         self.state().outputs.clone()
@@ -157,9 +167,18 @@ impl OutputFactory for FakeFactory {
         if let Some(device) = device.filter(|device| state.missing.contains(device)) {
             return Err(AudioError::DeviceNotFound(device.0.clone()));
         }
+        let own = device
+            .and_then(|device| {
+                state
+                    .shared_formats
+                    .iter()
+                    .find(|(id, _)| id == device)
+                    .map(|(_, format)| *format)
+            })
+            .unwrap_or(self.format);
         let shared_format = DeviceFormat {
-            sample_rate: self.format.sample_rate,
-            channels: self.format.channels,
+            sample_rate: own.sample_rate,
+            channels: own.channels,
             kind: SampleKind::I32,
         };
         let exclusive_format = request.exclusive.then(|| {
@@ -270,5 +289,144 @@ impl FakeControl {
     /// Whether the output was opened exclusively, and at what format.
     pub fn opened_as(&self) -> (bool, DeviceFormat) {
         self.shared.opened_as
+    }
+}
+
+/// What a [`FakeCapture`] and its control share.
+#[derive(Default)]
+struct CaptureState {
+    /// The open capture's writer, if one is open.
+    writer: Option<CaptureWriter>,
+    /// Set when the open capture's reader drops.
+    open: Option<Arc<AtomicBool>>,
+    opened: usize,
+    fail_open: bool,
+    deny: bool,
+    devices: Vec<DeviceInfo>,
+}
+
+/// A capture with no device behind it, for tests. It captures what [`FakeCaptureControl::push`]
+/// gives it.
+pub struct FakeCapture {
+    format: CaptureFormat,
+    state: Arc<Mutex<CaptureState>>,
+}
+
+/// The test's side of a [`FakeCapture`].
+#[derive(Clone)]
+pub struct FakeCaptureControl {
+    state: Arc<Mutex<CaptureState>>,
+}
+
+fn capture_state(state: &Mutex<CaptureState>) -> MutexGuard<'_, CaptureState> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Marks the fake capture closed when its reader drops.
+struct FakeCaptureOpen(Arc<AtomicBool>);
+
+impl Drop for FakeCaptureOpen {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+impl FakeCapture {
+    /// A fake capture whose every open runs at `format`.
+    pub fn new(format: CaptureFormat) -> (Self, FakeCaptureControl) {
+        let state = Arc::new(Mutex::new(CaptureState::default()));
+        (
+            Self {
+                format,
+                state: Arc::clone(&state),
+            },
+            FakeCaptureControl { state },
+        )
+    }
+}
+
+impl CaptureFactory for FakeCapture {
+    fn device_lister(&self) -> DeviceLister {
+        let state = Arc::clone(&self.state);
+        Arc::new(move || Ok(capture_state(&state).devices.clone()))
+    }
+
+    fn open(&self, device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
+        let mut state = capture_state(&self.state);
+        // As the real one: the device asked for, or the default, must not be a cable.
+        let named = state.devices.iter().find(|listed| match device {
+            Some(id) => listed.id == *id,
+            None => listed.is_default,
+        });
+        if named.is_some_and(|listed| crate::device::is_virtual_cable(&listed.name)) {
+            return Err(AudioError::CableAsMicrophone);
+        }
+        if state.deny {
+            return Err(AudioError::PermissionDenied);
+        }
+        if state.fail_open {
+            return Err(AudioError::Device("fake capture failure".into()));
+        }
+        let open = Arc::new(AtomicBool::new(true));
+        let (writer, reader) =
+            capture_ring(self.format, Box::new(FakeCaptureOpen(Arc::clone(&open))));
+        state.writer = Some(writer);
+        state.open = Some(open);
+        state.opened += 1;
+        Ok(reader)
+    }
+}
+
+impl FakeCaptureControl {
+    /// Capture `samples` into the open capture, as much as its ring holds. Returns how many went
+    /// in: none when nothing is open.
+    pub fn push(&self, samples: &[f32]) -> usize {
+        let mut state = capture_state(&self.state);
+        if !state
+            .open
+            .as_ref()
+            .is_some_and(|open| open.load(Ordering::Acquire))
+        {
+            return 0;
+        }
+        state
+            .writer
+            .as_mut()
+            .map_or(0, |writer| writer.write(samples))
+    }
+
+    /// Make the open capture fail, as a lost device does.
+    pub fn fail(&self) {
+        if let Some(writer) = &capture_state(&self.state).writer {
+            writer.fail();
+        }
+    }
+
+    /// Make the input devices the fake lists `devices`. It lists none until then.
+    pub fn set_devices(&self, devices: Vec<DeviceInfo>) {
+        capture_state(&self.state).devices = devices;
+    }
+
+    /// Make opens fail from now on, or work again.
+    pub fn fail_open(&self, fail: bool) {
+        capture_state(&self.state).fail_open = fail;
+    }
+
+    /// Make opens be refused by the "operating system" from now on, or allowed again.
+    pub fn deny(&self, deny: bool) {
+        capture_state(&self.state).deny = deny;
+    }
+
+    /// How many captures have been opened.
+    pub fn opened(&self) -> usize {
+        capture_state(&self.state).opened
+    }
+
+    /// Whether a capture is open now.
+    pub fn open_now(&self) -> bool {
+        capture_state(&self.state)
+            .open
+            .as_ref()
+            .is_some_and(|open| open.load(Ordering::Acquire))
     }
 }

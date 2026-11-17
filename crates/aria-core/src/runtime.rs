@@ -28,7 +28,9 @@ use std::{
     time::Duration,
 };
 
-use aria_audio::{DeviceLister, Engine, EngineEvent, OutputFactory, PlaybackClock};
+use aria_audio::{
+    CaptureFactory, DeviceInfo, DeviceLister, Engine, EngineEvent, OutputFactory, PlaybackClock,
+};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -36,6 +38,7 @@ use tokio::{
 };
 
 use crate::{
+    chat,
     command::Command,
     error::SettingsError,
     event::Event,
@@ -104,6 +107,8 @@ pub struct BackendServices {
     pub library: Option<LibraryPaths>,
     /// Opens audio outputs.
     pub output: Box<dyn OutputFactory>,
+    /// Opens the microphone, only while the user has it on and a second device is set.
+    pub capture: Box<dyn CaptureFactory>,
     /// The settings in effect at startup, which playback starts from.
     pub settings: Settings,
 }
@@ -132,20 +137,25 @@ struct PlaybackLink {
     events: UnboundedReceiver<EngineEvent>,
     clock: Arc<PlaybackClock>,
     devices: DeviceLister,
-    /// The volume and mute the settings started with.
-    volume: f32,
-    muted: bool,
+    input_devices: DeviceLister,
+    /// The settings it started with.
+    settings: Settings,
 }
 
 impl PlaybackLink {
-    fn start(output: Box<dyn OutputFactory>, settings: &Settings) -> io::Result<Self> {
+    fn start(
+        output: Box<dyn OutputFactory>,
+        capture: Box<dyn CaptureFactory>,
+        settings: &Settings,
+    ) -> io::Result<Self> {
         let (events_tx, events) = unbounded_channel();
         let on_event = Box::new(move |event| {
             // Fails only once the backend has exited, when nobody is listening.
             let _ = events_tx.send(event);
         });
         let devices = output.device_lister();
-        let engine = Engine::start(output, on_event)?;
+        let input_devices = capture.device_lister();
+        let engine = Engine::start(output, capture, on_event)?;
         let clock = engine.clock();
         let mut service = PlaybackService::new(engine, RandomState::new().hash_one(0_u8));
         service.on_settings(settings);
@@ -154,8 +164,8 @@ impl PlaybackLink {
             events,
             clock,
             devices,
-            volume: settings.volume,
-            muted: settings.muted,
+            input_devices,
+            settings: settings.clone(),
         })
     }
 }
@@ -191,9 +201,10 @@ impl Backend {
         let BackendServices {
             library,
             output,
+            capture,
             settings,
         } = services;
-        let playback = PlaybackLink::start(output, &settings)?;
+        let playback = PlaybackLink::start(output, capture, &settings)?;
         let library = library.map(LibraryLink::start).transpose()?;
         Self::spawn(sink, library, playback, waker, cfg)
     }
@@ -221,22 +232,22 @@ impl Backend {
             events: engine_events,
             clock,
             devices,
-            volume,
-            muted,
+            input_devices,
+            settings,
         } = playback;
         let worker = Worker {
             sink,
             library,
             playback,
             devices,
+            input_devices,
             events: event_tx,
             waker,
             debounce: cfg.debounce,
             pending: None,
             deadline: None,
             failing: false,
-            volume,
-            muted,
+            settings,
         };
         let done_guard = DoneGuard::new(done_tx);
         let thread = thread::Builder::new()
@@ -372,6 +383,8 @@ struct Worker {
     playback: PlaybackService,
     /// Lists the devices the engine's factory opens.
     devices: DeviceLister,
+    /// Lists the microphones the engine can open.
+    input_devices: DeviceLister,
     events: Sender<Event>,
     waker: Waker,
     debounce: Duration,
@@ -383,9 +396,9 @@ struct Worker {
     /// The last save failed. Further failures are not reported again until a
     /// save succeeds.
     failing: bool,
-    /// The volume and mute in effect, which a reset of the settings leaves alone.
-    volume: f32,
-    muted: bool,
+    /// The settings in effect. A reset keeps their volume and mute, and the microphone hotkey
+    /// flips their microphone switch.
+    settings: Settings,
 }
 
 impl Worker {
@@ -404,16 +417,16 @@ impl Worker {
                 cmd = commands.recv() => match cmd {
                     Some(Command::UpdateSettings(settings)) => {
                         let settings = self.vetted(settings);
-                        (self.volume, self.muted) = (settings.volume, settings.muted);
-                        self.playback.on_settings(&settings);
-                        self.flush_playback();
-                        self.update(settings);
+                        self.apply(settings);
                     }
                     Some(Command::ResetSettings) => {
-                        self.playback.on_settings(&self.defaults());
+                        let defaults = self.defaults();
+                        self.settings = defaults.clone();
+                        self.playback.on_settings(&defaults);
                         self.flush_playback();
                         self.reset().await;
                     }
+                    Some(Command::ToggleMicrophone) => self.toggle_microphone(),
                     Some(Command::AddFolder(path)) => {
                         self.to_library(LibraryRequest::AddFolder(path));
                     }
@@ -457,8 +470,17 @@ impl Worker {
                         self.to_collections(LibraryRequest::SetSoundVolume { id, volume });
                     }
                     Some(Command::SetSoundHotkey { id, hotkey }) => {
-                        let stop = self.playback.stop_hotkey();
-                        self.to_collections(LibraryRequest::SetSoundHotkey { id, hotkey, stop });
+                        let reserved = self
+                            .playback
+                            .stop_hotkey()
+                            .into_iter()
+                            .chain(self.playback.mic_hotkey())
+                            .collect();
+                        self.to_collections(LibraryRequest::SetSoundHotkey {
+                            id,
+                            hotkey,
+                            reserved,
+                        });
                     }
                     Some(Command::RemoveSound(id)) => {
                         self.to_collections(LibraryRequest::RemoveSound(id));
@@ -472,7 +494,12 @@ impl Worker {
                             self.emit([Event::Notice(library_service::UNAVAILABLE)]);
                         }
                     }
-                    Some(Command::ListDevices) => self.list_devices(),
+                    Some(Command::ListDevices) => {
+                        self.list(Arc::clone(&self.devices), Event::OutputDevices);
+                    }
+                    Some(Command::ListInputDevices) => {
+                        self.list(Arc::clone(&self.input_devices), Event::InputDevices);
+                    }
                     // `None` means the handle was dropped: treat it as Shutdown.
                     Some(Command::Shutdown) | None => break,
                     Some(command) => {
@@ -547,21 +574,46 @@ impl Worker {
         }
     }
 
-    /// Lists the output devices on the blocking pool, since that can be slow, and sends the answer
-    /// from there. If they cannot be listed the answer is empty, and the UI still offers the
-    /// system default.
-    fn list_devices(&self) {
+    /// Lists devices with `list` on the blocking pool, since that can be slow, and sends the
+    /// answer from there, as `event`. If they cannot be listed the answer is empty, and the UI
+    /// still offers the system default.
+    fn list(&self, list: DeviceLister, event: fn(Vec<DeviceInfo>) -> Event) {
         let (events, waker) = (self.events.clone(), Arc::clone(&self.waker));
-        let list = Arc::clone(&self.devices);
         tokio::task::spawn_blocking(move || {
             let devices = list().unwrap_or_else(|error| {
-                tracing::warn!(%error, "the output devices could not be listed");
+                tracing::warn!(%error, "the devices could not be listed");
                 Vec::new()
             });
             // Fails only once the handle is gone, when nobody is listening.
-            let _ = events.send(Event::OutputDevices(devices));
+            let _ = events.send(event(devices));
             waker();
         });
+    }
+
+    /// Puts `settings` in effect and schedules their save.
+    fn apply(&mut self, settings: Settings) {
+        self.settings = settings.clone();
+        self.playback.on_settings(&settings);
+        self.flush_playback();
+        self.update(settings);
+    }
+
+    /// Flips "Send my microphone", as the microphone hotkey does. It needs no library.
+    fn toggle_microphone(&mut self) {
+        let settings = Settings {
+            mic_enabled: !self.settings.mic_enabled,
+            ..self.settings.clone()
+        };
+        let notice = if settings.mic_enabled {
+            chat::MICROPHONE_ON
+        } else {
+            chat::MICROPHONE_OFF
+        };
+        self.emit([
+            Event::SettingsReplaced(settings.clone()),
+            Event::Notice(notice),
+        ]);
+        self.apply(settings);
     }
 
     /// Forwards `request` without waiting. Without a library it goes nowhere.
@@ -598,14 +650,25 @@ impl Worker {
         self.flush_playback();
     }
 
-    /// `settings` with a "Stop all" hotkey that may not be used put back as it was. The notice
-    /// says why, and the UI is given the settings as they now are.
+    /// `settings` with a "Stop all" or microphone hotkey that may not be used put back as it
+    /// was. The notice says why, and the UI is given the settings as they now are.
     fn vetted(&self, settings: Settings) -> Settings {
-        let Some(notice) = self.playback.stop_hotkey_refusal(&settings) else {
+        let stop = self.playback.stop_hotkey_refusal(&settings);
+        let mic = self.playback.mic_hotkey_refusal(&settings);
+        let Some(notice) = stop.clone().or_else(|| mic.clone()) else {
             return settings;
         };
         let kept = Settings {
-            stop_sounds_hotkey: self.playback.stop_hotkey(),
+            stop_sounds_hotkey: if stop.is_some() {
+                self.playback.stop_hotkey()
+            } else {
+                settings.stop_sounds_hotkey
+            },
+            mic_toggle_hotkey: if mic.is_some() {
+                self.playback.mic_hotkey()
+            } else {
+                settings.mic_toggle_hotkey
+            },
             ..settings
         };
         self.emit([Event::Notice(notice), Event::SettingsReplaced(kept.clone())]);
@@ -645,8 +708,8 @@ impl Worker {
     /// should not get full volume in their headphones.
     fn defaults(&self) -> Settings {
         Settings {
-            volume: self.volume,
-            muted: self.muted,
+            volume: self.settings.volume,
+            muted: self.settings.muted,
             ..Settings::default()
         }
     }
@@ -764,11 +827,15 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use aria_audio::{DeviceId, DeviceInfo, OutputFormat, fake::FakeFactory};
+    use aria_audio::{
+        CaptureFormat, DeviceId, DeviceInfo, OutputFormat,
+        fake::{FakeCapture, FakeFactory},
+    };
     use aria_library::{FolderId, SoundId, TrackId};
 
     use super::*;
     use crate::{
+        chat::MicState,
         command::Command,
         error::SettingsError,
         event::Event,
@@ -896,6 +963,7 @@ mod tests {
         BackendServices {
             library,
             output: Box::new(FakeFactory::new(format)),
+            capture: Box::new(no_microphone()),
             settings: Settings::default(),
         }
     }
@@ -906,7 +974,21 @@ mod tests {
             sample_rate: 48_000,
             channels: 2,
         });
-        PlaybackLink::start(Box::new(factory), &Settings::default()).unwrap()
+        PlaybackLink::start(
+            Box::new(factory),
+            Box::new(no_microphone()),
+            &Settings::default(),
+        )
+        .unwrap()
+    }
+
+    /// A microphone nobody speaks into, so no test opens a real one.
+    fn no_microphone() -> FakeCapture {
+        FakeCapture::new(CaptureFormat {
+            sample_rate: 48_000,
+            channels: 1,
+        })
+        .0
     }
 
     fn no_library() -> BackendServices {
@@ -1020,6 +1102,7 @@ mod tests {
         let services = BackendServices {
             library: Some(library_paths(dir.path())),
             output: Box::new(factory.clone()),
+            capture: Box::new(no_microphone()),
             settings: Settings {
                 output_device: Some(speakers.clone()),
                 ..Settings::default()
@@ -1051,8 +1134,20 @@ mod tests {
             output_device: Some(headphones.clone()),
             ..Settings::default()
         }));
-        assert!(wait_until(|| factory.outputs().len() == 2, LIBRARY_MAX));
-        assert_eq!(factory.outputs()[1].device(), Some(headphones));
+        // On a slow machine the pulls above can play both one-second tracks out before the clock
+        // is read; then the new device opens only with the next track. Starting the list again
+        // gives the engine a track either way.
+        handle.send(Command::PlayContext {
+            ids: ids.clone(),
+            start: 0,
+        });
+        let on_headphones = || {
+            factory
+                .outputs()
+                .last()
+                .is_some_and(|output| output.device() == Some(headphones.clone()))
+        };
+        assert!(wait_until(on_headphones, LIBRARY_MAX));
 
         // Only the engine's events can take the view to the end of the list.
         let last = ids[1];
@@ -1066,6 +1161,7 @@ mod tests {
         let services = BackendServices {
             library: Some(library_paths(dir.path())),
             output: Box::new(factory.clone()),
+            capture: Box::new(no_microphone()),
             settings: Settings::default(),
         };
         let (waker, _) = counting_waker();
@@ -1090,6 +1186,7 @@ mod tests {
         let services = BackendServices {
             library: None,
             output: Box::new(factory),
+            capture: Box::new(no_microphone()),
             settings: Settings::default(),
         };
         let (waker, wakes) = counting_waker();
@@ -1306,6 +1403,191 @@ mod tests {
         assert!(handle.shutdown(LIBRARY_MAX));
     }
 
+    fn microphone_notice(key: &'static str) -> Event {
+        Event::Notice(Notice::new(NoticeLevel::Info, key))
+    }
+
+    #[test]
+    fn toggle_microphone_flips_saves_and_notices() {
+        let (sink, saved) = recording_sink(0);
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(Some(sink), no_library(), waker, FAST).unwrap();
+
+        handle.send(Command::ToggleMicrophone);
+        let on = Settings {
+            mic_enabled: true,
+            ..Settings::default()
+        };
+        drain_until(&handle, |e| {
+            e.contains(&Event::SettingsReplaced(on.clone()))
+                && e.contains(&microphone_notice("microphone-on"))
+        });
+
+        handle.send(Command::ToggleMicrophone);
+        drain_until(&handle, |e| {
+            e.contains(&Event::SettingsReplaced(Settings::default()))
+                && e.contains(&microphone_notice("microphone-off"))
+        });
+        assert!(handle.shutdown(MAX));
+        assert_eq!(saved.lock().unwrap().last(), Some(&Settings::default()));
+    }
+
+    #[test]
+    fn toggle_microphone_keeps_the_other_settings() {
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
+        let dark = with_theme(Theme::Dark);
+        handle.send(Command::UpdateSettings(dark.clone()));
+
+        handle.send(Command::ToggleMicrophone);
+
+        let on = Settings {
+            mic_enabled: true,
+            ..dark
+        };
+        drain_until(&handle, |e| {
+            e.contains(&Event::SettingsReplaced(on.clone()))
+        });
+        assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn with_the_library_off_toggle_microphone_still_works() {
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
+
+        handle.send(Command::ToggleMicrophone);
+
+        let events = drain_until(&handle, |e| e.contains(&microphone_notice("microphone-on")));
+        assert!(!events.contains(&library_unavailable()), "{events:?}");
+        assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn input_devices_are_listed_on_request() {
+        let mut services = no_library();
+        let (capture, control) = FakeCapture::new(CaptureFormat {
+            sample_rate: 48_000,
+            channels: 1,
+        });
+        let mic = DeviceInfo {
+            id: DeviceId("mic".into()),
+            name: "Microphone".into(),
+            is_default: true,
+        };
+        control.set_devices(vec![mic.clone()]);
+        services.capture = Box::new(capture);
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
+
+        handle.send(Command::ListInputDevices);
+
+        drain_until(&handle, |e| {
+            e.contains(&Event::InputDevices(vec![mic.clone()]))
+        });
+        // Listing opens nothing.
+        assert!(!control.open_now());
+        assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn the_microphone_opens_with_a_second_device_and_shows_in_the_view() {
+        let mut services = no_library();
+        let (capture, control) = FakeCapture::new(CaptureFormat {
+            sample_rate: 48_000,
+            channels: 1,
+        });
+        services.capture = Box::new(capture);
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
+
+        // On, but no second device: nothing opens.
+        handle.send(Command::ToggleMicrophone);
+        drain_until(&handle, |e| e.contains(&microphone_notice("microphone-on")));
+        assert!(!control.open_now());
+
+        handle.send(Command::UpdateSettings(Settings {
+            mic_enabled: true,
+            soundboard_device: Some(DeviceId("cable".into())),
+            ..Settings::default()
+        }));
+        drain_until(&handle, |e| {
+            last_view(e).is_some_and(|view| view.microphone == MicState::On)
+        });
+        assert!(control.open_now());
+
+        handle.send(Command::ToggleMicrophone);
+        drain_until(&handle, |e| {
+            last_view(e).is_some_and(|view| view.microphone == MicState::Off)
+        });
+        assert!(wait_until(|| !control.open_now(), MAX));
+        assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn the_microphone_hotkey_is_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, id) = with_a_sound(dir.path(), None);
+        let taken = Event::Notice(Notice::new(NoticeLevel::Warning, "hotkey-taken"));
+        handle.send(Command::SetSoundHotkey {
+            id,
+            hotkey: Some(hotkey("Ctrl+F1")),
+        });
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds[0].hotkey.is_some())
+        });
+
+        // Against a sound's hotkey.
+        handle.send(Command::UpdateSettings(Settings {
+            mic_toggle_hotkey: Some(hotkey("Ctrl+F1")),
+            ..Settings::default()
+        }));
+        drain_until(&handle, |e| {
+            e.contains(&taken) && e.contains(&Event::SettingsReplaced(Settings::default()))
+        });
+
+        // Against "Stop all", in the same settings, either way round.
+        let both = Settings {
+            stop_sounds_hotkey: Some(hotkey("Ctrl+F3")),
+            mic_toggle_hotkey: Some(hotkey("Ctrl+F3")),
+            ..Settings::default()
+        };
+        handle.send(Command::UpdateSettings(both));
+        drain_until(&handle, |e| e.contains(&taken));
+
+        // Against Aria's own shortcuts, which take the Command key on macOS.
+        let own = if cfg!(target_os = "macos") {
+            "Win+1"
+        } else {
+            "Ctrl+1"
+        };
+        handle.send(Command::UpdateSettings(Settings {
+            mic_toggle_hotkey: Some(hotkey(own)),
+            ..Settings::default()
+        }));
+        drain_until(&handle, |e| e.contains(&taken));
+
+        // A free one is kept, and then a sound may not take it, nor "Stop all".
+        let free = Settings {
+            mic_toggle_hotkey: Some(hotkey("Ctrl+F4")),
+            ..Settings::default()
+        };
+        handle.send(Command::UpdateSettings(free.clone()));
+        handle.send(Command::SetSoundHotkey {
+            id,
+            hotkey: Some(hotkey("Ctrl+F4")),
+        });
+        drain_until_within(&handle, LIBRARY_MAX, |e| e.contains(&taken));
+        handle.send(Command::UpdateSettings(Settings {
+            stop_sounds_hotkey: Some(hotkey("Ctrl+F4")),
+            ..free.clone()
+        }));
+        drain_until(&handle, |e| {
+            e.contains(&taken) && e.contains(&Event::SettingsReplaced(free.clone()))
+        });
+        assert!(handle.shutdown(LIBRARY_MAX));
+    }
+
     #[test]
     fn sound_commands_without_a_library_give_the_unavailable_notice() {
         let (waker, _wakes) = counting_waker();
@@ -1471,6 +1753,7 @@ mod tests {
                 sample_rate: 48_000,
                 channels: 2,
             })),
+            capture: Box::new(no_microphone()),
             settings: Settings {
                 volume: 0.2,
                 ..Settings::default()

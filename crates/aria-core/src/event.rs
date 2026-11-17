@@ -37,4 +37,8 @@ pub enum Event {
     /// [`Command::ListDevices`](crate::command::Command::ListDevices). Empty if they could not be
     /// listed.
     OutputDevices(Vec<DeviceInfo>),
+    /// The input devices, as asked for with
+    /// [`Command::ListInputDevices`](crate::command::Command::ListInputDevices). Empty if they
+    /// could not be listed.
+    InputDevices(Vec<DeviceInfo>),
 }

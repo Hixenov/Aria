@@ -30,6 +30,8 @@ pub const X: &str = "\u{e4f6}";
 pub const WARNING: &str = "\u{e4e0}";
 pub const INFO: &str = "\u{e2ce}";
 pub const MUSIC_NOTES: &str = "\u{e340}";
+pub const MICROPHONE: &str = "\u{e326}";
+pub const MICROPHONE_SLASH: &str = "\u{e328}";
 
 /// Every icon above, for the font coverage test.
 pub const ALL: &[&str] = &[
@@ -63,4 +65,6 @@ pub const ALL: &[&str] = &[
     WARNING,
     INFO,
     MUSIC_NOTES,
+    MICROPHONE,
+    MICROPHONE_SLASH,
 ];
