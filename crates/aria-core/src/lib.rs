@@ -1,5 +1,6 @@
 //! Core domain logic for Aria.
 
+pub mod chat;
 pub mod command;
 pub mod error;
 pub mod event;
@@ -18,8 +19,9 @@ pub mod soundboard;
 
 // What `aria-app` needs from the crates below it, which it reaches only through this one.
 pub use aria_audio::{
-    ClockReading, DeviceId, DeviceInfo, OutputFactory, OutputFormat, OutputPath, OutputState,
-    PlaybackClock, SystemFactory, fake::FakeFactory,
+    CaptureFactory, CaptureFormat, ClockReading, CpalCapture, DeviceId, DeviceInfo, OutputFactory,
+    OutputFormat, OutputPath, OutputState, PlaybackClock, SystemFactory,
+    fake::{FakeCapture, FakeFactory},
 };
 pub use aria_library::{
     Collections, Folder, FolderId, LibrarySnapshot, PLAYLIST_NAME_MAX, Playlist, PlaylistId,

@@ -162,12 +162,13 @@ pub enum LibraryRequest {
     RenameSound { id: SoundId, name: String },
     /// Set a sound's volume.
     SetSoundVolume { id: SoundId, volume: f32 },
-    /// Set or clear a sound's hotkey. One that is not allowed, used by another sound, or equal to
-    /// `stop`, the hotkey of "Stop all", gives a notice and changes nothing.
+    /// Set or clear a sound's hotkey. One that is not allowed, used by another sound, or among
+    /// `reserved` (the hotkeys of "Stop all" and of the microphone) gives a notice and changes
+    /// nothing.
     SetSoundHotkey {
         id: SoundId,
         hotkey: Option<Hotkey>,
-        stop: Option<Hotkey>,
+        reserved: Vec<Hotkey>,
     },
     /// Remove a sound.
     RemoveSound(SoundId),
@@ -525,8 +526,12 @@ impl Service {
                 let result = library.set_sound_volume(id, volume);
                 self.finish_sound_change(library, result);
             }
-            LibraryRequest::SetSoundHotkey { id, hotkey, stop } => {
-                self.set_sound_hotkey(library, id, hotkey, stop);
+            LibraryRequest::SetSoundHotkey {
+                id,
+                hotkey,
+                reserved,
+            } => {
+                self.set_sound_hotkey(library, id, hotkey, reserved);
             }
             LibraryRequest::RemoveSound(id) => {
                 let result = library.remove_sound(id);
@@ -608,13 +613,13 @@ impl Service {
     }
 
     /// Gives a sound a hotkey, unless it is not allowed or already used inside Aria: by another
-    /// sound, or by "Stop all" (`stop`).
+    /// sound, or by "Stop all" or the microphone (`reserved`).
     fn set_sound_hotkey(
         &mut self,
         library: &mut Library,
         id: SoundId,
         hotkey: Option<Hotkey>,
-        stop: Option<Hotkey>,
+        reserved: Vec<Hotkey>,
     ) {
         let Some((_, sounds)) = self.find_sound(library, id) else {
             return;
@@ -624,7 +629,7 @@ impl Service {
                 .iter()
                 .filter(|sound| sound.id != id)
                 .filter_map(|sound| stored_hotkey(sound.hotkey.as_deref()));
-            let refusal = soundboard::hotkey_refusal(hotkey, others.chain(stop));
+            let refusal = soundboard::hotkey_refusal(hotkey, others.chain(reserved));
             if let Some(notice) = refusal {
                 self.emit(LibraryEvent::Notice(notice));
                 return;
@@ -1877,7 +1882,7 @@ mod tests {
         handle.send(LibraryRequest::SetSoundHotkey {
             id: a,
             hotkey: Some(hotkey("Ctrl+F1")),
-            stop: None,
+            reserved: Vec::new(),
         });
         let sounds = sounds_of(log.wait_for(is_sounds));
         assert_eq!(sounds[0].hotkey, Some(hotkey("Ctrl+F1")));
@@ -1891,7 +1896,7 @@ mod tests {
         handle.send(LibraryRequest::SetSoundHotkey {
             id: a,
             hotkey: None,
-            stop: None,
+            reserved: Vec::new(),
         });
         assert_eq!(sounds_of(log.wait_for(is_sounds))[0].hotkey, None);
 
@@ -1953,7 +1958,7 @@ mod tests {
         let set = |id, text: &str| LibraryRequest::SetSoundHotkey {
             id,
             hotkey: Some(hotkey(text)),
-            stop: None,
+            reserved: Vec::new(),
         };
         handle.send(set(a, "Ctrl+F1"));
         log.wait_for(is_sounds);
@@ -1981,7 +1986,7 @@ mod tests {
             handle.send(LibraryRequest::SetSoundHotkey {
                 id,
                 hotkey: Some(hotkey(text)),
-                stop: None,
+                reserved: Vec::new(),
             });
         }
         finish_sounds(handle, &mut log);
@@ -1999,7 +2004,7 @@ mod tests {
         handle.send(LibraryRequest::SetSoundHotkey {
             id,
             hotkey: Some(hotkey("Ctrl+Alt+S")),
-            stop: Some(hotkey("Ctrl+Alt+S")),
+            reserved: vec![hotkey("Ctrl+Alt+S")],
         });
         log.wait_for(|e| notice_is(e, "hotkey-taken"));
         finish_sounds(handle, &mut log);
@@ -2017,7 +2022,7 @@ mod tests {
             handle.send(LibraryRequest::SetSoundHotkey {
                 id,
                 hotkey: Some(hotkey(text)),
-                stop: None,
+                reserved: Vec::new(),
             });
         }
         finish_sounds(handle, &mut log);
@@ -2145,7 +2150,7 @@ mod tests {
             LibraryRequest::SetSoundHotkey {
                 id: unknown,
                 hotkey: Some(hotkey("Ctrl+F1")),
-                stop: None,
+                reserved: Vec::new(),
             },
             LibraryRequest::RemoveSound(unknown),
             LibraryRequest::CheckSound {
@@ -2181,7 +2186,7 @@ mod tests {
             LibraryRequest::SetSoundHotkey {
                 id,
                 hotkey: None,
-                stop: None,
+                reserved: Vec::new(),
             },
             LibraryRequest::RemoveSound(id),
             // Nobody clicked this one, so it is not answered.

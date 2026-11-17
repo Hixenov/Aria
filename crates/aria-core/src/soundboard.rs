@@ -171,6 +171,7 @@ pub(crate) struct Soundboard {
     /// The second device the engine was last told of.
     device: Option<DeviceId>,
     stop_hotkey: Option<Hotkey>,
+    mic_hotkey: Option<Hotkey>,
 }
 
 impl Soundboard {
@@ -178,6 +179,7 @@ impl Soundboard {
     pub(crate) fn on_settings(&mut self, settings: &Settings) -> Option<EngineCommand> {
         self.target = settings.soundboard_target;
         self.stop_hotkey = settings.stop_sounds_hotkey;
+        self.mic_hotkey = settings.mic_toggle_hotkey;
         if settings.soundboard_device == self.device {
             return None;
         }
@@ -190,14 +192,31 @@ impl Soundboard {
         self.stop_hotkey
     }
 
+    /// The microphone hotkey, as the settings last said.
+    pub(crate) fn mic_hotkey(&self) -> Option<Hotkey> {
+        self.mic_hotkey
+    }
+
     /// Why the "Stop all" hotkey of `settings` may not be used, or `None` if it may or has not
-    /// changed.
+    /// changed. The sounds' hotkeys and the microphone's in the same settings are taken.
     pub(crate) fn stop_hotkey_refusal(&self, settings: &Settings) -> Option<Notice> {
         let hotkey = settings.stop_sounds_hotkey?;
         if Some(hotkey) == self.stop_hotkey {
             return None;
         }
-        hotkey_refusal(&hotkey, self.sounds.iter().filter_map(|sound| sound.hotkey))
+        let sounds = self.sounds.iter().filter_map(|sound| sound.hotkey);
+        hotkey_refusal(&hotkey, sounds.chain(settings.mic_toggle_hotkey))
+    }
+
+    /// Why the microphone hotkey of `settings` may not be used, or `None` if it may or has not
+    /// changed. The sounds' hotkeys and "Stop all" in the same settings are taken.
+    pub(crate) fn mic_hotkey_refusal(&self, settings: &Settings) -> Option<Notice> {
+        let hotkey = settings.mic_toggle_hotkey?;
+        if Some(hotkey) == self.mic_hotkey {
+            return None;
+        }
+        let sounds = self.sounds.iter().filter_map(|sound| sound.hotkey);
+        hotkey_refusal(&hotkey, sounds.chain(settings.stop_sounds_hotkey))
     }
 
     /// Takes in the sounds the library sent, and returns the state to show.

@@ -32,6 +32,7 @@ use aria_audio::{
 use aria_library::{LibrarySnapshot, Quality, QueueRecord, SoundId, Track, TrackId};
 
 use crate::{
+    chat::{Chat, MicState},
     command::Command,
     event::Event,
     hotkey::Hotkey,
@@ -123,6 +124,8 @@ pub struct PlayerView {
     /// refused exclusive open the output is shared and plays at the stored volume, so the slider
     /// is free again until an exclusive output opens.
     pub volume_locked: bool,
+    /// Whether the microphone is open and going to the second device.
+    pub microphone: MicState,
 }
 
 /// A track handed to the engine, under the token that names it there.
@@ -228,6 +231,7 @@ pub struct PlaybackService {
     /// The sounds, which of them play, and where they go. Sounds share the engine with the music
     /// but nothing else: they never touch the queue or the player.
     soundboard: Soundboard,
+    chat: Chat,
     /// For the UI, until the worker takes them.
     events: Vec<Event>,
     /// For the library, until the worker takes them.
@@ -277,6 +281,7 @@ impl PlaybackService {
             exclusive_refused: false,
             unavailable_noticed: None,
             soundboard: Soundboard::default(),
+            chat: Chat::default(),
             events: Vec::new(),
             requests: Vec::new(),
         }
@@ -347,6 +352,8 @@ impl PlaybackService {
             | Command::MoveInPlaylist { .. }
             | Command::ClearHistory
             | Command::ListDevices
+            | Command::ListInputDevices
+            | Command::ToggleMicrophone
             | Command::Shutdown => {}
         }
     }
@@ -426,10 +433,17 @@ impl PlaybackService {
                 self.events.extend(reaction.event);
                 self.requests.extend(reaction.request);
             }
-            // Nothing here turns the microphone on yet.
             EngineEvent::MicrophoneOpened
             | EngineEvent::MicrophoneClosed
-            | EngineEvent::MicrophoneFailed { .. } => {}
+            | EngineEvent::MicrophoneFailed { .. } => {
+                let (changed, notice) = self.chat.on_engine(event);
+                if let Some(notice) = notice {
+                    self.notify(notice);
+                }
+                if changed {
+                    self.publish();
+                }
+            }
         }
     }
 
@@ -450,6 +464,17 @@ impl PlaybackService {
     /// The hotkey of "Stop all", as the settings last said, for checking a sound's against.
     pub fn stop_hotkey(&self) -> Option<Hotkey> {
         self.soundboard.stop_hotkey()
+    }
+
+    /// The microphone hotkey, as the settings last said.
+    pub fn mic_hotkey(&self) -> Option<Hotkey> {
+        self.soundboard.mic_hotkey()
+    }
+
+    /// Why the microphone hotkey of `settings` may not be used, or `None` if it may or has not
+    /// changed.
+    pub fn mic_hotkey_refusal(&self, settings: &Settings) -> Option<Notice> {
+        self.soundboard.mic_hotkey_refusal(settings)
     }
 
     /// Why the "Stop all" hotkey in `settings` may not be used, as the notice that says so, or
@@ -533,6 +558,14 @@ impl PlaybackService {
         self.sync_volume();
         if let Some(command) = self.soundboard.on_settings(settings) {
             self.engine.send(command);
+        }
+        // After the second device, which they depend on.
+        let (commands, changed) = self.chat.on_settings(settings);
+        for command in commands {
+            self.engine.send(command);
+        }
+        if changed {
+            self.publish();
         }
         if settings.shuffle != self.shuffle || settings.repeat != self.repeat {
             self.shuffle = settings.shuffle;
@@ -633,6 +666,7 @@ impl PlaybackService {
                 .and_then(|id| self.row(id))
                 .map(TrackFormat::of),
             volume_locked: self.volume_locked(),
+            microphone: self.chat.state(),
         };
         self.events.push(Event::Player(view));
     }

@@ -15,7 +15,7 @@ use aria_app::{
     },
 };
 use aria_core::{
-    DeviceId, DeviceInfo, FakeFactory, OutputFormat,
+    CaptureFormat, DeviceId, DeviceInfo, FakeCapture, FakeFactory, OutputFormat,
     i18n::{Localizer, os_language},
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
@@ -378,6 +378,13 @@ fn persisting_settings_page(file: &Path) -> Harness<'static, AriaApp> {
             sample_rate: 48_000,
             channels: 2,
         })),
+        capture: Box::new(
+            FakeCapture::new(CaptureFormat {
+                sample_rate: 48_000,
+                channels: 1,
+            })
+            .0,
+        ),
         settings: Settings::default(),
     };
     let backend = Backend::start(

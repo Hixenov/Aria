@@ -170,6 +170,8 @@ pub struct AriaApp {
     inactive_hotkeys: Vec<Hotkey>,
     /// The output devices the backend last listed. Empty until it answers.
     devices: Vec<DeviceInfo>,
+    /// The microphones, as the backend last listed them.
+    input_devices: Vec<DeviceInfo>,
     /// Whether the Settings page was on screen last frame, so that entering it asks for the
     /// devices once, not on every frame.
     on_settings: bool,
@@ -242,6 +244,7 @@ impl AriaApp {
             hotkeys_dirty: true,
             inactive_hotkeys: Vec::new(),
             devices: Vec::new(),
+            input_devices: Vec::new(),
             on_settings: false,
             clock,
             artwork: None,
@@ -484,6 +487,7 @@ impl AriaApp {
                 self.player = player;
             }
             Event::OutputDevices(devices) => self.devices = devices,
+            Event::InputDevices(devices) => self.input_devices = devices,
         }
     }
 
@@ -1023,7 +1027,7 @@ mod tests {
     };
 
     use aria_core::{
-        FakeFactory, OutputFormat,
+        CaptureFormat, FakeCapture, FakeFactory, OutputFormat,
         notice::NoticeLevel,
         runtime::{Backend, BackendConfig, BackendServices, Waker},
         settings::{Language, Theme},
@@ -1084,6 +1088,13 @@ mod tests {
                 sample_rate: 48_000,
                 channels: 2,
             })),
+            capture: Box::new(
+                FakeCapture::new(CaptureFormat {
+                    sample_rate: 48_000,
+                    channels: 1,
+                })
+                .0,
+            ),
             settings: Settings::default(),
         };
         let backend = Backend::start(None, services, waker, BackendConfig::default()).unwrap();
@@ -2065,6 +2076,13 @@ mod tests {
                 sample_rate: 48_000,
                 channels: 2,
             })),
+            capture: Box::new(
+                FakeCapture::new(CaptureFormat {
+                    sample_rate: 48_000,
+                    channels: 1,
+                })
+                .0,
+            ),
             settings: Settings::default(),
         };
         let backend = Backend::start(None, services, waker, BackendConfig::default())

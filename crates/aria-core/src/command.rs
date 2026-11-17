@@ -138,6 +138,13 @@ pub enum Command {
     /// List the output devices, answered with
     /// [`Event::OutputDevices`](crate::event::Event::OutputDevices).
     ListDevices,
+    /// List the input devices, answered with
+    /// [`Event::InputDevices`](crate::event::Event::InputDevices). Listing opens none of them.
+    ListInputDevices,
+    /// Turn "Send my microphone" on or off, save that, and say which with a notice. The settings
+    /// as they now are come back in
+    /// [`Event::SettingsReplaced`](crate::event::Event::SettingsReplaced).
+    ToggleMicrophone,
     /// Save the queue and any pending settings, then stop the backend.
     Shutdown,
 }

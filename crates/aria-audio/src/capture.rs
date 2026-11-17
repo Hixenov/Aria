@@ -15,8 +15,9 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample};
 
 use crate::cpal_output::{CLOSE_WAIT, OPEN_WAIT, join_within};
-use crate::device::{DeviceId, DeviceKind, device_error, find_device};
+use crate::device::{DeviceId, DeviceKind, device_error, find_device, list_devices};
 use crate::error::AudioError;
+use crate::output::DeviceLister;
 
 /// How much the callback converts at a time.
 const SCRATCH_FRAMES: usize = 1024;
@@ -159,12 +160,20 @@ pub trait CaptureFactory: Send {
     /// Open `device`, or the system default input when it is `None`, in shared mode. Dropping
     /// the reader closes the stream.
     fn open(&self, device: Option<&DeviceId>) -> Result<CaptureReader, AudioError>;
+
+    /// A way to list the input devices this factory opens, which can be kept after the factory
+    /// has been handed to an engine. Listing opens nothing.
+    fn device_lister(&self) -> DeviceLister;
 }
 
 /// Captures through CPAL on the default host, always shared.
 pub struct CpalCapture;
 
 impl CaptureFactory for CpalCapture {
+    fn device_lister(&self) -> DeviceLister {
+        Arc::new(|| list_devices(DeviceKind::Input))
+    }
+
     fn open(&self, device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
         let device = device.cloned();
         let (opened_tx, opened_rx) = mpsc::channel();

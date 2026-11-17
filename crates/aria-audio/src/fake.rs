@@ -302,6 +302,7 @@ struct CaptureState {
     opened: usize,
     fail_open: bool,
     deny: bool,
+    devices: Vec<DeviceInfo>,
 }
 
 /// A capture with no device behind it, for tests. It captures what [`FakeCaptureControl::push`]
@@ -345,6 +346,11 @@ impl FakeCapture {
 }
 
 impl CaptureFactory for FakeCapture {
+    fn device_lister(&self) -> DeviceLister {
+        let state = Arc::clone(&self.state);
+        Arc::new(move || Ok(capture_state(&state).devices.clone()))
+    }
+
     fn open(&self, _device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
         let mut state = capture_state(&self.state);
         if state.deny {
@@ -386,6 +392,11 @@ impl FakeCaptureControl {
         if let Some(writer) = &capture_state(&self.state).writer {
             writer.fail();
         }
+    }
+
+    /// Make the input devices the fake lists `devices`. It lists none until then.
+    pub fn set_devices(&self, devices: Vec<DeviceInfo>) {
+        capture_state(&self.state).devices = devices;
     }
 
     /// Make opens fail from now on, or work again.

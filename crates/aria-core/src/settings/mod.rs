@@ -21,6 +21,12 @@ const GAPLESS_DEFAULT: bool = true;
 const HISTORY_ENABLED_DEFAULT: bool = true;
 const EXCLUSIVE_OUTPUT_DEFAULT: bool = false;
 const GLOBAL_HOTKEYS_DEFAULT: bool = true;
+/// The music's level in the chat, as a share of full.
+pub const SHARE_MUSIC_VOLUME_DEFAULT: f32 = 0.5;
+/// The microphone's level in the chat; above 1.0 amplifies.
+pub const MIC_VOLUME_DEFAULT: f32 = 1.0;
+/// The most the microphone can be amplified.
+pub const MIC_VOLUME_MAX: f32 = 2.0;
 
 /// UI language.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -234,6 +240,16 @@ fn lenient_global_hotkeys<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Er
     lenient(d, GLOBAL_HOTKEYS_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::share_music_volume`].
+fn lenient_share_music_volume<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    lenient(d, SHARE_MUSIC_VOLUME_DEFAULT)
+}
+
+/// [`lenient`] for [`Settings::mic_volume`].
+fn lenient_mic_volume<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    lenient(d, MIC_VOLUME_DEFAULT)
+}
+
 /// Accepts any value for a hotkey; anything that is not a hotkey's text becomes `None` with a
 /// warning instead of failing the file. The value itself is not logged.
 fn lenient_hotkey<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Hotkey>, D::Error> {
@@ -324,6 +340,27 @@ pub struct Settings {
     /// The hotkey of "Stop all", if any.
     #[serde(deserialize_with = "lenient_hotkey")]
     pub stop_sounds_hotkey: Option<Hotkey>,
+    /// Whether the music also goes to the second device, for a chat. Without a second device,
+    /// nothing is sent.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub share_music: bool,
+    /// The music's level on the second device, clamped to `0.0..=1.0`. The player's own volume
+    /// and mute do not touch it.
+    #[serde(deserialize_with = "lenient_share_music_volume")]
+    pub share_music_volume: f32,
+    /// Whether the microphone goes to the second device. It is open only while this is on and a
+    /// second device is set.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub mic_enabled: bool,
+    /// The microphone; `None` means the system default.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub mic_device: Option<DeviceId>,
+    /// The microphone's level on the second device, clamped to `0.0..=2.0`.
+    #[serde(deserialize_with = "lenient_mic_volume")]
+    pub mic_volume: f32,
+    /// The hotkey that turns the microphone on and off, if any.
+    #[serde(deserialize_with = "lenient_hotkey")]
+    pub mic_toggle_hotkey: Option<Hotkey>,
 }
 
 impl Default for Settings {
@@ -350,12 +387,18 @@ impl Default for Settings {
             soundboard_target: SoundTarget::Mine,
             global_hotkeys: GLOBAL_HOTKEYS_DEFAULT,
             stop_sounds_hotkey: None,
+            share_music: false,
+            share_music_volume: SHARE_MUSIC_VOLUME_DEFAULT,
+            mic_enabled: false,
+            mic_device: None,
+            mic_volume: MIC_VOLUME_DEFAULT,
+            mic_toggle_hotkey: None,
         }
     }
 }
 
 impl Settings {
-    /// Clamp out-of-range values; a NaN width or volume resets to the default.
+    /// Clamp out-of-range values; a width or volume that is not a number resets to the default.
     #[must_use]
     pub fn sanitized(mut self) -> Settings {
         self.sidebar_width = if self.sidebar_width.is_nan() {
@@ -368,13 +411,91 @@ impl Settings {
         } else {
             self.volume.clamp(0.0, 1.0)
         };
+        self.share_music_volume = level(self.share_music_volume, 1.0, SHARE_MUSIC_VOLUME_DEFAULT);
+        self.mic_volume = level(self.mic_volume, MIC_VOLUME_MAX, MIC_VOLUME_DEFAULT);
         self
+    }
+}
+
+/// `value` within `0.0..=max`, or `fallback` if it is not a number.
+fn level(value: f32, max: f32, fallback: f32) -> f32 {
+    if value.is_nan() {
+        fallback
+    } else {
+        value.clamp(0.0, max)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_settings_load_with_sharing_and_microphone_off() {
+        // A 0.2.2 file: none of the 0.2.3 keys.
+        let s: Settings = toml::from_str(
+            "soundboard_device = \"cable\"\nsoundboard_target = \"second\"\nvolume = 0.4",
+        )
+        .unwrap();
+        assert!(!s.share_music && !s.mic_enabled);
+        assert_eq!(s.share_music_volume, 0.5);
+        assert_eq!(s.mic_volume, 1.0);
+        assert_eq!(s.mic_device, None);
+        assert_eq!(s.mic_toggle_hotkey, None);
+        assert_eq!(s.soundboard_device, Some(DeviceId("cable".into())));
+        assert_eq!(s.volume, 0.4);
+        assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn chat_settings_of_the_wrong_type_fall_back() {
+        let s: Settings = toml::from_str(
+            "share_music = 3\nshare_music_volume = \"loud\"\nmic_enabled = \"yes\"\n\
+             mic_volume = true\nmic_toggle_hotkey = \"A\"\ntheme = \"dark\"",
+        )
+        .unwrap();
+        assert!(!s.share_music && !s.mic_enabled);
+        assert_eq!(s.share_music_volume, 0.5);
+        assert_eq!(s.mic_volume, 1.0);
+        // A plain typing key is never a hotkey.
+        assert_eq!(s.mic_toggle_hotkey, None);
+        assert_eq!(s.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn volumes_are_clamped() {
+        let with = |share: f32, mic: f32| {
+            Settings {
+                share_music_volume: share,
+                mic_volume: mic,
+                ..Settings::default()
+            }
+            .sanitized()
+        };
+        let s = with(1.5, 3.0);
+        assert_eq!((s.share_music_volume, s.mic_volume), (1.0, 2.0));
+        let s = with(-1.0, -1.0);
+        assert_eq!((s.share_music_volume, s.mic_volume), (0.0, 0.0));
+        let s = with(0.3, 1.7);
+        assert_eq!((s.share_music_volume, s.mic_volume), (0.3, 1.7));
+        let s = with(f32::NAN, f32::NAN);
+        assert_eq!((s.share_music_volume, s.mic_volume), (0.5, 1.0));
+    }
+
+    #[test]
+    fn chat_settings_round_trip() {
+        let s = Settings {
+            share_music: true,
+            share_music_volume: 0.25,
+            mic_enabled: true,
+            mic_device: Some(DeviceId("mic".into())),
+            mic_volume: 1.5,
+            mic_toggle_hotkey: Some("Ctrl+Alt+M".parse().unwrap()),
+            ..Settings::default()
+        };
+        let back: Settings = toml::from_str(&toml::to_string(&s).unwrap()).unwrap();
+        assert_eq!(s, back);
+    }
 
     #[test]
     fn defaults_roundtrip() {

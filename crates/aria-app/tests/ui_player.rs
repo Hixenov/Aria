@@ -20,6 +20,7 @@ use aria_app::{
 };
 use aria_core::{
     ClockReading, OutputPath, OutputState, PlaybackClock,
+    chat::MicState,
     event::Event,
     i18n::{FluentArgs, Localizer},
     playback_service::{PlayerView, TrackFormat},
@@ -84,6 +85,7 @@ fn view(current: Option<i64>, playing: bool, duration_ms: u64) -> PlayerView {
         output: None,
         format: None,
         volume_locked: false,
+        microphone: MicState::Off,
     }
 }
 
