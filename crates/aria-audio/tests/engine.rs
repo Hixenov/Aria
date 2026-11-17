@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use aria_audio::fake::{FakeControl, FakeFactory};
+use aria_audio::fake::{FakeCapture, FakeControl, FakeFactory};
 use aria_audio::testing::{write_gapless_pair, write_tone_wav};
 use aria_audio::{
     AudioError, ClockReading, DeviceFormat, DeviceId, DeviceInfo, DeviceLister, Engine,
@@ -44,6 +44,17 @@ const CHUNK_FRAMES: usize = 2_048;
 const SECOND: usize = 44_100;
 /// The steepest step of the fixtures' 440 Hz tone is under 0.01 at these sample rates.
 const SMOOTH_STEP: f32 = 0.02;
+
+/// A microphone nobody speaks into. These tests never turn it on.
+fn no_microphone() -> Box<FakeCapture> {
+    Box::new(
+        FakeCapture::new(aria_audio::CaptureFormat {
+            sample_rate: 44_100,
+            channels: 2,
+        })
+        .0,
+    )
+}
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -144,6 +155,7 @@ impl Rig {
         };
         let engine = match Engine::start_with_idle_grace(
             Box::new(factory.clone()),
+            no_microphone(),
             Box::new(on_event),
             grace,
         ) {
@@ -1341,7 +1353,7 @@ fn shutdown_gives_up_on_a_stuck_thread() {
         reached: reached_tx,
         release: release_rx,
     };
-    let engine = Engine::start(Box::new(factory), Box::new(|_| {})).unwrap();
+    let engine = Engine::start(Box::new(factory), no_microphone(), Box::new(|_| {})).unwrap();
     engine.send(load(track(1, "tone.flac")));
     reached.recv_timeout(DEADLINE).unwrap();
 
@@ -1357,6 +1369,7 @@ fn shutdown_returns_promptly_after_a_panic() {
     let factory = FakeFactory::new(STEREO_44K);
     let engine = Engine::start(
         Box::new(factory),
+        no_microphone(),
         Box::new(|_| panic!("test event handler panics")),
     )
     .unwrap();
@@ -1372,6 +1385,7 @@ fn a_panicked_engine_leaves_the_clock_stopped() {
     let factory = FakeFactory::new(STEREO_44K);
     let engine = Engine::start(
         Box::new(factory.clone()),
+        no_microphone(),
         Box::new(|_| panic!("test event handler panics")),
     )
     .unwrap();
@@ -1399,7 +1413,12 @@ fn the_clock_is_current_when_an_event_arrives() {
         let reading = handler_slot.get().map(|clock| clock.read());
         let _ = sender.send((event, reading));
     };
-    let engine = Engine::start(Box::new(factory.clone()), Box::new(on_event)).unwrap();
+    let engine = Engine::start(
+        Box::new(factory.clone()),
+        no_microphone(),
+        Box::new(on_event),
+    )
+    .unwrap();
     clock_slot.set(engine.clock()).ok().unwrap();
 
     engine.send(load(track(1, "silence-gap-a.flac")));
@@ -1428,6 +1447,7 @@ fn the_engine_thread_is_named() {
     let (sender, names) = mpsc::channel();
     let engine = Engine::start(
         Box::new(FakeFactory::new(STEREO_44K)),
+        no_microphone(),
         Box::new(move |_| {
             let name = thread::current().name().map(str::to_owned);
             let _ = sender.send(name);

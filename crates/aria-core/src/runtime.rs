@@ -145,7 +145,8 @@ impl PlaybackLink {
             let _ = events_tx.send(event);
         });
         let devices = output.device_lister();
-        let engine = Engine::start(output, on_event)?;
+        // The microphone is opened only when the user turns it on, and a second device is set.
+        let engine = Engine::start(output, Box::new(aria_audio::CpalCapture), on_event)?;
         let clock = engine.clock();
         let mut service = PlaybackService::new(engine, RandomState::new().hash_one(0_u8));
         service.on_settings(settings);

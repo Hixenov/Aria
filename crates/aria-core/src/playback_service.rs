@@ -426,6 +426,10 @@ impl PlaybackService {
                 self.events.extend(reaction.event);
                 self.requests.extend(reaction.request);
             }
+            // Nothing here turns the microphone on yet.
+            EngineEvent::MicrophoneOpened
+            | EngineEvent::MicrophoneClosed
+            | EngineEvent::MicrophoneFailed { .. } => {}
         }
     }
 
@@ -1270,7 +1274,12 @@ mod tests {
             let on_event = Box::new(move |event| {
                 let _ = sender.send(event);
             });
-            let engine = Engine::start(Box::new(factory.clone()), on_event).unwrap();
+            let (microphone, _) = aria_audio::fake::FakeCapture::new(aria_audio::CaptureFormat {
+                sample_rate: 44_100,
+                channels: 2,
+            });
+            let engine =
+                Engine::start(Box::new(factory.clone()), Box::new(microphone), on_event).unwrap();
             Self {
                 service: PlaybackService::new(engine, SEED),
                 factory,

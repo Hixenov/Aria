@@ -13,6 +13,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::capture::CaptureFactory;
 use crate::clock::{ClockReading, PlaybackClock};
 use crate::decode::{StreamInfo, TrackDecoder};
 use crate::device::DeviceId;
@@ -21,7 +22,7 @@ use crate::mixer::InputHandle;
 use crate::output::{AudioOutput, Opened, OutputFactory, OutputFormat, OutputRequest};
 use crate::resample::{Resampler, convert_channels};
 use crate::sample_format::{DeviceFormat, OutputState, PathFacts, SourceFormat, output_path};
-use crate::share::{MusicCopy, copy_gain};
+use crate::share::{Microphone, MusicCopy, copy_gain, mic_gain};
 use crate::sounds::{SOUNDS_AT_ONCE, SecondOutput, SoundRoute, Spares, Target, Voice};
 
 /// How often the thread looks at the output while a track is active.
@@ -92,6 +93,15 @@ pub enum EngineCommand {
         on: bool,
         gain: f32,
     },
+    /// Send the microphone `device` (`None`: the system default) into the second device at
+    /// `gain` (0.0 to 2.0, clipped at full scale), or stop. The microphone is open exactly while
+    /// this is on and there is a second device that is not the music's. It never reaches the
+    /// music's output.
+    SetMicrophone {
+        on: bool,
+        device: Option<DeviceId>,
+        gain: f32,
+    },
 }
 
 /// What the engine reports. Tracks start and end when they are heard, not when they are decoded.
@@ -144,24 +154,36 @@ pub enum EngineEvent {
     },
     /// The second device could not be opened for a sound, or failed while one played on it.
     SoundDeviceFailed,
+    /// The microphone is open and goes into the second device.
+    MicrophoneOpened,
+    /// The microphone was closed: turned off, or its second device went away or changed.
+    MicrophoneClosed,
+    /// The microphone could not be opened, or was lost. `denied` when the operating system
+    /// refused it. It is tried again at the next change of the microphone or the devices.
+    MicrophoneFailed {
+        denied: bool,
+    },
 }
 
 /// Starts the engine thread.
 pub struct Engine;
 
 impl Engine {
-    /// Start the thread. `on_event` runs on it, so it must not block.
+    /// Start the thread. `capture` opens the microphone, and only when it is asked for.
+    /// `on_event` runs on the thread, so it must not block.
     pub fn start(
         factory: Box<dyn OutputFactory>,
+        capture: Box<dyn CaptureFactory>,
         on_event: Box<dyn Fn(EngineEvent) + Send>,
     ) -> io::Result<EngineHandle> {
-        Self::start_with_idle_grace(factory, on_event, IDLE_GRACE)
+        Self::start_with_idle_grace(factory, capture, on_event, IDLE_GRACE)
     }
 
     /// Like [`start`](Self::start), but closes an idle output after `idle_grace` instead of
     /// [`IDLE_GRACE`]. For tests, which would not wait that long.
     pub fn start_with_idle_grace(
         factory: Box<dyn OutputFactory>,
+        capture: Box<dyn CaptureFactory>,
         on_event: Box<dyn Fn(EngineEvent) + Send>,
         idle_grace: Duration,
     ) -> io::Result<EngineHandle> {
@@ -176,7 +198,7 @@ impl Engine {
                     done: done_tx,
                     clock: Arc::clone(&worker_clock),
                 };
-                Worker::new(factory, on_event, worker_clock, idle_grace).run(&received);
+                Worker::new(factory, capture, on_event, worker_clock, idle_grace).run(&received);
             })?;
         Ok(EngineHandle {
             commands,
@@ -495,6 +517,7 @@ struct Heard {
 /// front, to the one being decoded, at the back.
 struct Worker {
     factory: Box<dyn OutputFactory>,
+    capture: Box<dyn CaptureFactory>,
     on_event: Box<dyn Fn(EngineEvent) + Send>,
     /// Events of this pass, in order.
     events: Vec<EngineEvent>,
@@ -545,17 +568,28 @@ struct Worker {
     /// again until the next such change, so a device that cannot be opened is not retried on
     /// every pass.
     share_dirty: bool,
+    /// Whether the microphone is to be sent into the second output, from which device, and how
+    /// loud.
+    mic_on: bool,
+    mic_device: Option<DeviceId>,
+    mic_gain: f32,
+    /// The microphone, while it is open.
+    mic: Option<Microphone>,
+    /// As `share_dirty`, for the microphone.
+    mic_dirty: bool,
 }
 
 impl Worker {
     fn new(
         factory: Box<dyn OutputFactory>,
+        capture: Box<dyn CaptureFactory>,
         on_event: Box<dyn Fn(EngineEvent) + Send>,
         clock: Arc<PlaybackClock>,
         idle_grace: Duration,
     ) -> Self {
         Self {
             factory,
+            capture,
             on_event,
             events: Vec::new(),
             clock,
@@ -586,6 +620,11 @@ impl Worker {
             share_gain: 0.0,
             copy: None,
             share_dirty: false,
+            mic_on: false,
+            mic_device: None,
+            mic_gain: 1.0,
+            mic: None,
+            mic_dirty: false,
         }
     }
 
@@ -677,8 +716,10 @@ impl Worker {
             self.check_output();
             self.close_idle_output();
             self.sync_copy();
+            self.sync_microphone();
             self.fill();
             self.flush_copy();
+            self.feed_microphone();
             self.feed_sounds();
             self.settle();
             self.settle_sounds();
@@ -716,6 +757,7 @@ impl Worker {
             }
             EngineCommand::SetDevice(device) => {
                 self.share_dirty = true;
+                self.mic_dirty = true;
                 self.set_device(device);
             }
             EngineCommand::SetGapless(gapless) => self.gapless = gapless,
@@ -730,9 +772,13 @@ impl Worker {
             EngineCommand::StopSounds => self.stop_sounds(),
             EngineCommand::SetSoundDevice(device) => {
                 self.share_dirty = true;
+                self.mic_dirty = true;
                 self.set_sound_device(device);
             }
             EngineCommand::SetShareMusic { on, gain } => self.set_share_music(on, gain),
+            EngineCommand::SetMicrophone { on, device, gain } => {
+                self.set_microphone(on, device, gain);
+            }
         }
     }
 
@@ -1377,6 +1423,7 @@ impl Worker {
 
     /// Close the second output. Sounds on it are cut off there.
     fn close_second_output(&mut self) {
+        self.close_microphone();
         self.copy = None;
         self.second = None;
         self.second_idle_since = None;
@@ -1401,7 +1448,83 @@ impl Worker {
     /// Whether anything needs the second output now: a sound on it, or the music being copied
     /// while it plays.
     fn second_needed(&self) -> bool {
-        self.sound_on(Target::Second) || (self.copy.is_some() && self.playing && self.has_track())
+        self.sound_on(Target::Second)
+            || self.mic.is_some()
+            || (self.copy.is_some() && self.playing && self.has_track())
+    }
+
+    fn set_microphone(&mut self, on: bool, device: Option<DeviceId>, gain: f32) {
+        self.mic_gain = mic_gain(gain);
+        let moved = self
+            .mic
+            .as_ref()
+            .is_some_and(|mic| mic.device() != device.as_ref());
+        self.mic_on = on;
+        self.mic_device = device;
+        self.mic_dirty = true;
+        if !on || moved {
+            self.close_microphone();
+        } else if let Some(mic) = &self.mic {
+            mic.set_gain(self.mic_gain);
+        }
+    }
+
+    /// Close the microphone, if it is open.
+    fn close_microphone(&mut self) {
+        if self.mic.take().is_some() {
+            self.emit(EngineEvent::MicrophoneClosed);
+        }
+    }
+
+    /// Open or close the microphone, as the settings and the outputs now allow.
+    fn sync_microphone(&mut self) {
+        if self.mic.as_ref().is_some_and(Microphone::failed) {
+            tracing::debug!("the microphone was lost");
+            self.mic = None;
+            self.emit(EngineEvent::MicrophoneFailed { denied: false });
+        }
+        if !std::mem::take(&mut self.mic_dirty) || !self.mic_on || self.mic.is_some() {
+            return;
+        }
+        if !self.second_device_is_another() || !self.ensure_second_output() {
+            return;
+        }
+        let Some(second) = &mut self.second else {
+            return;
+        };
+        let opened = self
+            .capture
+            .open(self.mic_device.as_ref())
+            .and_then(|reader| {
+                let input = second
+                    .output
+                    .add_input(Microphone::ring_frames(second.format))?;
+                Microphone::new(
+                    reader,
+                    input,
+                    second.format,
+                    self.mic_gain,
+                    self.mic_device.clone(),
+                )
+            });
+        match opened {
+            Ok(mic) => {
+                self.mic = Some(mic);
+                self.emit(EngineEvent::MicrophoneOpened);
+            }
+            Err(error) => {
+                tracing::debug!(%error, "the microphone could not be opened");
+                let denied = matches!(error, AudioError::PermissionDenied);
+                self.emit(EngineEvent::MicrophoneFailed { denied });
+            }
+        }
+    }
+
+    /// Move what the microphone has captured into the second output.
+    fn feed_microphone(&mut self) {
+        if let Some(mic) = &mut self.mic {
+            mic.feed();
+        }
     }
 
     fn set_share_music(&mut self, on: bool, gain: f32) {
@@ -1458,6 +1581,8 @@ impl Worker {
             Ok(copy) => self.copy = Some(copy),
             Err(error) => tracing::debug!(%error, "the music could not be copied"),
         }
+        // Opening the second output just now is no change to try again for.
+        self.share_dirty = false;
     }
 
     /// Write what the copy still holds, as after a clear.
@@ -1597,6 +1722,7 @@ impl Worker {
         match opened {
             Ok(second) => {
                 self.second = Some(second);
+                // A copy that could not start for want of the second output may start now.
                 self.share_dirty = true;
                 true
             }
@@ -1781,7 +1907,17 @@ mod tests {
             channels: 2,
         });
         let clock = Arc::new(PlaybackClock::default());
-        let mut worker = Worker::new(Box::new(factory), Box::new(|_| {}), clock, IDLE_GRACE);
+        let (microphone, _) = crate::fake::FakeCapture::new(crate::capture::CaptureFormat {
+            sample_rate: 44_100,
+            channels: 2,
+        });
+        let mut worker = Worker::new(
+            Box::new(factory),
+            Box::new(microphone),
+            Box::new(|_| {}),
+            clock,
+            IDLE_GRACE,
+        );
         // A join worked out from frames read, whose audio then never came out of the resampler.
         let mut first = Segment::unplayable(request(1), 0);
         first.end_index = Some(1_000);

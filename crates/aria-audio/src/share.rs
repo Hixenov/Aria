@@ -1,4 +1,4 @@
-//! The music copied into the second output, for a chat to hear.
+//! The music copied into the second output, and the microphone sent there, for a chat to hear.
 //!
 //! The engine thread hands the copy every stretch of music it writes into the listener's output,
 //! in that output's format. The copy converts it to the second output's format and writes what
@@ -7,6 +7,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::capture::{CaptureFormat, CaptureReader};
+use crate::device::DeviceId;
 use crate::error::AudioError;
 use crate::mixer::InputHandle;
 use crate::output::OutputFormat;
@@ -136,6 +138,113 @@ impl MusicCopy {
     }
 }
 
+/// The most microphone audio the second output's input holds. Older captured audio is dropped
+/// rather than queued, so the delay to the chat cannot grow.
+pub(crate) const MIC_RING: Duration = Duration::from_millis(40);
+/// The microphone's gain can amplify up to this.
+const MAX_MIC_GAIN: f32 = 2.0;
+
+/// The microphone on the second output. The engine never logs what it captures, nor its level.
+pub(crate) struct Microphone {
+    reader: CaptureReader,
+    input: InputHandle,
+    from: CaptureFormat,
+    to: OutputFormat,
+    resampler: Resampler,
+    /// The device asked for. `None` is the system default.
+    device: Option<DeviceId>,
+    read: Vec<f32>,
+    mixed: Vec<f32>,
+    out: Vec<f32>,
+}
+
+impl Microphone {
+    /// The frames of `to` that the microphone's input holds.
+    pub(crate) fn ring_frames(to: OutputFormat) -> usize {
+        (u128::from(to.sample_rate) * MIC_RING.as_millis() / 1_000) as usize
+    }
+
+    /// The microphone `reader`, captured from `device`, onto `input` of an output running at
+    /// `to`, at `gain`.
+    pub(crate) fn new(
+        reader: CaptureReader,
+        input: InputHandle,
+        to: OutputFormat,
+        gain: f32,
+        device: Option<DeviceId>,
+    ) -> Result<Self, AudioError> {
+        let from = reader.format();
+        let resampler = Resampler::new(from.sample_rate, to.sample_rate, to.channels)?;
+        input.set_gain(gain);
+        Ok(Self {
+            reader,
+            input,
+            from,
+            to,
+            resampler,
+            device,
+            read: Vec::new(),
+            mixed: Vec::new(),
+            out: Vec::new(),
+        })
+    }
+
+    pub(crate) fn device(&self) -> Option<&DeviceId> {
+        self.device.as_ref()
+    }
+
+    /// Whether the capture has ended, as when the device is lost.
+    pub(crate) fn failed(&self) -> bool {
+        self.reader.failed()
+    }
+
+    pub(crate) fn set_gain(&self, gain: f32) {
+        self.input.set_gain(gain);
+    }
+
+    /// Move what has been captured into the input: only as much as the input has room for, and
+    /// the newest of it.
+    pub(crate) fn feed(&mut self) {
+        let channels = usize::from(self.to.channels.max(1));
+        let room = self.input.free() / channels;
+        let keep = (room as u128 * u128::from(self.from.sample_rate)
+            / u128::from(self.to.sample_rate.max(1))) as usize;
+        self.reader.skip_to_newest(keep);
+        let wanted = keep * usize::from(self.from.channels.max(1));
+        if self.read.len() < wanted {
+            self.read.resize(wanted, 0.0);
+        }
+        let read = self.reader.read(&mut self.read[..wanted]);
+        if read == 0 {
+            return;
+        }
+        self.mixed.clear();
+        convert_channels(
+            &self.read[..read],
+            self.from.channels,
+            self.to.channels,
+            &mut self.mixed,
+        );
+        self.out.clear();
+        if let Err(error) = self.resampler.process(&self.mixed, &mut self.out) {
+            tracing::debug!(%error, "the microphone could not be resampled");
+        }
+        // Rounding in the resampler can leave a frame or two more than there is room for; that
+        // is dropped, as older audio is.
+        self.input.write(&self.out);
+    }
+}
+
+/// A gain for the microphone: 0.0 to 2.0, anything else brought inside, and silence for one that
+/// is not a number.
+pub(crate) fn mic_gain(gain: f32) -> f32 {
+    if gain.is_finite() {
+        gain.clamp(0.0, MAX_MIC_GAIN)
+    } else {
+        0.0
+    }
+}
+
 /// A gain for the copy: 0.0 to 1.0, anything else brought inside, and silence for one that is
 /// not a number.
 pub(crate) fn copy_gain(gain: f32) -> f32 {
@@ -156,5 +265,18 @@ mod tests {
         assert_eq!(copy_gain(2.0), 1.0);
         assert_eq!(copy_gain(-1.0), 0.0);
         assert_eq!(copy_gain(f32::NAN), 0.0);
+        assert_eq!(mic_gain(1.5), 1.5);
+        assert_eq!(mic_gain(3.0), 2.0);
+        assert_eq!(mic_gain(-1.0), 0.0);
+        assert_eq!(mic_gain(f32::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn the_microphone_ring_is_40_ms() {
+        let format = OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        assert_eq!(Microphone::ring_frames(format), 1_920);
     }
 }

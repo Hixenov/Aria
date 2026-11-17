@@ -9,19 +9,23 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use aria_audio::fake::{FakeControl, FakeFactory};
+use aria_audio::fake::{FakeCapture, FakeCaptureControl, FakeControl, FakeFactory};
 use aria_audio::testing::write_tone_wav;
 use aria_audio::{
-    ClockReading, DeviceId, DeviceInfo, Engine, EngineCommand, EngineEvent, EngineHandle, FADE_MS,
-    IDLE_GRACE, OutputFormat, OutputPath, OutputState, SoundRoute, TrackDecoder, TrackRequest,
+    CaptureFormat, ClockReading, DeviceId, DeviceInfo, Engine, EngineCommand, EngineEvent,
+    EngineHandle, FADE_MS, IDLE_GRACE, OutputFormat, OutputPath, OutputState, SoundRoute,
+    TrackDecoder, TrackRequest,
 };
 use tempfile::TempDir;
 
 use EngineCommand::{
-    Load, Pause, Play, PlaySound, Seek, SetDevice, SetExclusive, SetShareMusic, SetSoundDevice,
-    SetVolume,
+    Load, Pause, Play, PlaySound, Seek, SetDevice, SetExclusive, SetMicrophone, SetShareMusic,
+    SetSoundDevice, SetVolume,
 };
-use EngineEvent::{Output, SoundEnded, SoundStarted};
+use EngineEvent::{
+    MicrophoneClosed, MicrophoneFailed, MicrophoneOpened, Output, SoundEnded, SoundFailed,
+    SoundStarted,
+};
 
 const STEREO_44K: OutputFormat = OutputFormat {
     sample_rate: 44_100,
@@ -98,10 +102,18 @@ fn share(gain: f32) -> EngineCommand {
     SetShareMusic { on: true, gain }
 }
 
+/// The fake microphone, unless a test asks for another: the outputs' own format, so that nothing
+/// is resampled.
+const MIC_44K: CaptureFormat = CaptureFormat {
+    sample_rate: 44_100,
+    channels: 2,
+};
+
 struct Rig {
     factory: FakeFactory,
     engine: EngineHandle,
     events: Receiver<EngineEvent>,
+    mic: FakeCaptureControl,
 }
 
 impl Rig {
@@ -110,13 +122,19 @@ impl Rig {
     }
 
     fn with_idle_grace(format: OutputFormat, grace: Duration) -> Self {
+        Self::with_microphone(format, grace, MIC_44K)
+    }
+
+    fn with_microphone(format: OutputFormat, grace: Duration, mic: CaptureFormat) -> Self {
         let factory = FakeFactory::new(format);
+        let (capture, mic) = FakeCapture::new(mic);
         let (sender, events) = mpsc::channel();
         let on_event = move |event| {
             let _ = sender.send(event);
         };
         let engine = match Engine::start_with_idle_grace(
             Box::new(factory.clone()),
+            Box::new(capture),
             Box::new(on_event),
             grace,
         ) {
@@ -127,6 +145,16 @@ impl Rig {
             factory,
             engine,
             events,
+            mic,
+        }
+    }
+
+    /// Wait for `wanted`, passing over other events.
+    fn expect(&self, wanted: EngineEvent) {
+        loop {
+            if self.next_event() == wanted {
+                return;
+            }
         }
     }
 
@@ -562,4 +590,349 @@ fn the_second_output_stays_open_while_music_is_shared_and_playing() {
     // Paused, the copy needs it no more.
     rig.send(Pause);
     wait_until("the second output to close", || second.is_closed());
+}
+
+// The microphone.
+
+fn microphone(on: bool, gain: f32) -> EngineCommand {
+    SetMicrophone {
+        on,
+        device: None,
+        gain,
+    }
+}
+
+/// A rig with the microphone on at `gain` into the second device, open.
+fn talking(gain: f32) -> (Rig, FakeControl) {
+    let rig = Rig::new(STEREO_44K);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, gain));
+    rig.expect(MicrophoneOpened);
+    let second = rig.output_on(Some(&second_device()));
+    (rig, second)
+}
+
+/// `frames` frames of a steady `level` in `channels` channels.
+fn steady(level: f32, frames: usize, channels: usize) -> Vec<f32> {
+    vec![level; frames * channels]
+}
+
+/// Push `samples` into the microphone and give the engine a pass or two to move them.
+fn speak(rig: &Rig, samples: &[f32]) {
+    assert_eq!(
+        rig.mic.push(samples),
+        samples.len(),
+        "the capture ring is full"
+    );
+    rig.settle();
+}
+
+fn mic_events(events: &[EngineEvent]) -> Vec<EngineEvent> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                MicrophoneOpened | MicrophoneClosed | MicrophoneFailed { .. }
+            )
+        })
+        .copied()
+        .collect()
+}
+
+#[test]
+fn the_microphone_goes_to_the_second_output_at_its_gain() {
+    let (rig, second) = talking(0.5);
+
+    speak(&rig, &steady(0.25, 441, 2));
+    let heard = second.pull(882);
+
+    assert!(
+        heard[..882] == steady(0.125, 441, 2)[..],
+        "{:?}",
+        &heard[..4]
+    );
+    assert_eq!(audible_frames(&heard[882..], 2), 0);
+}
+
+#[test]
+fn the_microphone_never_reaches_the_local_output() {
+    let (_dir, path) = tone(SECOND as u64).unwrap();
+    let music = decode_all(&path);
+    let (rig, second) = talking(1.0);
+    rig.start(1, &path);
+    let mine = rig.output_on(None);
+
+    speak(&rig, &steady(0.25, 4_410, 2));
+    let local = mine.pull(SECOND / 4);
+    second.pull(4_410);
+
+    assert!(
+        local[FADE..] == music[FADE..local.len()],
+        "the microphone is in the local output"
+    );
+}
+
+#[test]
+fn a_mono_microphone_reaches_both_channels() {
+    let mono = CaptureFormat {
+        sample_rate: 44_100,
+        channels: 1,
+    };
+    let rig = Rig::with_microphone(STEREO_44K, IDLE_GRACE, mono);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneOpened);
+    let second = rig.output_on(Some(&second_device()));
+
+    speak(&rig, &steady(0.25, 441, 1));
+    let heard = second.pull(441);
+
+    assert!(heard == steady(0.25, 441, 2), "{:?}", &heard[..4]);
+}
+
+#[test]
+fn gain_above_one_amplifies_and_clips() {
+    let (rig, second) = talking(2.0);
+
+    speak(&rig, &steady(0.25, 441, 2));
+    assert!(second.pull(441) == steady(0.5, 441, 2));
+
+    speak(&rig, &steady(0.75, 441, 2));
+    assert!(second.pull(441) == steady(1.0, 441, 2), "not clipped");
+}
+
+#[test]
+fn turning_the_microphone_off_closes_the_capture() {
+    let (rig, _second) = talking(1.0);
+    assert!(rig.mic.open_now());
+
+    rig.send(microphone(false, 1.0));
+    rig.expect(MicrophoneClosed);
+
+    assert!(!rig.mic.open_now());
+    rig.settle();
+    assert_eq!(rig.mic.opened(), 1);
+}
+
+#[test]
+fn no_second_device_opens_no_microphone() {
+    let rig = Rig::new(STEREO_44K);
+    rig.send(microphone(true, 1.0));
+    rig.settle();
+
+    assert_eq!(rig.mic.opened(), 0);
+    assert!(rig.factory.outputs().is_empty());
+    assert!(mic_events(&rig.drain_events()).is_empty());
+}
+
+#[test]
+fn no_microphone_when_the_second_device_is_the_local_device() {
+    // The same device chosen for both.
+    let rig = Rig::new(STEREO_44K);
+    rig.send(SetDevice(Some(second_device())));
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.settle();
+    assert_eq!(rig.mic.opened(), 0);
+
+    // The music on the system default, which the second device is.
+    let rig = Rig::new(STEREO_44K);
+    rig.factory.set_devices(vec![DeviceInfo {
+        id: second_device(),
+        name: "Speakers".into(),
+        is_default: true,
+    }]);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.settle();
+    assert_eq!(rig.mic.opened(), 0);
+
+    // Moving the music onto the second device closes the microphone.
+    let (rig, _second) = talking(1.0);
+    rig.send(SetDevice(Some(second_device())));
+    rig.expect(MicrophoneClosed);
+    assert!(!rig.mic.open_now());
+}
+
+#[test]
+fn the_microphone_never_queues_more_than_40_ms() {
+    let (rig, second) = talking(1.0);
+
+    // A whole second at once, as after a stall: only the newest 40 ms is kept.
+    let second_of_speech: Vec<f32> = (0..SECOND)
+        .flat_map(|frame| {
+            let level = if frame < SECOND - 1_764 { 0.25 } else { 0.5 };
+            [level, level]
+        })
+        .collect();
+    speak(&rig, &second_of_speech);
+    let heard = second.pull(SECOND);
+
+    let sounding = audible_frames(&heard, 2);
+    assert!(sounding <= 1_764, "{sounding} frames queued, over 40 ms");
+    assert!(sounding > 1_000, "only {sounding} frames heard");
+    // What is kept is the newest audio.
+    assert!(heard[..2 * sounding].iter().all(|sample| *sample == 0.5));
+}
+
+#[test]
+fn steady_speech_is_not_dropped() {
+    let (rig, second) = talking(1.0);
+
+    let mut heard = Vec::new();
+    for _ in 0..30 {
+        speak(&rig, &steady(0.25, 441, 2));
+        heard.extend(second.pull(441));
+    }
+    heard.extend(second.pull(2_000));
+
+    assert_eq!(audible_frames(&heard, 2), 30 * 441);
+}
+
+#[test]
+fn a_failed_capture_reports_and_music_and_sounds_go_on() {
+    let (_dir, path) = tone(SECOND as u64).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.mic.fail_open(true);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneFailed { denied: false });
+
+    rig.start(1, &path);
+    let mine = rig.output_on(None);
+    assert!(audible_frames(&mine.pull(SECOND / 4), 2) > SECOND / 8);
+    assert!(!rig.mic.open_now());
+}
+
+#[test]
+fn a_denied_capture_reports_denied() {
+    let rig = Rig::new(STEREO_44K);
+    rig.mic.deny(true);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+
+    rig.expect(MicrophoneFailed { denied: true });
+}
+
+#[test]
+fn a_lost_capture_reports_failed_and_retries_on_the_next_change() {
+    let (rig, _second) = talking(1.0);
+
+    rig.mic.fail();
+    rig.expect(MicrophoneFailed { denied: false });
+    assert!(!rig.mic.open_now());
+    rig.settle();
+    assert_eq!(rig.mic.opened(), 1, "retried without a change");
+
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneOpened);
+    assert_eq!(rig.mic.opened(), 2);
+}
+
+#[test]
+fn the_second_output_stays_open_while_the_microphone_is_on() {
+    let rig = Rig::with_idle_grace(STEREO_44K, SHORT_GRACE);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneOpened);
+    let second = rig.output_on(Some(&second_device()));
+
+    thread::sleep(3 * SHORT_GRACE);
+    assert!(
+        !second.is_closed(),
+        "the second output closed while talking"
+    );
+
+    rig.send(microphone(false, 1.0));
+    wait_until("the second output to close", || second.is_closed());
+}
+
+#[test]
+fn the_microphone_is_resampled_to_the_second_output() {
+    let mono_48k = CaptureFormat {
+        sample_rate: 48_000,
+        channels: 1,
+    };
+    let rig = Rig::with_microphone(STEREO_44K, IDLE_GRACE, mono_48k);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneOpened);
+    let second = rig.output_on(Some(&second_device()));
+
+    // Half a second, 20 ms at a time.
+    let mut heard = Vec::new();
+    for _ in 0..25 {
+        speak(&rig, &steady(0.25, 960, 1));
+        heard.extend(second.pull(882));
+    }
+    heard.extend(second.pull(4_410));
+
+    let sounding = audible_frames(&heard, 2);
+    assert!(sounding > SECOND / 2 * 8 / 10, "only {sounding} frames");
+    assert!(sounding < SECOND / 2 * 11 / 10, "{sounding} frames");
+    // The middle of it is the steady level.
+    let middle = &heard[2 * 4_410..2 * 8_820];
+    assert!(
+        middle.iter().all(|sample| (sample - 0.25).abs() < 0.01),
+        "the level changed"
+    );
+}
+
+#[test]
+fn a_second_device_change_moves_the_microphone() {
+    let (rig, _second) = talking(1.0);
+    let other = DeviceId("other cable".into());
+
+    rig.send(SetSoundDevice(Some(other.clone())));
+    rig.expect(MicrophoneClosed);
+    rig.expect(MicrophoneOpened);
+    let moved = rig.output_on(Some(&other));
+
+    speak(&rig, &steady(0.25, 441, 2));
+    assert!(moved.pull(441) == steady(0.25, 441, 2));
+}
+
+#[test]
+fn the_input_limit_holds_copy_microphone_and_six_sounds() {
+    let (_dir, path) = tone(4 * SECOND as u64).unwrap();
+    let sound_dir = tempfile::tempdir().unwrap();
+    let sound = sound_dir.path().join("sound.wav");
+    write_tone_wav(&sound, 44_100, 2, 2 * SECOND as u64, 660.0).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(share(0.5));
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneOpened);
+    rig.start(1, &path);
+    let second = rig.output_on(Some(&second_device()));
+
+    for token in 1..=7 {
+        rig.send(PlaySound {
+            token,
+            path: sound.clone(),
+            gain: 0.1,
+            route: SoundRoute::Second,
+        });
+    }
+    rig.settle();
+    second.pull(4_410);
+    rig.settle();
+    let events = rig.drain_events();
+
+    let started = events
+        .iter()
+        .filter(|event| matches!(event, SoundStarted { .. }))
+        .count();
+    assert_eq!(started, 7);
+    assert!(events.contains(&SoundEnded { token: 1 }), "{events:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SoundFailed { .. })),
+        "{events:?}"
+    );
+    speak(&rig, &steady(0.25, 441, 2));
+    assert!(audible_frames(&second.pull(441), 2) > 0);
+    assert_eq!(rig.second_outputs(), 1);
 }
