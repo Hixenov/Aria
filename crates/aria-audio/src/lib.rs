@@ -1,5 +1,6 @@
 //! Audio decoding and playback.
 
+pub mod capture;
 pub mod clock;
 mod cpal_output;
 pub mod decode;
@@ -20,6 +21,7 @@ mod wasapi_output;
 #[cfg(feature = "test-support")]
 pub mod testing;
 
+pub use capture::{CaptureFactory, CaptureFormat, CaptureReader, CpalCapture};
 pub use clock::{ClockReading, PlaybackClock};
 pub use cpal_output::CpalFactory;
 pub use decode::{Clip, StreamInfo, TrackDecoder, decode_clip};

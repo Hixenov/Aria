@@ -1,8 +1,10 @@
 //! An output with no device behind it, for tests. Nothing plays until [`FakeControl::pull`].
+//! And a capture with no device behind it, which captures what a test pushes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::capture::{CaptureFactory, CaptureFormat, CaptureReader, CaptureWriter, capture_ring};
 use crate::device::{DeviceId, DeviceInfo};
 use crate::error::AudioError;
 use crate::mixer::{InputHandle, Mixer, MixerControl};
@@ -270,5 +272,125 @@ impl FakeControl {
     /// Whether the output was opened exclusively, and at what format.
     pub fn opened_as(&self) -> (bool, DeviceFormat) {
         self.shared.opened_as
+    }
+}
+
+/// What a [`FakeCapture`] and its control share.
+#[derive(Default)]
+struct CaptureState {
+    /// The open capture's writer, if one is open.
+    writer: Option<CaptureWriter>,
+    /// Set when the open capture's reader drops.
+    open: Option<Arc<AtomicBool>>,
+    opened: usize,
+    fail_open: bool,
+    deny: bool,
+}
+
+/// A capture with no device behind it, for tests. It captures what [`FakeCaptureControl::push`]
+/// gives it.
+pub struct FakeCapture {
+    format: CaptureFormat,
+    state: Arc<Mutex<CaptureState>>,
+}
+
+/// The test's side of a [`FakeCapture`].
+#[derive(Clone)]
+pub struct FakeCaptureControl {
+    state: Arc<Mutex<CaptureState>>,
+}
+
+fn capture_state(state: &Mutex<CaptureState>) -> MutexGuard<'_, CaptureState> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Marks the fake capture closed when its reader drops.
+struct FakeCaptureOpen(Arc<AtomicBool>);
+
+impl Drop for FakeCaptureOpen {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+impl FakeCapture {
+    /// A fake capture whose every open runs at `format`.
+    pub fn new(format: CaptureFormat) -> (Self, FakeCaptureControl) {
+        let state = Arc::new(Mutex::new(CaptureState::default()));
+        (
+            Self {
+                format,
+                state: Arc::clone(&state),
+            },
+            FakeCaptureControl { state },
+        )
+    }
+}
+
+impl CaptureFactory for FakeCapture {
+    fn open(&self, _device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
+        let mut state = capture_state(&self.state);
+        if state.deny {
+            return Err(AudioError::PermissionDenied);
+        }
+        if state.fail_open {
+            return Err(AudioError::Device("fake capture failure".into()));
+        }
+        let open = Arc::new(AtomicBool::new(true));
+        let (writer, reader) =
+            capture_ring(self.format, Box::new(FakeCaptureOpen(Arc::clone(&open))));
+        state.writer = Some(writer);
+        state.open = Some(open);
+        state.opened += 1;
+        Ok(reader)
+    }
+}
+
+impl FakeCaptureControl {
+    /// Capture `samples` into the open capture, as much as its ring holds. Returns how many went
+    /// in: none when nothing is open.
+    pub fn push(&self, samples: &[f32]) -> usize {
+        let mut state = capture_state(&self.state);
+        if !state
+            .open
+            .as_ref()
+            .is_some_and(|open| open.load(Ordering::Acquire))
+        {
+            return 0;
+        }
+        state
+            .writer
+            .as_mut()
+            .map_or(0, |writer| writer.write(samples))
+    }
+
+    /// Make the open capture fail, as a lost device does.
+    pub fn fail(&self) {
+        if let Some(writer) = &capture_state(&self.state).writer {
+            writer.fail();
+        }
+    }
+
+    /// Make opens fail from now on, or work again.
+    pub fn fail_open(&self, fail: bool) {
+        capture_state(&self.state).fail_open = fail;
+    }
+
+    /// Make opens be refused by the "operating system" from now on, or allowed again.
+    pub fn deny(&self, deny: bool) {
+        capture_state(&self.state).deny = deny;
+    }
+
+    /// How many captures have been opened.
+    pub fn opened(&self) -> usize {
+        capture_state(&self.state).opened
+    }
+
+    /// Whether a capture is open now.
+    pub fn open_now(&self) -> bool {
+        capture_state(&self.state)
+            .open
+            .as_ref()
+            .is_some_and(|open| open.load(Ordering::Acquire))
     }
 }

@@ -26,6 +26,9 @@ pub enum AudioError {
     /// There is no output device.
     #[error("no audio output device")]
     NoDevice,
+    /// The operating system refuses this program the device, as it can for a microphone.
+    #[error("access to the audio device denied")]
+    PermissionDenied,
     /// The named output device is not present.
     #[error("audio device not found: {0}")]
     DeviceNotFound(String),
