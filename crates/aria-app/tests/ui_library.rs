@@ -112,6 +112,7 @@ fn harness(snapshot: LibrarySnapshot) -> Harness<'static, Page> {
                     soundboard: &Default::default(),
                     inactive_hotkeys: &[],
                     devices: &[],
+                    input_devices: &[],
                     artwork: None,
                 };
                 pages::show(Route::LocalMusic, ui, &mut ctx);

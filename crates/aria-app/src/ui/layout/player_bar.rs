@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use aria_core::{
     ClockReading, OutputPath,
+    chat::MicState,
     i18n::{FluentArgs, Localizer},
     playback_service::{PlayerView, TrackFormat},
     player::queue::RepeatMode,
@@ -100,6 +101,8 @@ pub enum PlayerAction {
         track: TrackId,
         favorite: bool,
     },
+    /// Turn the microphone on or off.
+    ToggleMicrophone,
 }
 
 /// The track on the bar.
@@ -586,6 +589,8 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let control = IconButton::new(icons::DEVICES, &devices, p).size(button, icon);
     pending(ui, control, &devices, DEVICES_PHASE, tr, p);
 
+    microphone(ui, bar, out);
+
     let (rect, _) = ui.allocate_exact_size(vec2(VOLUME_WIDTH, SEEK_ROW), Sense::hover());
     let label = tr.tr("player-volume");
     let locked = bar.view.volume_locked;
@@ -626,6 +631,26 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         .selected(muted);
     if ui.add(control).clicked() {
         out.push(PlayerAction::ToggleMute);
+    }
+}
+
+/// While the microphone is open, its icon: the voice goes to the second device, and a click
+/// turns it off. Crossed out, it could not be opened, and a click turns the switch off. Closed,
+/// nothing.
+fn microphone(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
+    let (tr, p) = (bar.tr, bar.palette);
+    let [button, icon] = BUTTON;
+    let (glyph, key) = match bar.view.microphone {
+        MicState::Off => return,
+        MicState::On => (icons::MICROPHONE, "player-mic-on"),
+        MicState::Failed => (icons::MICROPHONE_SLASH, "player-mic-failed"),
+    };
+    let name = tr.tr(key);
+    let control = IconButton::new(glyph, &name, p)
+        .size(button, icon)
+        .selected(bar.view.microphone == MicState::On);
+    if ui.add(control).on_hover_text(&*name).clicked() {
+        out.push(PlayerAction::ToggleMicrophone);
     }
 }
 

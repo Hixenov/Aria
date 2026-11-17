@@ -30,7 +30,7 @@ use egui_kittest::{
 };
 
 /// The default window size, tall enough that every card of the Settings page is on screen.
-const SIZE: egui::Vec2 = egui::vec2(1200.0, 1400.0);
+const SIZE: egui::Vec2 = egui::vec2(1200.0, 2100.0);
 /// AltGr as Windows reports it: Ctrl and Alt together.
 const ALTGR: Modifiers = Modifiers {
     alt: true,
@@ -702,7 +702,7 @@ fn narrowest_russian_theme_switch_stays_on_the_page() {
 // what the page asks of the app is read from the actions it leaves behind.
 
 /// Tall enough that no card needs scrolling to.
-const TALL: egui::Vec2 = egui::vec2(1000.0, 1600.0);
+const TALL: egui::Vec2 = egui::vec2(1000.0, 2300.0);
 
 /// What the page is given, and what it left behind.
 struct Page {
@@ -769,6 +769,7 @@ fn settings_only(
                     soundboard: &Default::default(),
                     inactive_hotkeys: &[],
                     devices: &page.devices,
+                    input_devices: &[],
                     artwork: None,
                 };
                 pages::show(Route::Settings, ui, &mut ctx);

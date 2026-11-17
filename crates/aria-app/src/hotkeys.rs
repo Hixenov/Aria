@@ -57,6 +57,8 @@ pub(crate) enum HotkeyAction {
     Play(SoundId),
     /// Stop every sound.
     StopAll,
+    /// Turn the microphone on or off.
+    ToggleMicrophone,
 }
 
 /// The hotkeys wanted, and those the system gave.

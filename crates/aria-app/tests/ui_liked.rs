@@ -99,6 +99,7 @@ fn harness(favorites: &[i64]) -> Harness<'static, Page> {
                     soundboard: &Default::default(),
                     inactive_hotkeys: &[],
                     devices: &[],
+                    input_devices: &[],
                     artwork: None,
                 };
                 pages::show(Route::Liked, ui, &mut ctx);

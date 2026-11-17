@@ -888,3 +888,56 @@ fn the_volume_slider_is_disabled_and_full_when_locked() {
     let unlocked = bar_harness(view(Some(1), true, 200_000), 0);
     assert!(!is_disabled(&unlocked, Role::Slider, &en("player-volume")));
 }
+
+#[test]
+fn the_icon_shows_only_while_on_and_a_click_toggles() {
+    let mut harness = bar_harness(view(Some(1), true, 200_000), 0);
+    harness.run();
+    let on = en("player-mic-on");
+    assert!(harness.query_by_role_and_label(Role::Button, &on).is_none());
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, &en("player-mic-failed"))
+            .is_none()
+    );
+
+    harness.state_mut().view.microphone = MicState::On;
+    harness.run();
+    harness.get_by_role_and_label(Role::Button, &on).click();
+    harness.run();
+
+    assert!(
+        harness
+            .state()
+            .actions
+            .contains(&PlayerAction::ToggleMicrophone)
+    );
+}
+
+#[test]
+fn the_failed_icon_shows_the_failure() {
+    let mut harness = bar_harness(
+        PlayerView {
+            microphone: MicState::Failed,
+            ..view(Some(1), true, 200_000)
+        },
+        0,
+    );
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, &en("player-mic-on"))
+            .is_none()
+    );
+    harness
+        .get_by_role_and_label(Role::Button, &en("player-mic-failed"))
+        .click();
+    harness.run();
+    assert!(
+        harness
+            .state()
+            .actions
+            .contains(&PlayerAction::ToggleMicrophone)
+    );
+}
