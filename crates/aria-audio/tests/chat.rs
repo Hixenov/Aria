@@ -936,3 +936,161 @@ fn the_input_limit_holds_copy_microphone_and_six_sounds() {
     assert!(audible_frames(&second.pull(441), 2) > 0);
     assert_eq!(rig.second_outputs(), 1);
 }
+
+// Found in the final review.
+
+#[test]
+fn a_track_loaded_onto_an_open_output_is_shared() {
+    let (_dir, path) = tone(2 * SECOND as u64).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.start(1, &path);
+    let mine = rig.output_on(None);
+    mine.pull(SECOND / 10);
+    // Stopped, with the output still open: sharing is turned on while nothing is loaded.
+    rig.send(EngineCommand::Stop);
+    rig.send(share(1.0));
+    rig.settle();
+    assert_eq!(rig.second_outputs(), 0);
+
+    // Only a Load, as the core sends for a double-click: no Play follows it.
+    rig.send(Load {
+        track: TrackRequest {
+            token: 2,
+            path: path.clone(),
+        },
+        start_ms: 0,
+        play: true,
+    });
+    wait_until("playback", || rig.read().token == 2 && rig.read().playing);
+    rig.output_on(None).pull(SECOND / 10);
+    rig.settle();
+    let second = rig.output_on(Some(&second_device()));
+    rig.output_on(None).pull(SECOND / 4);
+    rig.settle();
+
+    assert!(audible_frames(&second.pull(SECOND / 4), 2) > SECOND / 8);
+}
+
+#[test]
+fn the_end_of_the_queue_leaves_the_chat_silent_and_in_step() {
+    let frames = SECOND / 2;
+    let (_dir, path) = tone(frames as u64).unwrap();
+    let music = decode_all(&path);
+    let (rig, mine, second) = sharing(1.0, &path);
+    // Played to the end, as both outputs run.
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        mine.pull(SECOND / 10);
+        second.pull(SECOND / 10);
+        if rig.drain_events().contains(&EngineEvent::Stopped) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no end");
+        thread::sleep(Duration::from_millis(2));
+    }
+    second.pull(SECOND);
+
+    // The core gets the last track ready again, without playing it.
+    rig.send(Load {
+        track: TrackRequest {
+            token: 2,
+            path: path.clone(),
+        },
+        start_ms: 0,
+        play: false,
+    });
+    rig.settle();
+    mine.pull(SECOND / 10);
+    assert_eq!(
+        audible_frames(&second.pull(SECOND / 4), 2),
+        0,
+        "the chat heard the track while stopped"
+    );
+
+    // Played again, the two start together.
+    rig.send(Play);
+    wait_until("playback", || rig.read().playing);
+    let local = mine.pull(SECOND / 4);
+    let copy = second.pull(SECOND / 4);
+    assert!(
+        local[FADE..] == music[FADE..local.len()],
+        "the local output"
+    );
+    assert!(
+        copy[FADE..] == music[FADE..copy.len()],
+        "the copy is out of step"
+    );
+}
+
+#[test]
+fn sharing_turned_on_mid_track_leaves_the_local_output_unchanged() {
+    let (_dir, path) = tone(3 * SECOND as u64).unwrap();
+    let heard = |share_it: bool| {
+        let rig = Rig::new(STEREO_44K);
+        rig.send(SetSoundDevice(Some(second_device())));
+        rig.start(1, &path);
+        let mine = rig.output_on(None);
+        let mut audio = mine.pull(SECOND / 4);
+        if share_it {
+            rig.send(share(1.0));
+            rig.settle();
+        }
+        audio.extend(mine.pull(SECOND / 2));
+        rig.settle();
+        audio.extend(mine.pull(SECOND / 2));
+        let copy = rig
+            .factory
+            .outputs_on(Some(&second_device()))
+            .pop()
+            .map(|second| second.pull(2 * SECOND));
+        (audio, copy)
+    };
+
+    let (plain, _) = heard(false);
+    let (shared, copy) = heard(true);
+    assert!(
+        plain == shared,
+        "turning sharing on changed the local output"
+    );
+    let copy = copy.unwrap_or_default();
+    assert!(audible_frames(&copy, 2) > SECOND / 2, "no copy");
+}
+
+#[test]
+fn a_failed_second_output_fails_the_microphone_and_it_comes_back_with_it() {
+    let (rig, second) = talking(1.0);
+
+    second.fail();
+    rig.expect(MicrophoneFailed { denied: false });
+    assert!(!rig.mic.open_now());
+
+    // A sound opens the second output again, and the microphone with it.
+    let sound_dir = tempfile::tempdir().unwrap();
+    let sound = sound_dir.path().join("sound.wav");
+    write_tone_wav(&sound, 44_100, 2, (SECOND / 10) as u64, 660.0).unwrap();
+    rig.send(PlaySound {
+        token: 1,
+        path: sound,
+        gain: 1.0,
+        route: SoundRoute::Second,
+    });
+    rig.expect(MicrophoneOpened);
+    assert!(rig.mic.open_now());
+    assert_eq!(rig.second_outputs(), 2);
+}
+
+#[test]
+fn a_cable_as_the_microphone_is_refused() {
+    let rig = Rig::new(STEREO_44K);
+    rig.mic.set_devices(vec![DeviceInfo {
+        id: DeviceId("cable out".into()),
+        name: "CABLE Output (VB-Audio Virtual Cable)".into(),
+        is_default: true,
+    }]);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+
+    rig.expect(EngineEvent::MicrophoneIsCable);
+    assert!(!rig.mic.open_now());
+}

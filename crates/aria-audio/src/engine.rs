@@ -163,6 +163,9 @@ pub enum EngineEvent {
     MicrophoneFailed {
         denied: bool,
     },
+    /// The microphone asked for (or the system default) is a virtual cable, so it was not
+    /// opened: it would feed the chat's sound back into itself.
+    MicrophoneIsCable,
 }
 
 /// Starts the engine thread.
@@ -577,6 +580,8 @@ struct Worker {
     mic: Option<Microphone>,
     /// As `share_dirty`, for the microphone.
     mic_dirty: bool,
+    /// The microphone was closed because the second output failed, and opens again with it.
+    mic_lost_with_second: bool,
 }
 
 impl Worker {
@@ -625,6 +630,7 @@ impl Worker {
             mic_gain: 1.0,
             mic: None,
             mic_dirty: false,
+            mic_lost_with_second: false,
         }
     }
 
@@ -846,11 +852,7 @@ impl Worker {
         if let Some(sink) = &self.sink {
             sink.input.set_paused(!playing);
         }
-        // When the last track has run out, the copy plays out what it still holds. Held, it
-        // would come back at the next Play, after a gap.
-        if let Some(copy) = &self.copy
-            && (playing || self.has_track())
-        {
+        if let Some(copy) = &self.copy {
             copy.set_paused(!playing);
         }
     }
@@ -1172,6 +1174,11 @@ impl Worker {
             .is_some_and(|second| second.output.failed())
         {
             tracing::debug!("the second output failed");
+            if self.mic.take().is_some() {
+                // Tried again when the second output opens again.
+                self.mic_lost_with_second = true;
+                self.emit(EngineEvent::MicrophoneFailed { denied: false });
+            }
             self.close_second_output();
             self.emit(EngineEvent::SoundDeviceFailed);
         }
@@ -1390,10 +1397,13 @@ impl Worker {
             Some(waiting) => waiting,
             None => {
                 let Some(track) = self.next.take() else {
+                    self.set_playing(false);
+                    // The copy plays out the little it still holds, which the second device
+                    // has yet to play. Anything queued from now on waits, paused, for Play.
                     if let Some(copy) = &mut self.copy {
                         copy.finish();
+                        copy.set_paused(false);
                     }
-                    self.set_playing(false);
                     return self.emit(EngineEvent::Stopped);
                 };
                 match TrackDecoder::open(&track.path) {
@@ -1462,6 +1472,7 @@ impl Worker {
         self.mic_on = on;
         self.mic_device = device;
         self.mic_dirty = true;
+        self.mic_lost_with_second = false;
         if !on || moved {
             self.close_microphone();
         } else if let Some(mic) = &self.mic {
@@ -1514,8 +1525,11 @@ impl Worker {
             }
             Err(error) => {
                 tracing::debug!(%error, "the microphone could not be opened");
-                let denied = matches!(error, AudioError::PermissionDenied);
-                self.emit(EngineEvent::MicrophoneFailed { denied });
+                self.emit(match error {
+                    AudioError::CableAsMicrophone => EngineEvent::MicrophoneIsCable,
+                    AudioError::PermissionDenied => EngineEvent::MicrophoneFailed { denied: true },
+                    _ => EngineEvent::MicrophoneFailed { denied: false },
+                });
             }
         }
     }
@@ -1548,25 +1562,28 @@ impl Worker {
         if !self.share_music || !fits {
             self.copy = None;
         }
-        if !std::mem::take(&mut self.share_dirty) || !self.share_music || self.copy.is_some() {
-            return;
-        }
+        // A change is kept until a copy can be tried: with no output or no track, as after a
+        // Stop, the next Load is when it is.
         let Some(from) = format else {
             return;
         };
-        if !self.has_track() || !self.second_device_is_another() || !self.ensure_second_output() {
+        if !self.share_dirty || !self.share_music || self.copy.is_some() || !self.has_track() {
             return;
         }
-        // What the listener's output has queued is not in the copy. Decoding again from where
-        // the ear is fills both together, so the two stay in step.
+        self.share_dirty = false;
+        if !self.second_device_is_another() || !self.ensure_second_output() {
+            return;
+        }
+        // What the listener's ring already holds is not in the copy. The copy starts with as
+        // much silence, so the two play in step and the listener's output is left alone.
         let queued = self
             .sink
             .as_ref()
-            .is_some_and(|sink| sink.input.written() > sink.input.consumed())
-            || self.pending_from < self.pending.len();
-        if queued && let Some(heard) = self.heard() {
-            self.restart(heard);
-        }
+            // Audio just cleared, as at a load or a seek, is never heard.
+            .filter(|sink| !sink.input.clearing())
+            .map_or(0, |sink| {
+                sink.input.written().saturating_sub(sink.input.consumed())
+            });
         let (gain, paused) = (self.share_gain, !self.playing);
         let Some(second) = &mut self.second else {
             return;
@@ -1578,7 +1595,10 @@ impl Worker {
             .add_input(2 * second.format.sample_rate as usize)
             .and_then(|input| MusicCopy::new(input, from, second.format, gain, paused));
         match made {
-            Ok(copy) => self.copy = Some(copy),
+            Ok(mut copy) => {
+                copy.lead_in(queued);
+                self.copy = Some(copy);
+            }
             Err(error) => tracing::debug!(%error, "the music could not be copied"),
         }
         // Opening the second output just now is no change to try again for.
@@ -1722,8 +1742,12 @@ impl Worker {
         match opened {
             Ok(second) => {
                 self.second = Some(second);
-                // A copy that could not start for want of the second output may start now.
+                // A copy that could not start for want of the second output may start now, and
+                // a microphone that went with the last one comes back.
                 self.share_dirty = true;
+                if std::mem::take(&mut self.mic_lost_with_second) {
+                    self.mic_dirty = true;
+                }
                 true
             }
             Err(error) => {

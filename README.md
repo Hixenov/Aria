@@ -27,7 +27,9 @@ A chat program (Discord, a game, a call) takes sound only from a recording devic
 - The microphone is open only while "Send my microphone" is on and a second device is chosen. What it captures goes only into the second device; Aria never records, stores, logs or sends it (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 - Exclusive mode stays possible on your own device: the copy goes to the cable through the system mixer and your own path can stay bit-perfect.
 - Without a second device the switches are disabled. If the second device is the one the music plays on, nothing is copied and the microphone stays closed, and Settings warns about it.
-- The copy and your own music can drift apart by tens of milliseconds. When your output reopens (a rate change in exclusive mode, a device change), the chat hears the same short silence. Turning sharing on in the middle of a track, or the cable reopening after 15 seconds of pause, restarts your own track from where you are, with a short soft break.
+- The copy and your own music can drift apart by tens of milliseconds. When your output reopens (a rate change in exclusive mode, a device change), the chat hears the same short silence. Turning sharing on in the middle of a track starts the copy with up to about a second of silence, so that it plays in step; your own music is not touched.
+- Aria never opens a virtual cable's recording side ("CABLE Output") as the microphone, whether you choose it or it is the Windows default recording device: the chat would hear itself. Settings warns, and a notice says so.
+- If the cable fails while the microphone is on, the microphone shows as failed and comes back when the cable opens again (with the next sound or Play), or when you toggle it.
 - The latency target from your microphone to the cable is under 60 ms. It has not been measured.
 - Built for Linux and macOS, checked by automated tests only; on macOS Aria needs microphone permission.
 

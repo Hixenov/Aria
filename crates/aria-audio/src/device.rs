@@ -78,6 +78,27 @@ pub fn list_devices(kind: DeviceKind) -> Result<Vec<DeviceInfo>, AudioError> {
         .collect())
 }
 
+/// Parts of a device name that mark a virtual audio cable, either side of it, in lower case.
+const CABLE_MARKS: [&str; 5] = [
+    "cable input",
+    "cable output",
+    "vb-audio",
+    "voicemeeter",
+    "virtual audio cable",
+];
+
+/// Whether a device named `name` is a virtual audio cable: its playing side (where Aria sends
+/// the chat's sound) or its recording side (what a chat program listens to).
+pub fn is_virtual_cable(name: &str) -> bool {
+    let name = name.to_lowercase();
+    CABLE_MARKS.iter().any(|mark| name.contains(mark))
+}
+
+/// The name of an input device, or `None` if it has just disconnected.
+pub(crate) fn device_name(device: &cpal::Device) -> Option<String> {
+    describe(device).map(|(_, name)| name)
+}
+
 /// The identifier of the system default output device, found without listing the others. It is
 /// made as [`list_devices`] makes it, so the two can be compared.
 pub(crate) fn default_output_id() -> Option<DeviceId> {

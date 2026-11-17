@@ -84,9 +84,10 @@ directory only; the library database, logs and cache still go to the folders abo
 Before 0.2.3 Aria never opened a microphone. Since 0.2.3 it can, and only like this:
 
 - **When.** The microphone is open only while "Send my microphone to the second device" is on in Settings, Soundboard, and a second device is chosen (and is not the device the music plays on). It is off by default. Turning the switch off, or its hotkey, closes it at once. While it is open the player bar shows a microphone icon, and Windows normally shows its own microphone-in-use mark (not yet checked with Aria).
-- **Where its sound goes.** Only into the mix of the second device, usually a virtual cable that a chat program listens to. It never goes to your own speakers or headphones. At most 40 ms of it waits in memory at any time; older audio is dropped.
+- **Where its sound goes.** Only into the mix of the second device, usually a virtual cable that a chat program listens to. It never goes to your own speakers or headphones. It is held only in memory, for at most about one second while Aria moves it along (less in normal running), and at most 40 ms of it waits in the mix; older audio is dropped.
 - **What is kept.** Nothing. Aria never writes what it captures to disk, never logs it or its level, and never sends it over a network. The choice of microphone, its volume, its switch and its hotkey are stored in `settings.toml`; the microphone's name may appear in logs.
 - **The music copy.** "Music also to the second device" sends a copy of the music you play to that device. It is sound, not data about you; nothing about it is stored beyond the switch and its volume in `settings.toml`.
+- **A cable as the microphone.** Aria never opens a virtual cable's recording side (for example "CABLE Output") as the microphone, chosen or as the system default: it would send the chat's sound back into itself.
 - **The cable guide.** When no virtual cable is found, Settings shows a link to the official page of a free cable. Aria makes no request to it; clicking it opens your web browser. Aria installs and changes no driver.
 - Nothing about sounds or hotkeys is sent anywhere.
 - Since 0.2.2 `library.db` also holds each track's bit depth, read from your audio files.

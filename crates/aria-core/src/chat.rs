@@ -6,6 +6,8 @@
 
 use aria_audio::{DeviceId, DeviceInfo, EngineCommand, EngineEvent};
 
+pub use aria_audio::is_virtual_cable;
+
 use crate::{
     notice::{Notice, NoticeLevel},
     settings::Settings,
@@ -15,6 +17,9 @@ use crate::{
 pub(crate) const MICROPHONE_FAILED: Notice = Notice::new(NoticeLevel::Warning, "microphone-failed");
 /// The operating system refused the microphone.
 pub(crate) const MICROPHONE_DENIED: Notice = Notice::new(NoticeLevel::Warning, "microphone-denied");
+/// The microphone chosen is a virtual cable, so it was not opened.
+pub(crate) const MICROPHONE_IS_CABLE: Notice =
+    Notice::new(NoticeLevel::Warning, "microphone-is-cable");
 /// The microphone hotkey turned the microphone on.
 pub(crate) const MICROPHONE_ON: Notice = Notice::new(NoticeLevel::Info, "microphone-on");
 /// The microphone hotkey turned the microphone off.
@@ -24,13 +29,6 @@ pub(crate) const MICROPHONE_OFF: Notice = Notice::new(NoticeLevel::Info, "microp
 /// request to it; the link only opens the user's browser.
 pub const CABLE_GUIDE_URL: &str = "https://vb-audio.com/Cable/";
 
-/// Parts of a device name that mark a virtual cable, in lower case.
-const CABLE_MARKS: [&str; 4] = [
-    "cable input",
-    "vb-audio",
-    "voicemeeter",
-    "virtual audio cable",
-];
 /// Parts of a device name that mark VB-CABLE, whose recording side is "CABLE Output".
 const VB_CABLE_MARKS: [&str; 2] = ["cable input", "vb-audio"];
 
@@ -53,12 +51,6 @@ pub enum CableSide {
     VbCable,
     /// Another cable, whose recording side Aria does not know by name.
     Other,
-}
-
-/// Whether an output device named `name` is a virtual cable.
-pub fn is_virtual_cable(name: &str) -> bool {
-    let name = name.to_lowercase();
-    CABLE_MARKS.iter().any(|mark| name.contains(mark))
 }
 
 /// The first virtual cable among `devices`.
@@ -127,6 +119,7 @@ impl Chat {
         let (state, notice) = match event {
             EngineEvent::MicrophoneOpened => (MicState::On, None),
             EngineEvent::MicrophoneClosed => (MicState::Off, None),
+            EngineEvent::MicrophoneIsCable => (MicState::Failed, Some(MICROPHONE_IS_CABLE)),
             EngineEvent::MicrophoneFailed { denied } => (
                 MicState::Failed,
                 Some(if denied {
@@ -315,6 +308,33 @@ mod tests {
             chat.on_engine(EngineEvent::MicrophoneFailed { denied: true }),
             (true, Some(MICROPHONE_DENIED))
         );
+    }
+
+    #[test]
+    fn a_cable_as_the_microphone_gives_its_notice() {
+        let mut chat = Chat::default();
+        chat.on_settings(&with_second(Settings {
+            mic_enabled: true,
+            ..Settings::default()
+        }));
+
+        assert_eq!(
+            chat.on_engine(EngineEvent::MicrophoneIsCable),
+            (true, Some(MICROPHONE_IS_CABLE))
+        );
+        assert_eq!(chat.state(), MicState::Failed);
+    }
+
+    #[test]
+    fn cable_recording_sides_are_recognised_too() {
+        for name in [
+            "CABLE Output (VB-Audio Virtual Cable)",
+            "VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)",
+            "Line 1 (Virtual Audio Cable)",
+        ] {
+            assert!(is_virtual_cable(name), "{name}");
+        }
+        assert!(!is_virtual_cable("Microphone (Realtek(R) Audio)"));
     }
 
     #[test]

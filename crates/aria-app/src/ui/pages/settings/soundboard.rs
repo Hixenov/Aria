@@ -2,7 +2,7 @@
 //! the microphone for a chat, the global hotkeys and the voice chat note.
 
 use aria_core::{
-    DeviceInfo,
+    DeviceId, DeviceInfo,
     chat::{CABLE_GUIDE_URL, CableSide, cable_side, find_virtual_cable, is_virtual_cable},
     hotkey::Hotkey,
     i18n::{FluentArgs, Localizer},
@@ -112,7 +112,13 @@ fn hotkey_row(
 /// getting one when there is none, and, with a cable chosen, what to pick in the chat program.
 fn cable(ui: &mut Ui, tr: &Localizer, p: &Palette, devices: &[DeviceInfo], s: &mut Settings) {
     let Some(chosen) = &s.soundboard_device else {
-        if let Some(found) = find_virtual_cable(devices) {
+        // The music's own device is never the one to offer, cable or not.
+        let others: Vec<DeviceInfo> = devices
+            .iter()
+            .filter(|device| !is_music_device(device, s.output_device.as_ref()))
+            .cloned()
+            .collect();
+        if let Some(found) = find_virtual_cable(&others) {
             let mut args = FluentArgs::new();
             args.set("name", found.name.as_str());
             let line = tr.tr_args("settings-cable-found", &args);
@@ -144,6 +150,26 @@ fn cable(ui: &mut Ui, tr: &Localizer, p: &Palette, devices: &[DeviceInfo], s: &m
             CableSide::Other => "settings-cable-hint-other",
         };
         caption(ui, p, &tr.tr(key), TextStyle::Small);
+    }
+}
+
+/// Whether the microphone chosen, or the system default input for `None`, is a virtual cable.
+fn mic_is_cable(inputs: &[DeviceInfo], chosen: Option<&DeviceId>) -> bool {
+    inputs
+        .iter()
+        .find(|input| match chosen {
+            Some(id) => input.id == *id,
+            None => input.is_default,
+        })
+        .is_some_and(|input| is_virtual_cable(&input.name))
+}
+
+/// Whether `device` is the one the music plays on: the chosen one, or the system default for
+/// `None`.
+fn is_music_device(device: &DeviceInfo, music: Option<&DeviceId>) -> bool {
+    match music {
+        Some(id) => device.id == *id,
+        None => device.is_default,
     }
 }
 
@@ -204,6 +230,9 @@ fn chat(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
         };
         device_combo(ui, tr, &mic, ctx.input_devices, &mut s.mic_device, &choice);
     });
+    if mic_is_cable(ctx.input_devices, s.mic_device.as_ref()) {
+        caption(ui, &p, &tr.tr("settings-mic-is-cable"), TextStyle::Small);
+    }
     divider(ui);
     let send = tr.tr("settings-mic-send");
     let hint = tr.tr("settings-mic-send-hint");
@@ -541,6 +570,36 @@ mod tests {
     }
 
     #[test]
+    fn a_cable_as_the_microphone_is_warned() {
+        let cable_input = vec![
+            device("cable out", "CABLE Output (VB-Audio Virtual Cable)", true),
+            device("mic", "Microphone (USB)", false),
+        ];
+        let with_inputs = |settings: Settings| {
+            let mut harness = card(settings, outputs());
+            harness.state_mut().input_devices = cable_input.clone();
+            harness.run();
+            harness
+        };
+
+        // The system default input is the cable.
+        let harness = with_inputs(with_cable());
+        assert!(shows_key(&harness, "settings-mic-is-cable"));
+        // The cable chosen by hand.
+        let chosen = Settings {
+            mic_device: Some(DeviceId("cable out".into())),
+            ..with_cable()
+        };
+        assert!(shows_key(&with_inputs(chosen), "settings-mic-is-cable"));
+        // A real microphone chosen.
+        let real = Settings {
+            mic_device: Some(DeviceId("mic".into())),
+            ..with_cable()
+        };
+        assert!(!shows_key(&with_inputs(real), "settings-mic-is-cable"));
+    }
+
+    #[test]
     fn the_hotkey_row_opens_the_dialog() {
         let mut harness = card(with_cable(), outputs());
         let label = harness.state().english("settings-mic-hotkey");
@@ -568,6 +627,30 @@ mod tests {
             updates.last().and_then(|s| s.soundboard_device.clone()),
             Some(DeviceId("vb".into()))
         );
+    }
+
+    #[test]
+    fn the_music_device_is_never_offered_as_the_cable() {
+        // Voicemeeter users often play everything into "Voicemeeter Input".
+        let voicemeeter = "VoiceMeeter Input (VB-Audio VoiceMeeter VAIO)";
+        let devices = vec![
+            device("vm", voicemeeter, true),
+            device("vb", VB_CABLE, false),
+        ];
+        let harness = card(Settings::default(), devices.clone());
+        let mut args = FluentArgs::new();
+        args.set("name", VB_CABLE);
+        let line = harness.state().english_with("settings-cable-found", &args);
+        assert!(shows(&harness, &line), "the other cable is not offered");
+
+        // Chosen as the music's device by hand, too.
+        let chosen = Settings {
+            output_device: Some(DeviceId("vb".into())),
+            ..Settings::default()
+        };
+        let harness = card(chosen, devices[1..].to_vec());
+        assert!(!shows_key(&harness, "settings-cable-use"));
+        assert!(shows_key(&harness, "settings-cable-guide-1"));
     }
 
     #[test]

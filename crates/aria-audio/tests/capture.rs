@@ -1,7 +1,7 @@
 //! The capture source: the fake that engine tests use, and a real microphone for a person only.
 
 use aria_audio::fake::FakeCapture;
-use aria_audio::{AudioError, CaptureFactory, CaptureFormat, CpalCapture};
+use aria_audio::{AudioError, CaptureFactory, CaptureFormat, CpalCapture, DeviceId, DeviceInfo};
 
 const MONO_48K: CaptureFormat = CaptureFormat {
     sample_rate: 48_000,
@@ -82,4 +82,37 @@ fn the_default_microphone_opens() {
     }
     scratch.fill(0.0);
     assert!(!reader.failed());
+}
+
+#[test]
+fn a_cable_is_never_opened_as_the_microphone() {
+    let (capture, control) = FakeCapture::new(MONO_48K);
+    let cable = DeviceInfo {
+        id: DeviceId("cable".into()),
+        name: "CABLE Output (VB-Audio Virtual Cable)".into(),
+        is_default: true,
+    };
+    let mic = DeviceInfo {
+        id: DeviceId("mic".into()),
+        name: "Microphone (USB)".into(),
+        is_default: false,
+    };
+    control.set_devices(vec![cable.clone(), mic.clone()]);
+
+    // Chosen, or as the system default.
+    assert!(matches!(
+        capture.open(Some(&cable.id)),
+        Err(AudioError::CableAsMicrophone)
+    ));
+    assert!(matches!(
+        capture.open(None),
+        Err(AudioError::CableAsMicrophone)
+    ));
+    assert!(!control.open_now());
+
+    let reader = capture
+        .open(Some(&mic.id))
+        .expect("a real microphone opens");
+    assert!(control.open_now());
+    drop(reader);
 }

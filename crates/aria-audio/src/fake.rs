@@ -351,8 +351,16 @@ impl CaptureFactory for FakeCapture {
         Arc::new(move || Ok(capture_state(&state).devices.clone()))
     }
 
-    fn open(&self, _device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
+    fn open(&self, device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
         let mut state = capture_state(&self.state);
+        // As the real one: the device asked for, or the default, must not be a cable.
+        let named = state.devices.iter().find(|listed| match device {
+            Some(id) => listed.id == *id,
+            None => listed.is_default,
+        });
+        if named.is_some_and(|listed| crate::device::is_virtual_cable(&listed.name)) {
+            return Err(AudioError::CableAsMicrophone);
+        }
         if state.deny {
             return Err(AudioError::PermissionDenied);
         }

@@ -114,6 +114,18 @@ impl MusicCopy {
         }
     }
 
+    /// Start with the silence of `samples` samples in the listener's format, the music that
+    /// output already holds, so that what follows plays in step with it.
+    pub(crate) fn lead_in(&mut self, samples: u64) {
+        let from_channels = u64::from(self.from.channels.max(1));
+        let frames = samples / from_channels;
+        let frames = u128::from(frames) * u128::from(self.to.sample_rate)
+            / u128::from(self.from.sample_rate.max(1));
+        let silence = frames as usize * usize::from(self.to.channels.max(1));
+        self.waiting.resize(self.waiting.len() + silence, 0.0);
+        self.flush();
+    }
+
     /// The music has run out: let the end of it out of the resampler.
     pub(crate) fn finish(&mut self) {
         if let Err(error) = self.resampler.flush(&mut self.waiting) {

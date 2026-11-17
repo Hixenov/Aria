@@ -435,7 +435,8 @@ impl PlaybackService {
             }
             EngineEvent::MicrophoneOpened
             | EngineEvent::MicrophoneClosed
-            | EngineEvent::MicrophoneFailed { .. } => {
+            | EngineEvent::MicrophoneFailed { .. }
+            | EngineEvent::MicrophoneIsCable => {
                 let (changed, notice) = self.chat.on_engine(event);
                 if let Some(notice) = notice {
                     self.notify(notice);

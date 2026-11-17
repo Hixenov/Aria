@@ -15,7 +15,9 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample};
 
 use crate::cpal_output::{CLOSE_WAIT, OPEN_WAIT, join_within};
-use crate::device::{DeviceId, DeviceKind, device_error, find_device, list_devices};
+use crate::device::{
+    DeviceId, DeviceKind, device_error, device_name, find_device, is_virtual_cable, list_devices,
+};
 use crate::error::AudioError;
 use crate::output::DeviceLister;
 
@@ -246,6 +248,10 @@ fn hold_capture(
 fn open_capture(device: Option<&DeviceId>) -> Result<(cpal::Stream, CaptureReader), AudioError> {
     let host = cpal::default_host();
     let device = find_device(&host, DeviceKind::Input, device)?;
+    // Chosen, or the system default: a cable's recording side would loop the chat into itself.
+    if device_name(&device).is_some_and(|name| is_virtual_cable(&name)) {
+        return Err(AudioError::CableAsMicrophone);
+    }
     let config = device.default_input_config().map_err(capture_error)?;
     let format = CaptureFormat {
         sample_rate: config.sample_rate(),
@@ -271,9 +277,22 @@ fn open_capture(device: Option<&DeviceId>) -> Result<(cpal::Stream, CaptureReade
 pub(crate) fn capture_error(error: cpal::Error) -> AudioError {
     match error.kind() {
         ErrorKind::PermissionDenied => AudioError::PermissionDenied,
+        ErrorKind::BackendError if names_access_denied(error.message()) => {
+            AudioError::PermissionDenied
+        }
         ErrorKind::DeviceBusy => AudioError::DeviceBusy,
         _ => device_error(error),
     }
+}
+
+/// The HRESULT E_ACCESSDENIED (0x80070005), as CPAL's WASAPI host writes it into a backend
+/// error: the operating system error number, in decimal. Windows returns it when microphone
+/// access is turned off for desktop apps.
+const ACCESS_DENIED: &str = "os error -2147024891";
+
+/// Whether a backend error's message names a refusal of access.
+fn names_access_denied(message: Option<&str>) -> bool {
+    message.is_some_and(|message| message.contains(ACCESS_DENIED))
 }
 
 fn build_capture<T>(
@@ -395,6 +414,25 @@ mod tests {
             capture_error(ErrorKind::BackendError.into()),
             AudioError::Device(_)
         ));
+    }
+
+    #[test]
+    fn a_windows_refusal_is_told_apart() {
+        // CPAL's WASAPI host gives E_ACCESSDENIED, which Windows returns while microphone
+        // access is off for desktop apps, as a backend error carrying the HRESULT.
+        let denied = cpal::Error::with_message(
+            ErrorKind::BackendError,
+            "Access is denied. (os error -2147024891)",
+        );
+        assert!(matches!(
+            capture_error(denied),
+            AudioError::PermissionDenied
+        ));
+        let other = cpal::Error::with_message(
+            ErrorKind::BackendError,
+            "Element not found. (os error -2147023728)",
+        );
+        assert!(matches!(capture_error(other), AudioError::Device(_)));
     }
 
     #[test]
