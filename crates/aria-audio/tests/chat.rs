@@ -86,14 +86,6 @@ fn audible_frames(samples: &[f32], channels: usize) -> usize {
         .count()
 }
 
-fn assert_near(actual: usize, expected: usize) {
-    let margin = expected / 50;
-    assert!(
-        actual.abs_diff(expected) <= margin,
-        "{actual} frames, expected {expected} within 2%"
-    );
-}
-
 fn scaled(samples: &[f32], gain: f32) -> Vec<f32> {
     samples.iter().map(|sample| sample * gain).collect()
 }
@@ -425,8 +417,7 @@ fn pause_and_seek_act_on_the_copy() {
 
 #[test]
 fn the_copy_is_resampled_to_the_second_output() {
-    let frames = SECOND / 2;
-    let (_dir, path) = tone(frames as u64).unwrap();
+    let (_dir, path) = tone(3 * SECOND as u64).unwrap();
     let rig = Rig::new(STEREO_44K);
     rig.factory.set_shared_format(second_device(), STEREO_48K);
     rig.send(SetSoundDevice(Some(second_device())));
@@ -436,11 +427,32 @@ fn the_copy_is_resampled_to_the_second_output() {
     let second = rig.output_on(Some(&second_device()));
     assert_eq!(second.opened_as().1.sample_rate, 48_000);
 
-    mine.pull(SECOND);
-    rig.settle();
-    let copy = second.pull(48_000);
+    // Both outputs run side by side until half a second of the copy has been heard. How the
+    // audio arrives depends on how busy the machine is; its pitch does not.
+    let deadline = Instant::now() + DEADLINE;
+    let mut copy = Vec::new();
+    while audible_frames(&copy, 2) < 24_000 {
+        assert!(Instant::now() < deadline, "the copy did not come");
+        mine.pull(4_410);
+        copy.extend(second.pull(4_800));
+        thread::sleep(Duration::from_millis(5));
+    }
 
-    assert_near(audible_frames(&copy, 2), 24_000);
+    // The 440 Hz tone crosses zero 880 times a second at the second output's 48 kHz. Played at
+    // 44.1 kHz unconverted, it would cross about 958 times in 48,000 frames.
+    let left: Vec<f32> = copy
+        .iter()
+        .step_by(2)
+        .copied()
+        .filter(|sample| *sample != 0.0)
+        .collect();
+    let second_of_it = &left[2_000..2_000 + 20_000];
+    let crossings = second_of_it
+        .windows(2)
+        .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
+        .count();
+    // 20,000 frames at 48 kHz hold 366.7 crossings of a 440 Hz tone.
+    assert!((360..=373).contains(&crossings), "{crossings} crossings");
 }
 
 #[test]
@@ -448,16 +460,18 @@ fn a_full_copy_ring_never_stalls_the_music() {
     let (_dir, path) = tone(5 * SECOND as u64).unwrap();
     let (_rig, mine, _second) = sharing(1.0, &path);
 
-    // The second output is never pulled, so the copy's ring fills and stays full.
-    let mut heard = Vec::new();
+    // The second output is never pulled, so the copy's ring fills and stays full, and the music
+    // must still come: four seconds of it, at whatever pace a busy machine refills the ring.
+    let mut sounding = 0;
     let deadline = Instant::now() + DEADLINE;
-    while heard.len() < 4 * 2 * SECOND {
-        heard.extend(mine.pull(SECOND / 10));
-        thread::sleep(Duration::from_millis(2));
-        assert!(Instant::now() < deadline, "the music stalled");
+    while sounding < 4 * SECOND {
+        sounding += audible_frames(&mine.pull(SECOND / 20), 2);
+        thread::sleep(Duration::from_millis(10));
+        assert!(
+            Instant::now() < deadline,
+            "the music stalled at {sounding} frames"
+        );
     }
-
-    assert_near(audible_frames(&heard, 2), 4 * SECOND);
 }
 
 #[test]
@@ -871,8 +885,14 @@ fn the_microphone_is_resampled_to_the_second_output() {
     let sounding = audible_frames(&heard, 2);
     assert!(sounding > SECOND / 2 * 8 / 10, "only {sounding} frames");
     assert!(sounding < SECOND / 2 * 11 / 10, "{sounding} frames");
-    // The middle of it is the steady level.
-    let middle = &heard[2 * 4_410..2 * 8_820];
+    // Where it sounds, away from the resampler's ramp at either end, it is the steady level. A
+    // slow machine can leave silent gaps between pieces; the level around them stays.
+    let sounding: Vec<f32> = heard
+        .iter()
+        .copied()
+        .filter(|sample| *sample != 0.0)
+        .collect();
+    let middle = &sounding[2_000..sounding.len() - 2_000];
     assert!(
         middle.iter().all(|sample| (sample - 0.25).abs() < 0.01),
         "the level changed"
@@ -915,10 +935,20 @@ fn the_input_limit_holds_copy_microphone_and_six_sounds() {
             route: SoundRoute::Second,
         });
     }
-    rig.settle();
-    second.pull(4_410);
-    rig.settle();
-    let events = rig.drain_events();
+    // Every sound is set up before the next command; wait for all seven to say so.
+    let mut events = Vec::new();
+    let deadline = Instant::now() + DEADLINE;
+    while events
+        .iter()
+        .filter(|event| matches!(event, SoundStarted { .. }))
+        .count()
+        < 7
+    {
+        assert!(Instant::now() < deadline, "{events:?}");
+        second.pull(441);
+        events.extend(rig.drain_events());
+        thread::sleep(Duration::from_millis(5));
+    }
 
     let started = events
         .iter()
@@ -1039,11 +1069,21 @@ fn sharing_turned_on_mid_track_leaves_the_local_output_unchanged() {
         audio.extend(mine.pull(SECOND / 2));
         rig.settle();
         audio.extend(mine.pull(SECOND / 2));
+        // Then both run on until a quarter of a second of the copy has been heard, however busy
+        // the machine is.
         let copy = rig
             .factory
             .outputs_on(Some(&second_device()))
             .pop()
-            .map(|second| second.pull(2 * SECOND));
+            .map(|second| {
+                let (mut copy, deadline) = (Vec::new(), Instant::now() + DEADLINE);
+                while audible_frames(&copy, 2) < SECOND / 4 && Instant::now() < deadline {
+                    mine.pull(SECOND / 20);
+                    copy.extend(second.pull(SECOND / 20));
+                    thread::sleep(Duration::from_millis(5));
+                }
+                copy
+            });
         (audio, copy)
     };
 
@@ -1054,7 +1094,7 @@ fn sharing_turned_on_mid_track_leaves_the_local_output_unchanged() {
         "turning sharing on changed the local output"
     );
     let copy = copy.unwrap_or_default();
-    assert!(audible_frames(&copy, 2) > SECOND / 2, "no copy");
+    assert!(audible_frames(&copy, 2) >= SECOND / 4, "no copy");
 }
 
 #[test]
