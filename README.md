@@ -9,7 +9,29 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: Phase 2c (lossless output and the soundboard), version 0.2.2 (release; parts not yet checked by hand, listed below)
+## Status: music and microphone to a chat, version 0.2.3 (unreleased; not checked by hand)
+
+Version 0.2.3 lets friends in a voice chat hear the music Aria plays and your voice, through a virtual audio cable, on top of 0.2.2 (below). **Nobody has run 0.2.3 by hand, nobody has listened to it, and no cable or chat program was tried.** It is tested with automated tests and fake devices only; no test opens a real microphone. Every line for a person in [docs/testing/music-to-chat-manual-check.md](docs/testing/music-to-chat-manual-check.md) is pending.
+
+### Music and your microphone in a voice chat
+
+A chat program (Discord, a game, a call) takes sound only from a recording device. Aria does not install anything into Windows and never plays into your real microphone directly; that would take a system audio component installed with administrator rights. It uses a **virtual audio cable** instead, a free program you install once:
+
+1. Install a virtual cable, for example VB-CABLE from its [official page](https://vb-audio.com/Cable/). Settings, Soundboard shows this guide and the link when no cable is found.
+2. Restart Aria, or open Settings again. Aria finds an installed cable by its name (VB-CABLE, VoiceMeeter, Virtual Audio Cable) and offers it with a "Use it" button; a cable it does not recognise can be chosen by hand as the second device.
+3. In Settings, Soundboard, turn on "Music also to the second device" and, if you want to be heard, "Send my microphone to the second device", and choose your microphone.
+4. In the chat program, choose the cable's recording side as the microphone (for VB-CABLE, "CABLE Output"). Settings says which.
+
+- The music copy has its own volume, "Music volume in the chat" (default 50 %). Your player volume and mute do not change it, so you can turn your own speakers down and keep the music going for the others. Pause, seek and track changes act on both.
+- The microphone has its own volume, 0 to 200 %; above 100 % amplifies and clips at full scale. A global hotkey can turn it on and off (Settings, Soundboard), and the player bar shows a microphone icon while it is open; a click on it turns it off. There is no noise suppression in Aria and you do not hear yourself.
+- The microphone is open only while "Send my microphone" is on and a second device is chosen. What it captures goes only into the second device; Aria never records, stores, logs or sends it (see [docs/PRIVACY.md](docs/PRIVACY.md)).
+- Exclusive mode stays possible on your own device: the copy goes to the cable through the system mixer and your own path can stay bit-perfect.
+- Without a second device the switches are disabled. If the second device is the one the music plays on, nothing is copied and the microphone stays closed, and Settings warns about it.
+- The copy and your own music can drift apart by tens of milliseconds. When your output reopens (a rate change in exclusive mode, a device change), the chat hears the same short silence. Turning sharing on in the middle of a track, or the cable reopening after 15 seconds of pause, restarts your own track from where you are, with a short soft break.
+- The latency target from your microphone to the cable is under 60 ms. It has not been measured.
+- Built for Linux and macOS, checked by automated tests only; on macOS Aria needs microphone permission.
+
+### Phase 2c (lossless output and the soundboard), version 0.2.2 (release; parts not yet checked by hand, listed below)
 
 Version 0.2.2 adds an optional exclusive output on Windows, a Lossless / Hi-Res badge and filter in the library, and a soundboard with global hotkeys, on top of 0.2.1 (below). **Nobody has run 0.2.2 by hand and nobody has listened to it.** The agent that wrote it tested it with automated tests, and checked on one PC that WASAPI exclusive mode opens the default device and plays silence; no person has heard exclusive output, a sound, or a hotkey with the real app. Every line for a person in [docs/testing/phase2c-manual-check.md](docs/testing/phase2c-manual-check.md) is still pending. The Windows installer and `aria.exe` for 0.2.2 are built and tested separately before any release; this README does not claim they have been.
 
@@ -45,7 +67,7 @@ Settings, Soundboard chooses where sounds go: "My device" (the music's device, t
 - A sound fired while exclusive mode is on and no music plays opens your device exclusively, at the sound's own format: other programs (a video, a call) are silent on that device until 15 seconds after the last sound.
 - The player's volume and mute do not apply to sounds; each sound has its own volume, and "Stop all" stops them.
 - Opening and closing the second device run on the engine thread, which holds about one second of music. A device that is slow to open (Bluetooth, a sleeping USB interface; the wait is up to 7 s) or to close (up to 2 s) can briefly interrupt the music when a sound fires, or 15 seconds after the last one. A second device that fails to open is tried again, with a notice, on every sound.
-- **Voice chat.** To be heard in a voice chat, the second device must be a virtual audio cable that the chat program uses as its microphone. Aria does not provide or install one, and never reads the microphone. With only a cable, the chat hears the sounds and not your voice; mixing the two needs another program. No cable and no chat program were tested.
+- **Voice chat.** To be heard in a voice chat, the second device must be a virtual audio cable that the chat program uses as its microphone. Aria does not provide or install one. Since 0.2.3 Aria can also send the music and your microphone there (above). No cable and no chat program were tested.
 - **Hotkeys** work while Aria runs, including minimized (a press may take about 100 ms to act then), with a switch in Settings that turns them all off. A hotkey must include Ctrl, Alt or Win unless it is F1 to F24 or a numpad key. One used by another sound or by Aria itself (Ctrl+0 to Ctrl+9 and Ctrl+Alt+R; Command on a Mac), or held by another program, is refused and not saved. Aria receives only the registered combinations from the system; it installs no keyboard hook and reads no other keystrokes. In the capture dialog the Win key, numpad `*` and `.`, and Ctrl+C, Ctrl+X and Ctrl+V cannot be captured, and numpad keys are chosen with a "Numpad" switch. Letters follow the keyboard layout. A global hotkey takes its combination from every other program while Aria runs, not only from Aria: for example, Ctrl+S as a sound's hotkey stops saving in editors. Turn the "Global hotkeys" switch off to give them back. On one PC a synthetic key press reached a test window while it was unfocused and minimized; the real app has not been run with hotkeys, and games in the foreground are not tested.
 - Exclusive output and hotkeys are built for Linux and macOS where the crates support them, but verified on Windows only. Exclusive output does not exist there.
 
@@ -119,10 +141,10 @@ git config --global --add safe.directory /path/to/aria
 
 ```
 cargo build --release --locked -p aria-app
-ISCC.exe /DAppVersion=0.2.2 packaging\windows\aria.iss
+ISCC.exe /DAppVersion=0.2.3 packaging\windows\aria.iss
 ```
 
-It writes `target\installer\Aria-0.2.2-setup.exe`. That command is how the installer is built; the 0.2.2 installer is built and tested separately before any release, and this README does not claim it has been. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
+It writes `target\installer\Aria-0.2.3-setup.exe`. That command is how the installer is built; the 0.2.3 installer is built and tested separately before any release, and this README does not claim it has been. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 
 ## Configuration and data
 

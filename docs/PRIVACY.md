@@ -77,7 +77,17 @@ directory only; the library database, logs and cache still go to the folders abo
 
 - **Sounds.** For each sound Aria stores the full path of its audio file, its name, its volume and its hotkey, in the `sounds` table of `library.db` (the hotkey of "Stop all", the chosen second output device, where sounds go, and the global-hotkeys switch are in `settings.toml`). The files are never copied, changed or deleted by Aria. Removing a sound removes its row, not the file; as with other deleted rows, SQLite may leave the old contents on disk in `library.db` and `library.db-wal` until the space is reused. Deleting `library.db` (and its `-wal`, `-shm` and `.bak` files) while Aria is closed removes all sounds with the rest of the library.
 - **Hotkeys.** Global hotkeys are registered with the operating system. Aria receives only the combinations you registered, when you press them. It installs no keyboard hook and does not see any other key you press, in Aria or in other programs. While a combination is registered, the system gives it to Aria alone: other programs no longer receive it until Aria lets it go (when you change or clear the hotkey, turn "Global hotkeys" off, or quit).
-- **No microphone.** Aria does not open or read a microphone. The second output device is an output; for a voice chat it must be a virtual audio cable installed separately.
+- **Second device.** The second output device is an output; for a voice chat it must be a virtual audio cable installed separately.
+
+## The microphone (since 0.2.3)
+
+Before 0.2.3 Aria never opened a microphone. Since 0.2.3 it can, and only like this:
+
+- **When.** The microphone is open only while "Send my microphone to the second device" is on in Settings, Soundboard, and a second device is chosen (and is not the device the music plays on). It is off by default. Turning the switch off, or its hotkey, closes it at once. While it is open the player bar shows a microphone icon, and Windows normally shows its own microphone-in-use mark (not yet checked with Aria).
+- **Where its sound goes.** Only into the mix of the second device, usually a virtual cable that a chat program listens to. It never goes to your own speakers or headphones. At most 40 ms of it waits in memory at any time; older audio is dropped.
+- **What is kept.** Nothing. Aria never writes what it captures to disk, never logs it or its level, and never sends it over a network. The choice of microphone, its volume, its switch and its hotkey are stored in `settings.toml`; the microphone's name may appear in logs.
+- **The music copy.** "Music also to the second device" sends a copy of the music you play to that device. It is sound, not data about you; nothing about it is stored beyond the switch and its volume in `settings.toml`.
+- **The cable guide.** When no virtual cable is found, Settings shows a link to the official page of a free cable. Aria makes no request to it; clicking it opens your web browser. Aria installs and changes no driver.
 - Nothing about sounds or hotkeys is sent anywhere.
 - Since 0.2.2 `library.db` also holds each track's bit depth, read from your audio files.
 
