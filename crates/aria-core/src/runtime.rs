@@ -1134,8 +1134,20 @@ mod tests {
             output_device: Some(headphones.clone()),
             ..Settings::default()
         }));
-        assert!(wait_until(|| factory.outputs().len() == 2, LIBRARY_MAX));
-        assert_eq!(factory.outputs()[1].device(), Some(headphones));
+        // On a slow machine the pulls above can play both one-second tracks out before the clock
+        // is read; then the new device opens only with the next track. Starting the list again
+        // gives the engine a track either way.
+        handle.send(Command::PlayContext {
+            ids: ids.clone(),
+            start: 0,
+        });
+        let on_headphones = || {
+            factory
+                .outputs()
+                .last()
+                .is_some_and(|output| output.device() == Some(headphones.clone()))
+        };
+        assert!(wait_until(on_headphones, LIBRARY_MAX));
 
         // Only the engine's events can take the view to the end of the list.
         let last = ids[1];
@@ -1543,9 +1555,14 @@ mod tests {
         handle.send(Command::UpdateSettings(both));
         drain_until(&handle, |e| e.contains(&taken));
 
-        // Against Aria's own shortcuts.
+        // Against Aria's own shortcuts, which take the Command key on macOS.
+        let own = if cfg!(target_os = "macos") {
+            "Win+1"
+        } else {
+            "Ctrl+1"
+        };
         handle.send(Command::UpdateSettings(Settings {
-            mic_toggle_hotkey: Some(hotkey("Ctrl+1")),
+            mic_toggle_hotkey: Some(hotkey(own)),
             ..Settings::default()
         }));
         drain_until(&handle, |e| e.contains(&taken));
