@@ -1,7 +1,7 @@
 # Aria — Music to Chat (0.2.3) Design
 
 - **Date:** 2026-11-17
-- **Status:** Design approved in conversation; pending written-spec review
+- **Status:** Approved. Amended 2026-11-17 with section 3.4 (finding the virtual cable)
 - **Release:** 0.2.3
 - **Builds on:** Phase 2c (0.2.2), `2026-11-15-aria-phase2c-lossless-soundboard-design.md`: the
   second output device and the soundboard.
@@ -35,6 +35,7 @@ stores or sends audio anywhere else.
 | Listening to yourself | Not in 0.2.3 |
 | Voice processing (noise suppression, equaliser, compressor) | Not in 0.2.3; left to the chat program |
 | Platforms | Built for all three; checked by hand on Windows only |
+| Playing into the real microphone without a cable (as Soundpad appears to) | Not done: it needs a system audio component installed with administrator rights. A virtual cable stays required, and Aria makes setting it up easy (section 3.4) |
 
 ## 2. Scope
 
@@ -45,6 +46,8 @@ stores or sends audio anywhere else.
 - Separate volumes for the shared music and for the microphone.
 - A global hotkey that turns the microphone on or off.
 - A microphone indicator in the player bar while the microphone is open.
+- Finding an installed virtual cable and offering it as the second device in one click, or, when
+  none is installed, a short guide with a link to a free cable (section 3.4).
 - Settings and notices in English, Russian and Armenian.
 - `docs/PRIVACY.md` updated: Aria now reads the microphone when, and only when, the user turns it on.
 
@@ -128,6 +131,25 @@ The second device's output carries up to three kinds of input, each with its own
   - the music is not copied a second time;
   - the microphone is still not mixed in, so the user never hears their own voice by accident.
   - Settings shows a line warning that this setup does nothing useful for a chat.
+
+### 3.4 Finding the virtual cable
+
+- Settings, "Sound panel", looks through the output device list for a known virtual cable. A
+  device counts as one when its name contains, ignoring case, `CABLE Input`, `VB-Audio`,
+  `Voicemeeter` or `Virtual Audio Cable`.
+- **No second device chosen, and a cable found:** a line "Found a virtual cable: <name>" and a
+  button "Use it", which makes that device the second device. With several, the first in the list.
+- **No second device chosen, and no cable found:** a short guide:
+  1. install a free virtual cable, for example VB-CABLE, with a link to its official page
+     `https://vb-audio.com/Cable/`;
+  2. restart Aria, or reopen Settings;
+  3. choose the cable here, then choose the cable's recording side (for VB-CABLE, "CABLE Output")
+     as the microphone in the chat program.
+- **The second device is a found cable:** a hint line, "In the chat program, choose <recording
+  side> as the microphone", where the recording side is "CABLE Output" for a VB-CABLE device and
+  "the cable's recording device" otherwise.
+- Aria itself makes no network request. The link only opens the user's web browser when clicked.
+- Aria never installs, downloads or changes a driver.
 
 ## 4. Architecture
 
@@ -214,10 +236,12 @@ This is the first Aria feature that reads the microphone. The rules:
   - The uniqueness rule across sound hotkeys, "Stop all" and the microphone hotkey.
   - The `PlayerView` microphone state.
   - The notices.
+  - Which device names count as a virtual cable, and the recording-side hint.
 - **App** (in the test harness):
   - the settings rows, including the switches disabled without a second device;
   - the icon shown only while the microphone is open, and a click on it turning the microphone off;
-  - the hotkey row.
+  - the hotkey row;
+  - the found-cable line and its "Use it" button, and the guide when no cable is found.
 - **By hand,** in `docs/testing/music-to-chat-manual-check.md`, with every line starting as pending:
   - with a virtual cable as the second device and the cable as the chat program's microphone,
     friends hear the music and the user's voice together;
@@ -232,8 +256,10 @@ This is the first Aria feature that reads the microphone. The rules:
 
 ## 9. Known limitations
 
-- A virtual cable must be installed separately. In the chat program the cable, not the real
-  microphone, must be chosen as input.
+- A virtual cable must be installed separately; Aria only finds it and guides. In the chat
+  program the cable, not the real microphone, must be chosen as input. Playing into the real
+  microphone without a cable is not supported.
+- A cable whose name matches none of the known names is not found; it can still be chosen by hand.
 - The user does not hear their own voice. There is no noise suppression or other voice
   processing in Aria; the chat program's own processing applies on top.
 - The music copy and the local music may drift by tens of milliseconds.

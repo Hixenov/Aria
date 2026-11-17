@@ -220,6 +220,14 @@ Core adds settings, a toggle command and the microphone state. The app adds sett
     - `SetShareMusic { on: share_music && second device set, gain }`;
     - `SetMicrophone { on: mic_enabled && second device set, device, gain }`.
   - **Uniqueness.** The microphone hotkey is checked against the sound hotkeys, "Stop all" and Aria's own shortcuts, and they are checked against it.
+  - **Finding the cable** (spec 3.4), in `crates/aria-core/src/soundboard.rs`:
+    ```rust
+    pub fn is_virtual_cable(name: &str) -> bool; // case-insensitive: "cable input", "vb-audio", "voicemeeter", "virtual audio cable"
+    pub fn find_virtual_cable(devices: &[DeviceInfo]) -> Option<&DeviceInfo>; // first match
+    pub enum CableSide { VbCable, Other }
+    pub fn cable_side(name: &str) -> CableSide; // VbCable when the name contains "cable input" or "vb-audio"
+    pub const CABLE_GUIDE_URL: &str = "https://vb-audio.com/Cable/";
+    ```
 
 - [ ] **Step 1: Write the failing tests:**
   - `old_settings_load_with_sharing_and_microphone_off`;
@@ -231,7 +239,10 @@ Core adds settings, a toggle command and the microphone state. The app adds sett
   - `the_microphone_hotkey_is_unique` (both ways, against all three kinds);
   - `share_music_is_sent_at_startup_and_on_change`;
   - `input_devices_are_listed_on_request`;
-  - `with_the_library_off_toggle_microphone_still_works` (it does not need the library).
+  - `with_the_library_off_toggle_microphone_still_works` (it does not need the library);
+  - `virtual_cables_are_recognised_by_name` (VB-CABLE "CABLE Input (VB-Audio Virtual Cable)", "VoiceMeeter Input", "Line 1 (Virtual Audio Cable)" yes; "Speakers (Realtek(R) Audio)", "Headphones" no);
+  - `the_first_cable_is_found`;
+  - `the_recording_side_hint_follows_the_cable`.
 - [ ] **Step 2: Run** `cargo test -j 4 -p aria-core --locked` — expected: fails.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the workspace checks.
@@ -254,6 +265,7 @@ Core adds settings, a toggle command and the microphone state. The app adds sett
   - "Hotkey to turn the microphone on/off" (button opening the hotkey dialog).
   - Without a second device, the two switches and their sliders are disabled, with a line saying so.
   - With the second device equal to the music device, a warning line shows instead.
+  - **Cable** (spec 3.4), above the rows: with no second device and a cable found, "Found a virtual cable: <name>" and a "Use it" button that sends `UpdateSettings` with that device as the second device and the destination set to the second device; with none found, the three-step guide with `ui.hyperlink_to` to `CABLE_GUIDE_URL` (eframe's `links` feature opens the browser; no new dependency); with a cable chosen, the recording-side hint.
 - **Player bar:** while `microphone == On`, a microphone icon beside the volume. Its tooltip says the voice goes to the second device, and a click sends `ToggleMicrophone`. While `Failed`, a crossed-out icon with the failure tooltip. While `Off`, nothing.
 - **Hotkeys:** `HotkeyAction::ToggleMicrophone` registers with the other hotkeys and sends `ToggleMicrophone`.
 
@@ -267,12 +279,16 @@ Core adds settings, a toggle command and the microphone state. The app adds sett
   - `the_icon_shows_only_while_on_and_a_click_toggles`;
   - `the_failed_icon_shows_the_failure`;
   - `the_microphone_hotkey_sends_toggle`;
-  - `the_dialog_refuses_a_hotkey_taken_by_a_sound`.
+  - `the_dialog_refuses_a_hotkey_taken_by_a_sound`;
+  - `a_found_cable_is_offered_and_use_it_picks_it`;
+  - `the_guide_shows_when_no_cable_is_found`;
+  - `the_chat_hint_names_cable_output`.
 - [ ] **Step 2: Run** `cargo test -j 4 -p aria-app --locked` — expected: fails.
 - [ ] **Step 3: Implement.** Text keys:
   - `settings-share-music`, `settings-share-music-volume`, `settings-share-music-hint`;
   - `settings-mic-device`, `settings-mic-default`, `settings-mic-send`, `settings-mic-send-hint`, `settings-mic-volume`, `settings-mic-hotkey`;
   - `settings-chat-needs-device`, `settings-chat-same-device`;
+  - `settings-cable-found`, `settings-cable-use`, `settings-cable-guide-1`, `settings-cable-guide-link`, `settings-cable-guide-2`, `settings-cable-guide-3`, `settings-cable-hint-vb`, `settings-cable-hint-other`;
   - `player-mic-on`, `player-mic-failed`.
 
   Write the Russian and Armenian text yourself.
@@ -290,7 +306,7 @@ Core adds settings, a toggle command and the microphone state. The app adds sett
   - `CHANGELOG.md`: a `## [0.2.3] - unreleased (music and microphone to the chat)` entry with what was added and every limitation of spec section 9.
   - `README.md`:
     - the status for 0.2.3;
-    - how to set it up: install a virtual cable, choose it as the second device, turn on sharing and the microphone, and choose the cable as the chat's microphone;
+    - how to set it up: install a virtual cable (Aria finds it and offers it), choose it as the second device, turn on sharing and the microphone, and choose the cable as the chat's microphone;
     - what was not verified.
   - `docs/PRIVACY.md`, per spec section 7:
     - replace the statement that Aria never reads the microphone;
@@ -307,6 +323,7 @@ Core adds settings, a toggle command and the microphone state. The app adds sett
   - unplugging the microphone;
   - a denied microphone permission;
   - choosing the local device as the second device;
+  - with VB-CABLE installed, the found-cable line and "Use it"; without it, the guide and its link;
   - exclusive mode with sharing on stays bit-perfect locally;
   - the RU and HY texts.
 - [ ] **Step 4:** Run fmt, clippy and the workspace tests.
