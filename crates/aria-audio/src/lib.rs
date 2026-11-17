@@ -13,6 +13,7 @@ mod mp4;
 pub mod output;
 pub mod resample;
 pub mod sample_format;
+mod share;
 mod sounds;
 mod system_output;
 #[cfg(windows)]

@@ -21,6 +21,7 @@ use crate::mixer::InputHandle;
 use crate::output::{AudioOutput, Opened, OutputFactory, OutputFormat, OutputRequest};
 use crate::resample::{Resampler, convert_channels};
 use crate::sample_format::{DeviceFormat, OutputState, PathFacts, SourceFormat, output_path};
+use crate::share::{MusicCopy, copy_gain};
 use crate::sounds::{SOUNDS_AT_ONCE, SecondOutput, SoundRoute, Spares, Target, Voice};
 
 /// How often the thread looks at the output while a track is active.
@@ -83,6 +84,14 @@ pub enum EngineCommand {
     StopSounds,
     /// The second device for sounds, or none.
     SetSoundDevice(Option<DeviceId>),
+    /// Copy the music into the second device too, at `gain` (0.0 to 1.0), or stop copying it.
+    /// The copy is taken before the volume, so the local volume and mute do not change it. It
+    /// follows pause, seek and every track change, as it is made of the same audio. With no
+    /// second device, or with the second device being the music's, there is no copy.
+    SetShareMusic {
+        on: bool,
+        gain: f32,
+    },
 }
 
 /// What the engine reports. Tracks start and end when they are heard, not when they are decoded.
@@ -527,6 +536,15 @@ struct Worker {
     second: Option<SecondOutput>,
     /// Since when the second output has been open without a sound, if it has been.
     second_idle_since: Option<Instant>,
+    /// Whether the music is to be copied into the second output.
+    share_music: bool,
+    share_gain: f32,
+    /// The copy of the music on the second output, while there is one.
+    copy: Option<MusicCopy>,
+    /// Something changed that may let the copy start. It is tried on the next pass, and not
+    /// again until the next such change, so a device that cannot be opened is not retried on
+    /// every pass.
+    share_dirty: bool,
 }
 
 impl Worker {
@@ -564,6 +582,10 @@ impl Worker {
             sound_device: None,
             second: None,
             second_idle_since: None,
+            share_music: false,
+            share_gain: 0.0,
+            copy: None,
+            share_dirty: false,
         }
     }
 
@@ -587,7 +609,7 @@ impl Worker {
                 }
             }
         };
-        let second_idle = self.second.is_some() && !self.sound_on(Target::Second);
+        let second_idle = self.second.is_some() && !self.second_needed();
         if !second_idle {
             self.second_idle_since = None;
         }
@@ -654,7 +676,9 @@ impl Worker {
             }
             self.check_output();
             self.close_idle_output();
+            self.sync_copy();
             self.fill();
+            self.flush_copy();
             self.feed_sounds();
             self.settle();
             self.settle_sounds();
@@ -676,6 +700,7 @@ impl Worker {
             } => self.load(track, start_ms, play),
             EngineCommand::SetNext(next) => self.set_next(next),
             EngineCommand::Play => {
+                self.share_dirty = true;
                 if self.has_track() {
                     self.set_playing(true);
                     self.ensure_output();
@@ -689,7 +714,10 @@ impl Worker {
                     sink.input.set_gain(self.gain(sink.exclusive));
                 }
             }
-            EngineCommand::SetDevice(device) => self.set_device(device),
+            EngineCommand::SetDevice(device) => {
+                self.share_dirty = true;
+                self.set_device(device);
+            }
             EngineCommand::SetGapless(gapless) => self.gapless = gapless,
             EngineCommand::SetExclusive(exclusive) => self.set_exclusive(exclusive),
             EngineCommand::Stop => self.stop(),
@@ -700,7 +728,11 @@ impl Worker {
                 route,
             } => self.play_sound(token, &path, gain, route),
             EngineCommand::StopSounds => self.stop_sounds(),
-            EngineCommand::SetSoundDevice(device) => self.set_sound_device(device),
+            EngineCommand::SetSoundDevice(device) => {
+                self.share_dirty = true;
+                self.set_sound_device(device);
+            }
+            EngineCommand::SetShareMusic { on, gain } => self.set_share_music(on, gain),
         }
     }
 
@@ -768,14 +800,24 @@ impl Worker {
         if let Some(sink) = &self.sink {
             sink.input.set_paused(!playing);
         }
+        // When the last track has run out, the copy plays out what it still holds. Held, it
+        // would come back at the next Play, after a gap.
+        if let Some(copy) = &self.copy
+            && (playing || self.has_track())
+        {
+            copy.set_paused(!playing);
+        }
     }
 
-    /// Throw away all audio not yet heard.
+    /// Throw away all audio not yet heard, the copy's included.
     fn discard_queued(&mut self) {
         self.pending.clear();
         self.pending_from = 0;
         if let Some(sink) = &mut self.sink {
             sink.input.clear();
+        }
+        if let Some(copy) = &mut self.copy {
+            copy.clear();
         }
     }
 
@@ -1038,6 +1080,7 @@ impl Worker {
         });
         match sink {
             Ok(sink) => {
+                self.share_dirty = true;
                 if self.exclusive && !sink.exclusive {
                     tracing::debug!("exclusive mode is not available; the output is shared");
                     self.emit(EngineEvent::ExclusiveUnavailable);
@@ -1134,7 +1177,12 @@ impl Worker {
         if sink.input.clearing() {
             return false;
         }
-        self.pending_from += sink.input.write(&self.pending[self.pending_from..]);
+        let written = sink.input.write(&self.pending[self.pending_from..]);
+        // The copy gets what the listener's output took, and nothing it has not.
+        if let Some(copy) = &mut self.copy {
+            copy.push(&self.pending[self.pending_from..self.pending_from + written]);
+        }
+        self.pending_from += written;
         if self.pending_from < self.pending.len() {
             return false;
         }
@@ -1296,6 +1344,9 @@ impl Worker {
             Some(waiting) => waiting,
             None => {
                 let Some(track) = self.next.take() else {
+                    if let Some(copy) = &mut self.copy {
+                        copy.finish();
+                    }
                     self.set_playing(false);
                     return self.emit(EngineEvent::Stopped);
                 };
@@ -1318,11 +1369,15 @@ impl Worker {
     /// Close the music's output. Sounds on it are cut off there.
     fn close_music_output(&mut self) {
         self.sink = None;
+        // The copy holds audio the listener's output had queued and has now lost. It starts
+        // again with the next output.
+        self.copy = None;
         self.cut_sounds(Target::Music);
     }
 
     /// Close the second output. Sounds on it are cut off there.
     fn close_second_output(&mut self) {
+        self.copy = None;
         self.second = None;
         self.second_idle_since = None;
         self.cut_sounds(Target::Second);
@@ -1340,6 +1395,75 @@ impl Worker {
         });
         for token in ended {
             self.emit(EngineEvent::SoundEnded { token });
+        }
+    }
+
+    /// Whether anything needs the second output now: a sound on it, or the music being copied
+    /// while it plays.
+    fn second_needed(&self) -> bool {
+        self.sound_on(Target::Second) || (self.copy.is_some() && self.playing && self.has_track())
+    }
+
+    fn set_share_music(&mut self, on: bool, gain: f32) {
+        self.share_music = on;
+        self.share_gain = copy_gain(gain);
+        self.share_dirty = true;
+        if !on {
+            self.copy = None;
+        } else if let Some(copy) = &self.copy {
+            copy.set_gain(self.share_gain);
+        }
+    }
+
+    /// Start or end the copy of the music, as the settings and the outputs now allow.
+    fn sync_copy(&mut self) {
+        let format = self.format();
+        let fits = self
+            .copy
+            .as_ref()
+            .is_some_and(|copy| Some(copy.from()) == format);
+        if !self.share_music || !fits {
+            self.copy = None;
+        }
+        if !std::mem::take(&mut self.share_dirty) || !self.share_music || self.copy.is_some() {
+            return;
+        }
+        let Some(from) = format else {
+            return;
+        };
+        if !self.has_track() || !self.second_device_is_another() || !self.ensure_second_output() {
+            return;
+        }
+        // What the listener's output has queued is not in the copy. Decoding again from where
+        // the ear is fills both together, so the two stay in step.
+        let queued = self
+            .sink
+            .as_ref()
+            .is_some_and(|sink| sink.input.written() > sink.input.consumed())
+            || self.pending_from < self.pending.len();
+        if queued && let Some(heard) = self.heard() {
+            self.restart(heard);
+        }
+        let (gain, paused) = (self.share_gain, !self.playing);
+        let Some(second) = &mut self.second else {
+            return;
+        };
+        // Two seconds: twice the listener's ring, so that only a second output that falls
+        // behind ever drops any of the copy.
+        let made = second
+            .output
+            .add_input(2 * second.format.sample_rate as usize)
+            .and_then(|input| MusicCopy::new(input, from, second.format, gain, paused));
+        match made {
+            Ok(copy) => self.copy = Some(copy),
+            Err(error) => tracing::debug!(%error, "the music could not be copied"),
+        }
+    }
+
+    /// Write what the copy still holds, as after a clear.
+    fn flush_copy(&mut self) {
+        if let Some(copy) = &mut self.copy {
+            copy.flush();
         }
     }
 
@@ -1473,6 +1597,7 @@ impl Worker {
         match opened {
             Ok(second) => {
                 self.second = Some(second);
+                self.share_dirty = true;
                 true
             }
             Err(error) => {

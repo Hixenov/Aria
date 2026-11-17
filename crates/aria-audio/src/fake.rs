@@ -29,6 +29,8 @@ struct FactoryState {
     refuse_exclusive: bool,
     /// Devices that never open, as unplugged ones would not.
     missing: Vec<DeviceId>,
+    /// Devices whose shared outputs run at another format than the factory's.
+    shared_formats: Vec<(DeviceId, OutputFormat)>,
 }
 
 impl Default for FactoryState {
@@ -42,6 +44,7 @@ impl Default for FactoryState {
             exclusive_channels: None,
             refuse_exclusive: false,
             missing: Vec::new(),
+            shared_formats: Vec::new(),
         }
     }
 }
@@ -102,6 +105,11 @@ impl FakeFactory {
         self.state().missing.push(device);
     }
 
+    /// Make shared outputs on `device` run at `format`, instead of the factory's.
+    pub fn set_shared_format(&self, device: DeviceId, format: OutputFormat) {
+        self.state().shared_formats.push((device, format));
+    }
+
     /// A control for every output opened so far, oldest first.
     pub fn outputs(&self) -> Vec<FakeControl> {
         self.state().outputs.clone()
@@ -159,9 +167,18 @@ impl OutputFactory for FakeFactory {
         if let Some(device) = device.filter(|device| state.missing.contains(device)) {
             return Err(AudioError::DeviceNotFound(device.0.clone()));
         }
+        let own = device
+            .and_then(|device| {
+                state
+                    .shared_formats
+                    .iter()
+                    .find(|(id, _)| id == device)
+                    .map(|(_, format)| *format)
+            })
+            .unwrap_or(self.format);
         let shared_format = DeviceFormat {
-            sample_rate: self.format.sample_rate,
-            channels: self.format.channels,
+            sample_rate: own.sample_rate,
+            channels: own.channels,
             kind: SampleKind::I32,
         };
         let exclusive_format = request.exclusive.then(|| {
