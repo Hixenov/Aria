@@ -109,8 +109,13 @@ fn read_wav_codec(path: &Path) -> &'static str {
     }
 }
 
+/// AIFC compression types that hold uncompressed PCM, besides those lofty names itself.
+const AIFC_PCM: [[u8; 4]; 7] = [
+    *b"NONE", *b"twos", *b"in24", *b"in32", *b"23ni", *b"42ni", *b"raw ",
+];
+
 /// The codec of an AIFF or AIFC file, from its compression type. Plain AIFF and AIFC holding
-/// integer or float PCM are `aiff`, which counts as lossless; A-law and µ-law are named for
+/// integer or float PCM, in either byte order, are `aiff`, which counts as lossless; A-law and µ-law are named for
 /// themselves, and any other compression is `aiff-compressed`, all lossy. As for WAV, a second
 /// read that fails leaves `aiff`.
 fn read_aiff_codec(path: &Path) -> &'static str {
@@ -128,6 +133,12 @@ fn read_aiff_codec(path: &Path) -> &'static str {
                 | AiffCompressionType::FL32,
             ),
         ) => "aiff",
+        // PCM lofty does not name: big-endian (`twos`, `in24`, `in32`), little-endian (`23ni`,
+        // `42ni`) and unsigned 8-bit (`raw `).
+        Some(Some(AiffCompressionType::Other {
+            compression_type: kind,
+            ..
+        })) if AIFC_PCM.contains(&kind) => "aiff",
         Some(Some(AiffCompressionType::alaw | AiffCompressionType::ALAW)) => "alaw",
         Some(Some(AiffCompressionType::ulaw | AiffCompressionType::ULAW)) => "ulaw",
         Some(Some(_)) => "aiff-compressed",

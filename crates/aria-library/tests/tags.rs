@@ -451,3 +451,62 @@ fn caf_is_not_readable_so_it_is_never_stored() {
         Err(LibraryError::Tags(_))
     ));
 }
+
+/// Writes a short stereo AIFC file at 44.1 kHz whose compression type is `kind`, with `bits`
+/// bits per sample, and returns its path in `dir`.
+fn write_aifc(dir: &Path, kind: &[u8; 4], bits: u16) -> std::io::Result<PathBuf> {
+    let frames: u32 = 64;
+    let data_bytes = frames * 2 * u32::from(bits.div_ceil(8));
+    let mut comm = Vec::new();
+    comm.extend_from_slice(&2u16.to_be_bytes());
+    comm.extend_from_slice(&frames.to_be_bytes());
+    comm.extend_from_slice(&bits.to_be_bytes());
+    // 44 100 as an 80-bit extended float.
+    comm.extend_from_slice(&[0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0]);
+    comm.extend_from_slice(kind);
+    // An empty, padded Pascal string for the compression's name.
+    comm.extend_from_slice(&[0, 0]);
+    let mut body = Vec::new();
+    body.extend_from_slice(b"AIFC");
+    body.extend_from_slice(b"FVER");
+    body.extend_from_slice(&4u32.to_be_bytes());
+    body.extend_from_slice(&0xA280_5140u32.to_be_bytes());
+    body.extend_from_slice(b"COMM");
+    body.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+    body.extend_from_slice(&comm);
+    body.extend_from_slice(b"SSND");
+    body.extend_from_slice(&(8 + data_bytes).to_be_bytes());
+    body.extend_from_slice(&[0; 8]);
+    body.extend(std::iter::repeat_n(0u8, data_bytes as usize));
+    let mut file = Vec::new();
+    file.extend_from_slice(b"FORM");
+    file.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    file.extend_from_slice(&body);
+    let name = String::from_utf8_lossy(kind).trim().to_owned();
+    let path = dir.join(format!("{name}.aifc"));
+    fs::write(&path, file)?;
+    Ok(path)
+}
+
+#[test]
+fn every_kind_of_pcm_in_aifc_counts_as_lossless() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    // Big- and little-endian integer PCM of every width, and unsigned 8-bit.
+    for (kind, bits) in [
+        (b"NONE", 16),
+        (b"twos", 16),
+        (b"sowt", 16),
+        (b"in24", 24),
+        (b"in32", 32),
+        (b"23ni", 24),
+        (b"42ni", 32),
+        (b"raw ", 8),
+    ] {
+        let path = write_aifc(dir.path(), kind, bits).unwrap();
+        let tags = ok(read_tags(&path));
+        assert_eq!(&*tags.codec, "aiff", "{}", String::from_utf8_lossy(kind));
+    }
+    // A real compression stays lossy.
+    let ima = write_aifc(dir.path(), b"ima4", 16).unwrap();
+    assert_eq!(&*ok(read_tags(&ima)).codec, "aiff-compressed");
+}
