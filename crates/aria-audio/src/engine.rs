@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::capture::CaptureFactory;
+use crate::capture::{CaptureFactory, CaptureReader};
 use crate::clock::{ClockReading, PlaybackClock};
 use crate::decode::{StreamInfo, TrackDecoder};
 use crate::device::DeviceId;
@@ -525,7 +525,7 @@ struct Heard {
 /// front, to the one being decoded, at the back.
 struct Worker {
     factory: Box<dyn OutputFactory>,
-    capture: Box<dyn CaptureFactory>,
+    capture: Arc<dyn CaptureFactory>,
     on_event: Box<dyn Fn(EngineEvent) + Send>,
     /// Events of this pass, in order.
     events: Vec<EngineEvent>,
@@ -583,6 +583,9 @@ struct Worker {
     mic_gain: f32,
     /// The microphone, while it is open.
     mic: Option<Microphone>,
+    /// A microphone being opened on a thread of its own, whose result comes here. While it is
+    /// set, the engine looks for the result every tick.
+    mic_opening: Option<Receiver<Result<CaptureReader, AudioError>>>,
     /// As `share_dirty`, for the microphone.
     mic_dirty: bool,
     /// The microphone was closed because the second output failed, and opens again with it.
@@ -599,7 +602,7 @@ impl Worker {
     ) -> Self {
         Self {
             factory,
-            capture,
+            capture: Arc::from(capture),
             on_event,
             events: Vec::new(),
             clock,
@@ -634,6 +637,7 @@ impl Worker {
             mic_device: None,
             mic_gain: 1.0,
             mic: None,
+            mic_opening: None,
             mic_dirty: false,
             mic_lost_with_second: false,
         }
@@ -674,7 +678,13 @@ impl Worker {
                 Some(self.idle_grace.saturating_sub(idle_for))
             }
         };
-        let timeout = music_timeout.into_iter().chain(second_timeout).min();
+        // A microphone being opened is looked for every tick.
+        let opening_timeout = self.mic_opening.as_ref().map(|_| TICK);
+        let timeout = music_timeout
+            .into_iter()
+            .chain(second_timeout)
+            .chain(opening_timeout)
+            .min();
         match timeout {
             Some(timeout) => match commands.recv_timeout(timeout) {
                 Ok(command) => Some(command),
@@ -727,6 +737,7 @@ impl Worker {
             self.check_output();
             self.close_idle_output();
             self.sync_copy();
+            self.finish_microphone();
             self.sync_microphone();
             self.fill();
             self.flush_copy();
@@ -1485,6 +1496,10 @@ impl Worker {
             .mic
             .as_ref()
             .is_some_and(|mic| mic.device() != device.as_ref());
+        if self.mic_device != device {
+            // One being opened is for the microphone chosen before.
+            self.mic_opening = None;
+        }
         self.mic_on = on;
         self.mic_device = device;
         self.mic_dirty = true;
@@ -1498,6 +1513,8 @@ impl Worker {
 
     /// Close the microphone, if it is open.
     fn close_microphone(&mut self) {
+        // One being opened is let go of: when it is ready, nothing waits, and it closes again.
+        self.mic_opening = None;
         if self.mic.take().is_some() {
             self.emit(EngineEvent::MicrophoneClosed);
         }
@@ -1510,7 +1527,55 @@ impl Worker {
             self.mic = None;
             self.emit(EngineEvent::MicrophoneFailed { denied: false });
         }
-        if !std::mem::take(&mut self.mic_dirty) || !self.mic_on || self.mic.is_some() {
+        if !std::mem::take(&mut self.mic_dirty)
+            || !self.mic_on
+            || self.mic.is_some()
+            || self.mic_opening.is_some()
+        {
+            return;
+        }
+        if !self.second_device_is_another() || !self.ensure_second_output() {
+            return;
+        }
+        self.begin_microphone();
+    }
+
+    /// Opens the microphone on a thread of its own, since a slow or stuck device can take
+    /// seconds, and the music must not wait for it. The result comes back with
+    /// [`finish_microphone`](Self::finish_microphone), which looks for it every tick.
+    fn begin_microphone(&mut self) {
+        let (opened_tx, opened) = mpsc::channel();
+        let capture = Arc::clone(&self.capture);
+        let device = self.mic_device.clone();
+        let spawned = thread::Builder::new()
+            .name("aria-audio-mic-open".into())
+            .spawn(move || {
+                let result = capture.open(device.as_ref());
+                // Without a receiver, the engine has let this one go: the reader drops here, and
+                // the microphone closes again.
+                let _ = opened_tx.send(result);
+            });
+        match spawned {
+            Ok(_) => self.mic_opening = Some(opened),
+            Err(error) => {
+                tracing::debug!(%error, "could not start opening the microphone");
+                self.emit(EngineEvent::MicrophoneFailed { denied: false });
+            }
+        }
+    }
+
+    /// Takes in a microphone that has finished opening, if it is still wanted as it was asked
+    /// for. One that is not is dropped, which closes it.
+    fn finish_microphone(&mut self) {
+        let Some(result) = self
+            .mic_opening
+            .as_ref()
+            .and_then(|opened| opened.try_recv().ok())
+        else {
+            return;
+        };
+        self.mic_opening = None;
+        if !self.mic_on || self.mic.is_some() {
             return;
         }
         if !self.second_device_is_another() || !self.ensure_second_output() {
@@ -1519,23 +1584,20 @@ impl Worker {
         let Some(second) = &mut self.second else {
             return;
         };
-        let opened = self
-            .capture
-            .open(self.mic_device.as_ref())
-            .and_then(|reader| {
-                let name = reader.name().map(str::to_owned);
-                let input = second
-                    .output
-                    .add_input(Microphone::ring_frames(second.format))?;
-                Microphone::new(
-                    reader,
-                    input,
-                    second.format,
-                    self.mic_gain,
-                    self.mic_device.clone(),
-                )
-                .map(|mic| (mic, name))
-            });
+        let opened = result.and_then(|reader| {
+            let name = reader.name().map(str::to_owned);
+            let input = second
+                .output
+                .add_input(Microphone::ring_frames(second.format))?;
+            Microphone::new(
+                reader,
+                input,
+                second.format,
+                self.mic_gain,
+                self.mic_device.clone(),
+            )
+            .map(|mic| (mic, name))
+        });
         match opened {
             Ok((mic, name)) => {
                 self.mic = Some(mic);

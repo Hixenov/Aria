@@ -303,6 +303,8 @@ struct CaptureState {
     fail_open: bool,
     deny: bool,
     devices: Vec<DeviceInfo>,
+    /// How long an open takes, as a slow or stuck device's would.
+    open_delay: std::time::Duration,
 }
 
 /// A capture with no device behind it, for tests. It captures what [`FakeCaptureControl::push`]
@@ -352,6 +354,10 @@ impl CaptureFactory for FakeCapture {
     }
 
     fn open(&self, device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
+        let delay = capture_state(&self.state).open_delay;
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
         let mut state = capture_state(&self.state);
         // As the real one: the device asked for, or the default, must not be a cable.
         let named = state.devices.iter().find(|listed| match device {
@@ -412,6 +418,11 @@ impl FakeCaptureControl {
     /// Make opens fail from now on, or work again.
     pub fn fail_open(&self, fail: bool) {
         capture_state(&self.state).fail_open = fail;
+    }
+
+    /// Make opens take `delay` from now on, as a slow or stuck device's would.
+    pub fn delay_open(&self, delay: std::time::Duration) {
+        capture_state(&self.state).open_delay = delay;
     }
 
     /// Make opens be refused by the "operating system" from now on, or allowed again.

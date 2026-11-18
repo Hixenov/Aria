@@ -698,6 +698,55 @@ fn the_opened_microphone_is_named() {
     });
 }
 
+#[test]
+fn a_slow_microphone_does_not_hold_up_the_music() {
+    let (_dir, path) = tone(5 * SECOND as u64).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.start(1, &path);
+    let mine = rig.output_on(None);
+    mine.pull(SECOND / 10);
+    rig.settle();
+
+    // A microphone that takes two seconds to open, longer than the music's one-second ring.
+    rig.mic.delay_open(Duration::from_secs(2));
+    rig.send(microphone(true, 1.0));
+    // Pulled in real time for a second and a half, the music never runs dry.
+    let chunk = SECOND / 10;
+    for step in 0..15 {
+        thread::sleep(Duration::from_millis(100));
+        let heard = mine.pull(chunk);
+        assert!(
+            audible_frames(&heard, 2) * 10 >= chunk * 9,
+            "the music ran dry {} ms after the microphone was asked for",
+            (step + 1) * 100
+        );
+    }
+    rig.expect(MicrophoneOpened { name: None });
+}
+
+#[test]
+fn a_microphone_turned_off_while_it_opens_stays_closed() {
+    let rig = Rig::new(STEREO_44K);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.mic.delay_open(Duration::from_millis(400));
+    rig.send(microphone(true, 1.0));
+    rig.settle();
+    rig.send(microphone(false, 1.0));
+    // Long after the open has finished, it is closed again and nothing was said of it.
+    thread::sleep(Duration::from_millis(800));
+    rig.settle();
+    wait_until("the late microphone to close", || !rig.mic.open_now());
+    assert_eq!(rig.mic.opened(), 1);
+    let events = rig.drain_events();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, MicrophoneOpened { .. })),
+        "{events:?}"
+    );
+}
+
 /// `frames` frames of a steady `level` in `channels` channels.
 fn steady(level: f32, frames: usize, channels: usize) -> Vec<f32> {
     vec![level; frames * channels]

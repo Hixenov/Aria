@@ -172,7 +172,8 @@ pub(crate) fn capture_ring(
 }
 
 /// Opens captures. Each call opens a new, independent one.
-pub trait CaptureFactory: Send {
+/// Shared between the engine and the threads it opens the microphone on, so it is `Sync`.
+pub trait CaptureFactory: Send + Sync {
     /// Open `device`, or the system default input when it is `None`, in shared mode. Dropping
     /// the reader closes the stream.
     fn open(&self, device: Option<&DeviceId>) -> Result<CaptureReader, AudioError>;
