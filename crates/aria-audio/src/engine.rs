@@ -340,6 +340,8 @@ struct Sink {
     device: DeviceFormat,
     /// The track the output was opened for, if it was opened for one.
     opened_for: Option<SourceFormat>,
+    /// Whether the chosen device could not be opened, so this is the system default.
+    fell_back: bool,
 }
 
 impl Sink {
@@ -1127,6 +1129,7 @@ impl Worker {
                 exclusive,
                 device,
                 opened_for: source,
+                fell_back,
             })
         });
         match sink {
@@ -1137,6 +1140,16 @@ impl Worker {
                     self.emit(EngineEvent::ExclusiveUnavailable);
                 }
                 self.sink = Some(sink);
+                let second_is_music = self
+                    .sound_device
+                    .as_ref()
+                    .is_some_and(|second| self.is_music_device(second));
+                if fell_back && self.second.is_some() && second_is_music {
+                    // The music fell back onto the second device. Sounds for it now play on the
+                    // music's output, and the copy and the microphone stop, as when the music is
+                    // moved there.
+                    self.close_second_output();
+                }
                 Some(fell_back)
             }
             Err(error) => {
@@ -1711,16 +1724,19 @@ impl Worker {
 
     /// Whether `device` is the one the music plays on.
     ///
-    /// With the music on the system default, this asks the factory for the default device. That
-    /// happens for every sound for the second device while the second output is closed (so for
-    /// every one while the second device is the default, or cannot be opened), and at every
-    /// change of the music's device while it is open. The system factory answers with one query
-    /// of the default endpoint rather than a listing of every device.
+    /// With the music on the system default, chosen or fallen back to, this asks the factory for
+    /// the default device. That happens for every sound for the second device while the second
+    /// output is closed (so for every one while the second device is the default, or cannot be
+    /// opened), and at every change of the music's device while it is open. The system factory
+    /// answers with one query of the default endpoint rather than a listing of every device.
     fn is_music_device(&self, device: &DeviceId) -> bool {
-        match &self.device {
-            Some(music) => music == device,
-            None => self.factory.default_device().as_ref() == Some(device),
-        }
+        let on_default = match &self.device {
+            Some(music) if music == device => return true,
+            // The chosen device could not be opened, and the music plays on the default.
+            Some(_) => self.sink.as_ref().is_some_and(|sink| sink.fell_back),
+            None => true,
+        };
+        on_default && self.factory.default_device().as_ref() == Some(device)
     }
 
     /// Open the second output if it is not open. Shared, whatever the music's mode: it is for

@@ -350,6 +350,63 @@ fn no_copy_when_the_second_device_is_the_local_device() {
     assert_eq!(rig.factory.outputs().len(), 1);
 }
 
+/// A rig whose chosen music device is missing, so the music falls back to the system default,
+/// which is the second device.
+fn fallen_back_onto_the_second_device() -> Rig {
+    let rig = Rig::new(STEREO_44K);
+    rig.factory.set_devices(vec![DeviceInfo {
+        id: second_device(),
+        name: "Speakers".into(),
+        is_default: true,
+    }]);
+    let usb = DeviceId("usb".into());
+    rig.factory.remove_device(usb.clone());
+    rig.send(SetDevice(Some(usb)));
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig
+}
+
+#[test]
+fn no_copy_when_the_music_falls_back_onto_the_second_device() {
+    let (_dir, path) = tone(SECOND as u64).unwrap();
+    let rig = fallen_back_onto_the_second_device();
+    rig.send(share(1.0));
+    rig.start(1, &path);
+    rig.output_on(None).pull(SECOND / 4);
+    rig.settle();
+    rig.output_on(None).pull(SECOND / 4);
+    rig.settle();
+    let open: Vec<_> = rig
+        .factory
+        .outputs()
+        .into_iter()
+        .filter(|output| !output.is_closed())
+        .collect();
+    assert_eq!(
+        open.len(),
+        1,
+        "a copy went to the device the music falls back to"
+    );
+}
+
+#[test]
+fn the_microphone_closes_when_the_music_falls_back_onto_the_second_device() {
+    let (_dir, path) = tone(SECOND as u64).unwrap();
+    let rig = fallen_back_onto_the_second_device();
+    rig.send(microphone(true, 1.0));
+    rig.start(1, &path);
+    rig.output_on(None).pull(SECOND / 4);
+    rig.settle();
+    wait_until("the microphone to close", || !rig.mic.open_now());
+    assert!(
+        rig.factory
+            .outputs_on(Some(&second_device()))
+            .iter()
+            .all(FakeControl::is_closed),
+        "the second output stayed open on the music's device"
+    );
+}
+
 #[test]
 fn local_mute_and_volume_do_not_touch_the_copy() {
     let (_dir, path) = tone(SECOND as u64).unwrap();
