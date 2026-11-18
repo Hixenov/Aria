@@ -7,8 +7,13 @@ use rubato::{
 
 use crate::error::AudioError;
 
-/// Input frames per resampler chunk.
+/// Input frames per resampler chunk, for the music, which is decoded ahead.
 const CHUNK_FRAMES: usize = 1024;
+/// The length of a chunk for live audio, such as the microphone: the converter holds back up to a
+/// chunk, so it is kept short.
+const LIVE_CHUNK_MS: u32 = 2;
+/// The fewest input frames per chunk for live audio.
+const LIVE_CHUNK_MIN: usize = 32;
 /// Headroom for the resampler's ratio; unused because the ratio never changes.
 const MAX_RELATIVE_RATIO: f64 = 1.1;
 
@@ -40,6 +45,18 @@ struct Sinc {
 impl Resampler {
     /// Create a converter from `from` Hz to `to` Hz for `channels` interleaved channels.
     pub fn new(from: u32, to: u32, channels: u16) -> Result<Self, AudioError> {
+        Self::with_chunk(from, to, channels, CHUNK_FRAMES)
+    }
+
+    /// A converter for live audio, such as the microphone, which works in chunks of about 2 ms
+    /// instead of 1024 frames: it adds at most a few milliseconds besides its filter's own delay,
+    /// at some more work per sample.
+    pub fn live(from: u32, to: u32, channels: u16) -> Result<Self, AudioError> {
+        let chunk = (from / 1_000 * LIVE_CHUNK_MS) as usize;
+        Self::with_chunk(from, to, channels, chunk.max(LIVE_CHUNK_MIN))
+    }
+
+    fn with_chunk(from: u32, to: u32, channels: u16, chunk: usize) -> Result<Self, AudioError> {
         if from == 0 || to == 0 || channels == 0 {
             return Err(AudioError::Resample(
                 "sample rates and channel count must be non-zero".into(),
@@ -55,7 +72,7 @@ impl Resampler {
             ratio,
             MAX_RELATIVE_RATIO,
             &params,
-            CHUNK_FRAMES,
+            chunk,
             channels,
             FixedAsync::Input,
         )

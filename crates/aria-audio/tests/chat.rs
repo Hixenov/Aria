@@ -1468,3 +1468,53 @@ fn a_copy_that_waits_for_a_slow_second_device_plays_in_step_at_once() {
         "the copy is not in step with the music"
     );
 }
+
+/// A measurement in real time, which other tests running beside it can slow down: run it alone
+/// with `cargo test -p aria-audio --test chat -- --ignored --nocapture`. On the development PC it
+/// measured 38 to 48 ms; it measured 100 ms before the microphone's converter worked in short
+/// chunks.
+#[test]
+#[ignore = "a real-time measurement; run it alone"]
+fn a_16_khz_microphone_reaches_the_cable_within_60_ms() {
+    // A headset microphone at 16 kHz, mono, into a cable at 44.1 kHz: resampled on the way.
+    let rig = Rig::with_microphone(
+        STEREO_44K,
+        IDLE_GRACE,
+        CaptureFormat {
+            sample_rate: 16_000,
+            channels: 1,
+        },
+    );
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneOpened { name: None });
+    let second = rig.second_in_use();
+
+    // In real time, 10 ms at a time, as a device period: the microphone brings 10 ms, the cable
+    // takes 10 ms. A burst of 2 ms is spoken at 200 ms.
+    const STEPS: usize = 40;
+    const BURST_STEP: usize = 20;
+    let mut heard = Vec::new();
+    let started = Instant::now();
+    for step in 0..STEPS {
+        let mut spoken = vec![0.0f32; 160];
+        if step == BURST_STEP {
+            spoken[..32].fill(0.8);
+        }
+        rig.mic.push(&spoken);
+        let due = started + Duration::from_millis(10 * (step as u64 + 1));
+        thread::sleep(due.saturating_duration_since(Instant::now()));
+        heard.extend(second.pull(441));
+    }
+    let first = heard
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .position(|frame| frame[0].abs() > 0.2)
+        .expect("the burst never reached the cable");
+    // Each step's pull came after its push, so a burst heard in the step it was spoken is 0 ms
+    // late; the step it was spoken in starts at frame BURST_STEP * 441.
+    let late_ms = (first as f64 - (BURST_STEP * 441) as f64) * 1_000.0 / 44_100.0;
+    println!("the microphone reached the cable {late_ms:.1} ms after it was spoken");
+    assert!(late_ms < 60.0, "{late_ms:.1} ms");
+}

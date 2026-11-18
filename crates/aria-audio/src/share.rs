@@ -186,7 +186,8 @@ impl Microphone {
         device: Option<DeviceId>,
     ) -> Result<Self, AudioError> {
         let from = reader.format();
-        let resampler = Resampler::new(from.sample_rate, to.sample_rate, to.channels)?;
+        // Live audio: short chunks, so the converter holds back milliseconds, not tens of them.
+        let resampler = Resampler::live(from.sample_rate, to.sample_rate, to.channels)?;
         input.set_gain(gain);
         Ok(Self {
             reader,
