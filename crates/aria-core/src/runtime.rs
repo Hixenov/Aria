@@ -1270,6 +1270,61 @@ mod tests {
         (handle, id)
     }
 
+    /// The loudest sample a sound at `volume` reaches on a fake output, fired through the whole
+    /// backend: the volume set by command, stored by the library, and sent to the engine.
+    fn loudest_at(volume: f32) -> f32 {
+        let dir = tempfile::tempdir().unwrap();
+        let factory = FakeFactory::new(OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        });
+        let services = BackendServices {
+            output: Box::new(factory.clone()),
+            ..services(Some(library_paths(dir.path())))
+        };
+        let (waker, _) = counting_waker();
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
+        handle.send(Command::AddSounds(vec![sound_fixture(
+            dir.path(),
+            "horn.ogg",
+        )]));
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds.len() == 1)
+        });
+        let id = soundboard(&events).unwrap().sounds[0].id;
+        handle.send(Command::SetSoundVolume { id, volume });
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds[0].volume == volume)
+        });
+        handle.send(Command::PlaySound(id));
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            soundboard(e).is_some_and(|board| board.sounds[0].playing)
+        });
+        let output = factory.outputs().pop().unwrap();
+        let mut loudest = 0.0f32;
+        // Half a second, past the fade at its start, reading the events as the app does.
+        for _ in 0..50 {
+            thread::sleep(Duration::from_millis(2));
+            handle.drain();
+            for sample in output.pull(480) {
+                loudest = loudest.max(sample.abs());
+            }
+        }
+        assert!(handle.shutdown(LIBRARY_MAX));
+        loudest
+    }
+
+    #[test]
+    fn a_sound_plays_at_the_volume_set_for_it() {
+        let full = loudest_at(1.0);
+        let quarter = loudest_at(0.25);
+        assert!(full > 0.05, "the sound was not heard: {full}");
+        assert!(
+            (quarter / full - 0.25).abs() < 0.03,
+            "at 25 % the sound peaked at {quarter}, at 100 % at {full}"
+        );
+    }
+
     #[test]
     fn sound_commands_come_back_as_soundboard_events() {
         let dir = tempfile::tempdir().unwrap();
@@ -1427,6 +1482,95 @@ mod tests {
             settings: with_cable(),
             ..no_library()
         }
+    }
+
+    #[test]
+    fn the_music_volume_in_the_chat_changes_what_the_cable_gets() {
+        let dir = tempfile::tempdir().unwrap();
+        let music = dir.path().join("music");
+        fs::create_dir(&music).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../aria-audio/tests/fixtures/tone.ogg");
+        fs::copy(&fixture, music.join("1.ogg")).unwrap();
+        let factory = FakeFactory::new(OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        });
+        let cable = DeviceId("cable".into());
+        let sharing = |volume: f32| Settings {
+            share_music: true,
+            share_music_volume: volume,
+            ..with_cable()
+        };
+        let services = BackendServices {
+            output: Box::new(factory.clone()),
+            settings: sharing(1.0),
+            ..services(Some(library_paths(dir.path())))
+        };
+        let (waker, _) = counting_waker();
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
+        handle.send(Command::AddFolder(music));
+        let has_track = |e: &Event| matches!(e, Event::LibraryUpdated(s) if s.tracks.len() == 1);
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| e.iter().any(has_track));
+        let id = events
+            .iter()
+            .find_map(|e| match e {
+                Event::LibraryUpdated(s) if s.tracks.len() == 1 => Some(s.tracks[0].id),
+                _ => None,
+            })
+            .unwrap();
+        handle.send(Command::PlayContext {
+            ids: vec![id],
+            start: 0,
+        });
+        let deadline = Instant::now() + LIBRARY_MAX;
+        while factory.outputs_on(Some(&cable)).is_empty() {
+            handle.drain();
+            assert!(Instant::now() < deadline, "the cable never opened");
+            thread::sleep(Duration::from_millis(5));
+        }
+        let mine = factory.outputs_on(None).pop().unwrap();
+        let copy = factory.outputs_on(Some(&cable)).pop().unwrap();
+        // The cable opens beside the music; the copy goes on it at the engine's next pass.
+        while copy.inputs_added() == 0 {
+            handle.drain();
+            assert!(
+                Instant::now() < deadline,
+                "the copy never reached the cable"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        // The loudest the copy gets over a quarter of a second, pulled beside the music.
+        // The backend's events are read meanwhile, as the app does: a queue left full holds the
+        // engine up.
+        let loudest = || {
+            let mut loudest = 0.0f32;
+            for _ in 0..25 {
+                thread::sleep(Duration::from_millis(2));
+                handle.drain();
+                mine.pull(480);
+                for sample in copy.pull(480) {
+                    loudest = loudest.max(sample.abs());
+                }
+            }
+            loudest
+        };
+        loudest();
+        let full = loudest();
+        // Turned down while the music plays, as the slider in Settings does.
+        handle.send(Command::UpdateSettings(sharing(0.25)));
+        for _ in 0..20 {
+            thread::sleep(Duration::from_millis(5));
+            handle.drain();
+        }
+        loudest();
+        let quarter = loudest();
+        assert!(handle.shutdown(MAX));
+        assert!(full > 0.05, "the cable got no music: {full}");
+        assert!(
+            (quarter / full - 0.25).abs() < 0.05,
+            "at 25 % the cable peaked at {quarter}, at 100 % at {full}"
+        );
     }
 
     #[test]

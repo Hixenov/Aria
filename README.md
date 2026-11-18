@@ -1,6 +1,12 @@
-[![CI](https://github.com/Hixenov/Aria/actions/workflows/ci.yml/badge.svg)](https://github.com/Hixenov/Aria/actions/workflows/ci.yml)
+<p align="center">
+  <img src="assets/icon/aria-256.png" width="128" height="128" alt="Aria's icon: a neon cyan letter A whose crossbar is a sound wave">
+</p>
 
-# Aria
+<h1 align="center">Aria</h1>
+
+<p align="center">
+  <a href="https://github.com/Hixenov/Aria/actions/workflows/ci.yml"><img src="https://github.com/Hixenov/Aria/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
 Aria is a native, lightweight, cross-platform desktop music player written in Rust with
 egui/eframe. Over six phases it grows into a local music player, a Spotify library and
