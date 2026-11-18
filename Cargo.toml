@@ -38,6 +38,7 @@ fluent-syntax = "0.12"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"
 tracing = "0.1.44"
+log = "0.4.35"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "registry"] }
 tracing-appender = "0.2.5"
 thiserror = "2"

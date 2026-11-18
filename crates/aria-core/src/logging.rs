@@ -167,6 +167,11 @@ fn init_with(
         .with(stderr_layer)
         .try_init()
         .map_err(|err| LoggingError::Init(err.to_string()))?;
+    // Crates that log through the `log` crate, `wasapi` among them, are held at Debug: their
+    // trace lines, on every period of an exclusive output, would otherwise each reach the
+    // subscriber and its lock from the audio thread before the filter drops them. Aria logs
+    // through `tracing`, which this does not touch.
+    log::set_max_level(log::max_level().min(log::LevelFilter::Debug));
 
     if let Some((value, error)) = rejected {
         warn!(
