@@ -7,10 +7,10 @@
 //! cargo run -p aria-app --example make_icon
 //! ```
 //!
-//! The icon is drawn from a few shapes, the same on every run: a rounded square in Aria's teal,
-//! darker towards the bottom, and a white "A" crossed by a sound wave, which runs out past both
-//! legs. Each size is drawn on its own, so the small ones stay sharp; on the smallest, the wave is
-//! a plain crossbar.
+//! The icon is drawn from a few shapes, the same on every run, on a clear background: a bold,
+//! rounded "A" in Aria's teal, lighter at the top and deeper at the bottom, whose crossbar is a
+//! sound wave. Each size is drawn on its own, so the small ones stay sharp; on the smallest, the
+//! wave is a plain crossbar.
 
 use std::{
     fs, io,
@@ -24,19 +24,15 @@ const SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 /// Samples per pixel along each side, for smooth edges.
 const SAMPLES: u32 = 8;
 
-/// The top and the bottom of the background.
+/// The letter's colour, at its apex and at its feet.
 const TOP: [f32; 3] = [0x4D as f32, 0xE2 as f32, 0xD1 as f32];
 const BOTTOM: [f32; 3] = [0x0E as f32, 0x63 as f32, 0x77 as f32];
 
 /// The "A": its apex, its feet, and the crossbar's height.
-const APEX: (f32, f32) = (0.5, 0.215);
-const FOOT_LEFT: (f32, f32) = (0.29, 0.775);
-const FOOT_RIGHT: (f32, f32) = (0.71, 0.775);
-const BAR_Y: f32 = 0.6;
-/// Where the wave starts and ends, and how many waves it makes on the way.
-const WAVE_FROM: f32 = 0.165;
-const WAVE_TO: f32 = 0.835;
-const WAVES: f32 = 1.5;
+const APEX: (f32, f32) = (0.5, 0.13);
+const FOOT_LEFT: (f32, f32) = (0.19, 0.87);
+const FOOT_RIGHT: (f32, f32) = (0.81, 0.87);
+const BAR_Y: f32 = 0.64;
 
 fn main() -> io::Result<()> {
     let out = Path::new("assets").join("icon");
@@ -59,7 +55,6 @@ fn main() -> io::Result<()> {
 /// The icon at `size` pixels, as straight (not premultiplied) RGBA.
 fn draw(size: u32) -> Vec<u8> {
     let glyph = Glyph::for_size(size);
-    let shadow = size >= 48;
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
     let samples = (SAMPLES * SAMPLES) as f32;
     for y in 0..size {
@@ -70,7 +65,7 @@ fn draw(size: u32) -> Vec<u8> {
                 for sx in 0..SAMPLES {
                     let u = (x as f32 + (sx as f32 + 0.5) / SAMPLES as f32) / size as f32;
                     let v = (y as f32 + (sy as f32 + 0.5) / SAMPLES as f32) / size as f32;
-                    let [r, g, b, a] = sample(u, v, &glyph, shadow);
+                    let [r, g, b, a] = glyph.sample(u, v);
                     sum[0] += r * a;
                     sum[1] += g * a;
                     sum[2] += b * a;
@@ -88,40 +83,8 @@ fn draw(size: u32) -> Vec<u8> {
     rgba
 }
 
-/// The colour at `(u, v)`, both `0.0..1.0` from the top left, with its alpha `0.0..=1.0`.
-fn sample(u: f32, v: f32, glyph: &Glyph, shadow: bool) -> [f32; 4] {
-    if !in_background(u, v) {
-        return [0.0; 4];
-    }
-    let mut colour = background(u, v);
-    if shadow && glyph.contains(u, v - 0.014) && !glyph.contains(u, v) {
-        // A soft drop below the letter.
-        colour = mix(colour, [0.0, 0.0, 0.0], 0.22);
-    }
-    if glyph.contains(u, v) {
-        colour = [255.0, 255.0, 255.0];
-    }
-    [colour[0], colour[1], colour[2], 1.0]
-}
-
-/// Whether `(u, v)` is inside the rounded square: a superellipse, softer than a rounded rectangle.
-fn in_background(u: f32, v: f32) -> bool {
-    const HALF: f32 = 0.47;
-    const POWER: f32 = 5.0;
-    let x = ((u - 0.5) / HALF).abs();
-    let y = ((v - 0.5) / HALF).abs();
-    x.powf(POWER) + y.powf(POWER) <= 1.0
-}
-
-/// Teal, lighter at the top left, with a faint glow there.
-fn background(u: f32, v: f32) -> [f32; 3] {
-    let t = (0.3 * u + 0.7 * v).clamp(0.0, 1.0);
-    let base = mix(TOP, BOTTOM, t);
-    let glow = (1.0 - ((u - 0.3).powi(2) + (v - 0.18).powi(2)).sqrt() / 0.55).clamp(0.0, 1.0);
-    mix(base, [255.0, 255.0, 255.0], 0.14 * glow)
-}
-
 fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    let t = t.clamp(0.0, 1.0);
     [
         a[0] + (b[0] - a[0]) * t,
         a[1] + (b[1] - a[1]) * t,
@@ -129,63 +92,60 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     ]
 }
 
-/// The "A": two strokes with round ends, and a wave between them.
+/// The "A" and its wave.
 struct Glyph {
     /// Half the width of a leg.
     leg: f32,
     /// Half the width of the wave.
-    bar: f32,
-    /// The wave's height above and below its line.
-    wave: f32,
+    line: f32,
     /// The wave, as a line of points from leg to leg.
     points: Vec<(f32, f32)>,
 }
 
 impl Glyph {
     /// The letter for an icon of `size` pixels: on the smallest, the strokes are kept at least
-    /// two pixels wide, and the wave is a plain crossbar from leg to leg.
+    /// two pixels wide, and the wave is a plain crossbar.
     fn for_size(size: u32) -> Self {
         let pixel = 1.0 / size as f32;
-        let leg = 0.056f32.max(1.05 * pixel);
         let small = size < 32;
-        let bar = if small {
-            0.05f32.max(0.8 * pixel)
+        let leg = 0.086f32.max(1.1 * pixel);
+        let line = if small {
+            0.07f32.max(0.85 * pixel)
         } else {
-            0.03
+            0.052
         };
-        let wave = if small { 0.0 } else { 0.05 };
-        let (from, to, waves) = if small {
-            (leg_x(BAR_Y, FOOT_LEFT), leg_x(BAR_Y, FOOT_RIGHT), 0.0)
-        } else {
-            (WAVE_FROM, WAVE_TO, WAVES)
-        };
+        let height = if small { 0.0 } else { 0.055 };
+        let (from, to) = (leg_x(BAR_Y, FOOT_LEFT), leg_x(BAR_Y, FOOT_RIGHT));
         let steps = 64;
         let points = (0..=steps)
             .map(|step| {
                 let t = step as f32 / steps as f32;
                 let x = from + (to - from) * t;
-                let y = BAR_Y - wave * (std::f32::consts::TAU * waves * t).sin();
+                let y = BAR_Y - height * (std::f32::consts::TAU * t).sin();
                 (x, y)
             })
             .collect();
-        Self {
-            leg,
-            bar,
-            wave,
-            points,
-        }
+        Self { leg, line, points }
     }
 
-    fn contains(&self, u: f32, v: f32) -> bool {
-        if near(u, v, APEX, FOOT_LEFT, self.leg) || near(u, v, APEX, FOOT_RIGHT, self.leg) {
-            return true;
+    /// The colour at `(u, v)`, both `0.0..1.0` from the top left, with its alpha `0.0..=1.0`.
+    fn sample(&self, u: f32, v: f32) -> [f32; 4] {
+        let on_leg =
+            near(u, v, APEX, FOOT_LEFT, self.leg) || near(u, v, APEX, FOOT_RIGHT, self.leg);
+        let on_wave = || {
+            self.points
+                .windows(2)
+                .any(|pair| near(u, v, pair[0], pair[1], self.line))
+        };
+        if !on_leg && !on_wave() {
+            return [0.0; 4];
         }
-        if (v - BAR_Y).abs() > self.wave + self.bar {
-            return false;
-        }
-        self.points
-            .windows(2)
-            .any(|pair| near(u, v, pair[0], pair[1], self.bar))
+        let [r, g, b] = mix(
+            TOP,
+            BOTTOM,
+            (v - APEX.1 + self.leg) / (FOOT_LEFT.1 - APEX.1 + 2.0 * self.leg),
+        );
+        [r, g, b, 1.0]
     }
 }
 

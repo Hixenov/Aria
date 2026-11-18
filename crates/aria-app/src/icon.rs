@@ -29,12 +29,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_icon_is_256_pixels_with_clear_corners_and_a_solid_middle() {
+    fn the_icon_is_256_pixels_and_clear_around_the_letter() {
         let icon = app_icon().expect("the icon reads");
         assert_eq!((icon.width, icon.height), (256, 256));
         assert_eq!(icon.rgba.len(), 256 * 256 * 4);
         let alpha = |x: usize, y: usize| icon.rgba[(y * 256 + x) * 4 + 3];
         assert_eq!(alpha(0, 0), 0, "a corner is drawn on");
-        assert_eq!(alpha(128, 128), 255, "the middle is see-through");
+        assert_eq!(alpha(255, 255), 0, "a corner is drawn on");
+        assert_eq!(alpha(128, 110), 0, "the inside of the A is drawn on");
+        assert_eq!(alpha(94, 128), 255, "the left leg is missing");
+        assert_eq!(alpha(128, 164), 255, "the crossbar is missing");
     }
 }
