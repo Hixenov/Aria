@@ -214,6 +214,8 @@ library-unknown-album = Unknown album
 
 error-startup-title = Aria couldn't start
 error-startup-window = Aria couldn't open its window.
+instance-unreachable-title = Aria is already open
+instance-unreachable-body = Another Aria window is already open, but it didn't answer. Switch to it, or close it (in Task Manager if it doesn't respond), and start Aria again.
 
 ## Language names: endonyms, identical in every locale
 

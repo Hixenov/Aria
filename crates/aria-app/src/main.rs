@@ -28,6 +28,7 @@ use aria_core::{
     CpalCapture, SystemFactory,
     error::I18nError,
     i18n::{Localizer, os_language},
+    instance::{self, Claim, Instance},
     logging::{self, LoggingHandle},
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
@@ -121,7 +122,15 @@ fn main() -> anyhow::Result<()> {
     let window_failed_body = localizer.tr("error-startup-window").into_owned();
     log_stage("i18n", stage.elapsed());
 
-    // 5. Backend. Its waker repaints once the window, and with it the context, exists.
+    // 5. One Aria per data folder. A second copy shows the first and quits here, before it
+    // opens the library.
+    let stage = Instant::now();
+    let Some(instance) = claim_folder(paths.as_ref(), &localizer) else {
+        return Ok(());
+    };
+    log_stage("instance", stage.elapsed());
+
+    // 6. Backend. Its waker repaints once the window, and with it the context, exists.
     let stage = Instant::now();
     let egui_ctx: Arc<OnceLock<egui::Context>> = Arc::default();
     let sink = store.map(|store| Box::new(store) as Box<dyn SettingsSink>);
@@ -152,7 +161,7 @@ fn main() -> anyhow::Result<()> {
     };
     log_stage("backend", stage.elapsed());
 
-    // 6. Global hotkeys. Their manager and press handler must be made here, on the main thread,
+    // 7. Global hotkeys. Their manager and press handler must be made here, on the main thread,
     // before the event loop starts and before any hotkey is registered. A press wakes the
     // window, minimized or not. Without them Aria runs with global hotkeys unavailable.
     let stage = Instant::now();
@@ -165,7 +174,7 @@ fn main() -> anyhow::Result<()> {
     };
     log_stage("hotkeys", stage.elapsed());
 
-    // 7. The window. The app owns the backend from here and stops it in `on_exit`. `main`
+    // 8. The window. The app owns the backend from here and stops it in `on_exit`. `main`
     // keeps `logging` itself, so what is logged after the window closes still reaches the
     // file.
     let deps = AppDeps {
@@ -174,7 +183,13 @@ fn main() -> anyhow::Result<()> {
         paths,
         clock: None,
         hotkeys,
+        instance,
     };
+    if let Some(instance) = &deps.instance {
+        // Another copy's request wakes the window, minimized or not.
+        let wake = repaint_waker(Arc::clone(&egui_ctx));
+        instance.set_waker(move || wake());
+    }
     let mut parts = Some((settings, localizer, deps, notices));
     let stage = Instant::now();
     tracing::info!(renderer = "glow", "opening the window");
@@ -243,21 +258,56 @@ fn library_paths(paths: &AppPaths) -> LibraryPaths {
     }
 }
 
+/// Claims the data folder for this copy. Returns `None` when another copy holds it, and this
+/// one must quit: that copy has been asked to show its window, or, if it did not answer, the
+/// user is told. `Some(None)` means running without the check, when the folder is unknown or
+/// cannot be locked.
+fn claim_folder(paths: Option<&AppPaths>, localizer: &Localizer) -> Option<Option<Instance>> {
+    let Some(paths) = paths else {
+        return Some(None);
+    };
+    match instance::claim(&paths.data_dir, instance::REACH_WAIT) {
+        Ok(Claim::First(instance)) => Some(Some(instance)),
+        Ok(Claim::Running { reached }) => {
+            tracing::info!(reached, "Aria is already running; this copy quits");
+            if !reached {
+                show_message(
+                    rfd::MessageLevel::Info,
+                    &localizer.tr("instance-unreachable-title"),
+                    &localizer.tr("instance-unreachable-body"),
+                );
+            }
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not check for another copy of Aria; running without");
+            Some(None)
+        }
+    }
+}
+
 /// Shows a fatal startup error in a blocking message box. A release build has no console on
 /// Windows, so without it the user would see nothing at all.
-#[cfg(windows)]
 fn show_fatal_error(title: &str, body: &str) {
+    show_message(rfd::MessageLevel::Error, title, body);
+}
+
+/// Shows `body` in a blocking message box, on Windows.
+#[cfg(windows)]
+fn show_message(level: rfd::MessageLevel, title: &str, body: &str) {
     rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
+        .set_level(level)
         .set_title(title)
         .set_description(body)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
 }
 
-/// Elsewhere the error reaches the user through stderr and the log only.
+/// Elsewhere the message reaches the user through stderr and the log only.
 #[cfg(not(windows))]
-fn show_fatal_error(_title: &str, _body: &str) {}
+fn show_message(_level: rfd::MessageLevel, title: &str, body: &str) {
+    eprintln!("Aria: {title}: {body}");
+}
 
 /// The window: titled Aria, 1200×780 (at least 900×600), drawn with glow, and remembered
 /// between runs.

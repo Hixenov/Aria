@@ -213,6 +213,8 @@ library-unknown-album = Անհայտ ալբոմ
 
 error-startup-title = Չհաջողվեց գործարկել Aria-ն
 error-startup-window = Aria-ին չհաջողվեց բացել իր պատուհանը։
+instance-unreachable-title = Aria-ն արդեն բաց է
+instance-unreachable-body = Aria-ի մեկ այլ պատուհան արդեն բաց է, բայց այն չպատասխանեց։ Անցեք դրան կամ փակեք այն (առաջադրանքների կառավարչով, եթե այն չի պատասխանում) և նորից գործարկեք Aria-ն։
 
 ## Language names: endonyms, identical in every locale
 

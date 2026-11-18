@@ -13,6 +13,7 @@ use aria_core::{
     event::Event,
     hotkey::Hotkey,
     i18n::{Localizer, os_language},
+    instance::Instance,
     logging::LogLevelHandle,
     notice::{Notice, NoticeLevel},
     paths::AppPaths,
@@ -112,6 +113,9 @@ pub struct AppDeps {
     /// The system's global hotkeys, made on the main thread before the window. Without them
     /// every hotkey is refused.
     pub hotkeys: Option<SystemHotkeys>,
+    /// This copy's hold on the data folder, kept until the app ends, and the requests of later
+    /// copies to show the window.
+    pub instance: Option<Instance>,
 }
 
 impl AppDeps {
@@ -1009,11 +1013,30 @@ impl AriaApp {
     }
 }
 
+impl AriaApp {
+    /// What brings the window forward, when another copy of Aria has asked for it since the
+    /// last call: shown, restored if minimized, and focused.
+    fn window_requests(&self) -> Vec<egui::ViewportCommand> {
+        let asked = self.deps.instance.as_ref().is_some_and(Instance::take_wake);
+        if !asked {
+            return Vec::new();
+        }
+        vec![
+            egui::ViewportCommand::Visible(true),
+            egui::ViewportCommand::Minimized(false),
+            egui::ViewportCommand::Focus,
+        ]
+    }
+}
+
 impl eframe::App for AriaApp {
     /// Runs before every [`Self::ui`], and alone while the window is minimized. So the
     /// backend's events (a new soundboard list, replaced settings) are taken in and the hotkeys
     /// synced here too: an Aria started minimized registers its hotkeys without a drawn frame.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        for command in self.window_requests() {
+            ctx.send_viewport_cmd(command);
+        }
         self.drain_events(ctx);
         self.run_hotkeys(ctx);
     }
@@ -1271,6 +1294,40 @@ mod tests {
         let app = AriaApp::new(settings, localizer, AppDeps::none(), vec![]);
         assert_eq!(app.current_route(), Route::Home);
         assert_eq!(app.settings().sidebar_width, SIDEBAR_MAX);
+    }
+
+    #[test]
+    fn a_second_launch_brings_the_window_forward_once() {
+        use aria_core::instance::{self, Claim};
+        let dir = tempfile::tempdir().unwrap();
+        let Claim::First(held) = instance::claim(dir.path(), instance::REACH_WAIT).unwrap() else {
+            panic!("expected to be the first");
+        };
+        let deps = AppDeps {
+            instance: Some(held),
+            ..AppDeps::none()
+        };
+        let localizer = Localizer::new(Language::En).unwrap();
+        let app = AriaApp::new(Settings::default(), localizer, deps, vec![]);
+        assert!(app.window_requests().is_empty());
+
+        let second = instance::claim(dir.path(), instance::REACH_WAIT).unwrap();
+        assert!(matches!(second, Claim::Running { reached: true }));
+        let started = std::time::Instant::now();
+        let mut requests = Vec::new();
+        while requests.is_empty() && started.elapsed() < std::time::Duration::from_secs(10) {
+            requests = app.window_requests();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            requests,
+            vec![
+                egui::ViewportCommand::Visible(true),
+                egui::ViewportCommand::Minimized(false),
+                egui::ViewportCommand::Focus,
+            ]
+        );
+        assert!(app.window_requests().is_empty(), "asked once, shown once");
     }
 
     #[test]

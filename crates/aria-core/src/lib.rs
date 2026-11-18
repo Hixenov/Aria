@@ -6,6 +6,7 @@ pub mod error;
 pub mod event;
 pub mod hotkey;
 pub mod i18n;
+pub mod instance;
 pub mod library_service;
 pub mod logging;
 pub mod notice;

@@ -399,6 +399,8 @@ mod tests {
         "settings-voice-chat-hint",
         "error-startup-title",
         "error-startup-window",
+        "instance-unreachable-title",
+        "instance-unreachable-body",
         "home-recent",
         "home-added",
         "home-empty",

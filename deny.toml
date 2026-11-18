@@ -33,6 +33,9 @@ allow = [
     "BSL-1.0",
     # Needed by epaint_default_fonts, which bundles egui's default fonts.
     "Ubuntu-font-1.0",
+    # Added for interprocess (the single-instance pipe): its helpers doctest-file and recvmsg are
+    # 0BSD only, a public-domain-like licence with no conditions at all.
+    "0BSD",
 ]
 
 [bans]
