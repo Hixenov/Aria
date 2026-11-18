@@ -424,22 +424,22 @@ fn large_snapshot_draws_only_visible_rows() {
     let mut harness = harness(LibrarySnapshot::default());
     harness.state_mut().library.snapshot = Arc::new(snapshot(tracks));
 
-    // The first frame with the snapshot caches, filters and sorts all of it.
+    // The first frame with the snapshot caches, filters and sorts all of it. The bound is loose:
+    // this is a debug build, and CI's machines are slow and shared (an Intel Mac took 807 ms).
     let started = Instant::now();
     harness.step();
     let first = started.elapsed();
-    assert!(
-        first < Duration::from_millis(500),
-        "the frame took {first:?}"
-    );
+    println!("first frame: {first:?}");
+    assert!(first < Duration::from_secs(3), "the frame took {first:?}");
 
-    // Later frames reuse that work.
+    // Later frames reuse that work, so they cost a small part of it, on any machine.
     let started = Instant::now();
     harness.step();
     let again = started.elapsed();
+    println!("next frame: {again:?}");
     assert!(
-        again < Duration::from_millis(500),
-        "the next frame took {again:?}"
+        again < first / 4 || again < Duration::from_millis(20),
+        "the next frame took {again:?}, the first {first:?}: the work was done again"
     );
 
     let drawn = harness.query_all_by_label_contains("Song ").count();
