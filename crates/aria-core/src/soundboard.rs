@@ -105,11 +105,12 @@ pub struct StoredSound {
 }
 
 /// A hotkey as stored by the library: text that is empty or not a hotkey counts as none, and so
-/// does a hotkey that is not allowed, such as a plain letter written into the database by hand.
+/// does a hotkey that is not allowed or is one of Aria's shortcuts, such as a plain letter or
+/// Ctrl+1 written into the database by hand.
 pub(crate) fn stored_hotkey(text: Option<&str>) -> Option<Hotkey> {
     let text = text?;
     match text.parse::<Hotkey>() {
-        Ok(hotkey) if hotkey.is_allowed() => Some(hotkey),
+        Ok(hotkey) if hotkey.is_usable() => Some(hotkey),
         Ok(_) => {
             tracing::debug!("a stored hotkey that is not allowed is ignored");
             None
@@ -582,13 +583,13 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(board.stop_hotkey_refusal(&settings), Some(HOTKEY_TAKEN));
-        // With Shift, or on the numpad, the combination is free.
-        let free = key(&format!("{command}+Shift+1"));
-        assert_eq!(hotkey_refusal(&free, []), None);
+        // On the numpad it is the same shortcut inside Aria; with Shift the combination is free.
         assert_eq!(
             hotkey_refusal(&key(&format!("{command}+Numpad1")), []),
-            None
+            Some(HOTKEY_TAKEN)
         );
+        let free = key(&format!("{command}+Shift+1"));
+        assert_eq!(hotkey_refusal(&free, []), None);
     }
 
     #[test]
@@ -597,6 +598,20 @@ mod tests {
         assert_eq!(stored_hotkey(Some("")), None);
         assert_eq!(stored_hotkey(Some("Hyper+Q")), None);
         assert_eq!(stored_hotkey(Some("Ctrl+F1")), Some(key("Ctrl+F1")));
+    }
+
+    #[test]
+    fn a_stored_hotkey_that_is_one_of_arias_shortcuts_is_none() {
+        // Written into the database by hand: registered, it would take the shortcut from Aria.
+        let command = if cfg!(target_os = "macos") {
+            "Win"
+        } else {
+            "Ctrl"
+        };
+        for rest in ["1", "0", "Numpad3", "Alt+R"] {
+            let text = format!("{command}+{rest}");
+            assert_eq!(stored_hotkey(Some(&text)), None, "{text}");
+        }
     }
 
     #[test]

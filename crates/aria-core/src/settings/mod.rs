@@ -262,8 +262,9 @@ fn lenient_hotkey<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Hotkey>, D::
     match Option::<Raw>::deserialize(d)? {
         None => Ok(None),
         Some(Raw::S(s)) => match s.parse::<Hotkey>() {
-            Ok(hotkey) if hotkey.is_allowed() => Ok(Some(hotkey)),
-            // A plain typing key, written into the file by hand, is never registered.
+            Ok(hotkey) if hotkey.is_usable() => Ok(Some(hotkey)),
+            // A plain typing key or one of Aria's shortcuts, written into the file by hand, is
+            // never registered.
             Ok(_) => {
                 tracing::warn!("ignoring a hotkey in the settings that is not allowed");
                 Ok(None)
@@ -460,6 +461,22 @@ mod tests {
         // A plain typing key is never a hotkey.
         assert_eq!(s.mic_toggle_hotkey, None);
         assert_eq!(s.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn a_hotkey_in_the_settings_that_is_one_of_arias_shortcuts_is_dropped() {
+        let command = if cfg!(target_os = "macos") {
+            "Win"
+        } else {
+            "Ctrl"
+        };
+        let text = format!(
+            "stop_sounds_hotkey = \"{command}+1\"
+mic_toggle_hotkey = \"{command}+Numpad9\""
+        );
+        let s: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(s.stop_sounds_hotkey, None);
+        assert_eq!(s.mic_toggle_hotkey, None);
     }
 
     #[test]

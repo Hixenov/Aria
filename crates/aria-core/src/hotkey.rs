@@ -99,10 +99,17 @@ impl Hotkey {
         self.key.is_valid() && (self.ctrl || self.alt || self.win || self.key.stands_alone())
     }
 
-    /// Whether this is one of Aria's own shortcuts: Ctrl+0 to Ctrl+9 (the pages) or Ctrl+Alt+R
-    /// (the right panel), with Command in place of Ctrl on a Mac. Registered with the system, a
-    /// hotkey would take it from Aria, so it counts as used inside Aria. Aria's other shortcuts,
-    /// Space and Alt+Left/Right, are on keys no hotkey can have.
+    /// Whether this hotkey may be used and kept: it is allowed, and it is not one of Aria's own
+    /// shortcuts. A stored one that is not, written by hand, is ignored.
+    pub fn is_usable(&self) -> bool {
+        self.is_allowed() && !self.is_aria_shortcut()
+    }
+
+    /// Whether this is one of Aria's own shortcuts: Ctrl+0 to Ctrl+9 (the pages), on the main row
+    /// or the numpad, which inside Aria acts as the main row, or Ctrl+Alt+R (the right panel),
+    /// with Command in place of Ctrl on a Mac. Registered with the system, a hotkey would take it
+    /// from Aria, so it counts as used inside Aria. Aria's other shortcuts, Space and
+    /// Alt+Left/Right, are on keys no hotkey can have.
     pub fn is_aria_shortcut(&self) -> bool {
         // Aria reads its shortcuts with exactly these modifiers held.
         let command = if cfg!(target_os = "macos") {
@@ -113,7 +120,7 @@ impl Hotkey {
         command
             && !self.shift
             && match self.key {
-                HotkeyKey::Digit(_) => !self.alt,
+                HotkeyKey::Digit(_) | HotkeyKey::Numpad(_) => !self.alt,
                 HotkeyKey::Letter('R') => self.alt,
                 _ => false,
             }
@@ -276,15 +283,24 @@ mod tests {
             assert!(command(&digit.to_string()).is_aria_shortcut(), "{digit}");
         }
         assert!(command("Alt+R").is_aria_shortcut());
-        // Other modifiers, or the numpad's digits, are not Aria's.
+        // Inside Aria the numpad's digits act as the main row's, so with the same modifier they
+        // are the same shortcuts.
+        for digit in 0..=9 {
+            assert!(
+                command(&format!("Numpad{digit}")).is_aria_shortcut(),
+                "Numpad{digit}"
+            );
+        }
+        // Other modifiers are not Aria's.
         for other in [
             "Shift+1",
             "Alt+1",
             "R",
             "Shift+Alt+R",
-            "Numpad1",
+            "Alt+Numpad1",
             "F1",
             "Alt+5",
+            "NumpadAdd",
         ] {
             assert!(!command(other).is_aria_shortcut(), "{other}");
         }
