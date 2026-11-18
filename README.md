@@ -9,7 +9,11 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: version 0.2.4 (release; mostly not checked by hand)
+## Status: version 0.2.5 (release; the icon not yet looked at after an install)
+
+Version 0.2.5 gives Aria its own icon, a neon cyan "A" with a sound wave for its crossbar, in the program, its window and its installer, and fixes a microphone that is slow to open on the second device. See the [changelog](CHANGELOG.md).
+
+### Version 0.2.4 (release; mostly not checked by hand)
 
 Version 0.2.4 keeps Aria to one copy at a time: starting it again brings the open window forward instead of opening a second copy on the same library. It also fixes the chat features of 0.2.3: the microphone hotkey without a second device, the microphone's name in the player bar, the music falling back onto the second device, a slow microphone holding up the music, and how screen readers read the microphone volume. It is tested with automated tests; on one Windows PC the release build was run, and its log shows later launches reaching the open copy and quitting. That the window comes forward on screen, and the chat fixes, have not been checked by hand; see [docs/testing/0.2.4-manual-check.md](docs/testing/0.2.4-manual-check.md). Close any older copy of Aria before starting 0.2.4: older versions do not take part in the check.
 

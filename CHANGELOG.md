@@ -5,12 +5,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.2.5] - unreleased (Aria's own icon)
+## [0.2.5] - 2026-11-18 (Aria's own icon)
+
+Checked with automated tests on Windows and in CI on Linux and macOS. Windows reads the icon from the release `aria.exe` and from the installer. The icon was not looked at after an install, in the Start menu or the taskbar.
 
 ### Added
 
 - Aria's own icon: a bold, rounded "A" in bright neon cyan, almost white at the top and deeper at the feet, whose crossbar is a sound wave, with a thin light rim inside its edge and a soft cyan glow around it, on a clear background. On the smallest sizes the glow and the rim are left out. It is built into `aria.exe` on Windows, so Explorer, the Start menu, the desktop shortcut, the taskbar and the list of installed programs show it; the window shows it in its title bar, the taskbar and Alt+Tab on every system; and the installer shows it too. Before, Aria had no icon of its own, and Windows showed its generic one.
 - `crates/aria-app/examples/make_icon.rs`, which draws the icon from a few shapes and writes `assets/icon/aria.ico` (16 to 256 pixels) and `assets/icon/aria-256.png`. Each size is drawn on its own; on the smallest the wave becomes a plain crossbar.
+
+### Fixed
+
+- A microphone still opening (since 0.2.4 it opens on a thread of its own) did not count as needing the second device. If the second device had already been idle for most of its 15 seconds, for example after a sound, it could close while the microphone opened, and the microphone was then never opened, until the next change. It now keeps the second device, and if the second device fails while it opens, it is opened again with it.
+- Some chat tests waited a fixed time for the engine and failed on a slow machine; they now wait for the sound itself.
 
 ### Changed
 
