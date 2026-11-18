@@ -5,9 +5,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.2.4] - unreleased (one Aria at a time, and fixes to the chat features)
+## [0.2.4] - 2026-11-18 (one Aria at a time, and fixes to the chat features)
 
-Checked with automated tests on Windows and in CI on Linux and macOS. Nothing in this version has been run by hand yet: see `docs/testing/0.2.4-manual-check.md`.
+Checked with automated tests on Windows and in CI on Linux and macOS. The release build was run on one Windows PC: its log shows three later launches reaching the open copy and quitting. That the window came forward on screen, and the chat fixes, were not reported on; see `docs/testing/0.2.4-manual-check.md`.
 
 ### Added
 
