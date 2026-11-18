@@ -9,7 +9,7 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
-- Aria's own icon: a bold, rounded "A" in Aria's teal, lighter at the top and deeper at the bottom, whose crossbar is a sound wave, on a clear background. It is built into `aria.exe` on Windows, so Explorer, the Start menu, the desktop shortcut, the taskbar and the list of installed programs show it; the window shows it in its title bar, the taskbar and Alt+Tab on every system; and the installer shows it too. Before, Aria had no icon of its own, and Windows showed its generic one.
+- Aria's own icon: a bold, rounded "A" in bright neon cyan, almost white at the top and deeper at the feet, whose crossbar is a sound wave, with a thin light rim inside its edge and a soft cyan glow around it, on a clear background. On the smallest sizes the glow and the rim are left out. It is built into `aria.exe` on Windows, so Explorer, the Start menu, the desktop shortcut, the taskbar and the list of installed programs show it; the window shows it in its title bar, the taskbar and Alt+Tab on every system; and the installer shows it too. Before, Aria had no icon of its own, and Windows showed its generic one.
 - `crates/aria-app/examples/make_icon.rs`, which draws the icon from a few shapes and writes `assets/icon/aria.ico` (16 to 256 pixels) and `assets/icon/aria-256.png`. Each size is drawn on its own; on the smallest the wave becomes a plain crossbar.
 
 ### Changed

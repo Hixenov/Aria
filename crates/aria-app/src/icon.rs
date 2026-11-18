@@ -1,6 +1,6 @@
 //! Aria's icon for its window: the title bar, the taskbar and Alt+Tab. The same drawing is built
 //! into `aria.exe` on Windows (see `build.rs`); `assets/icon/` holds both, made by
-//! `cargo run -p aria-app --example make_icon`.
+//! `cargo run --release -p aria-app --example make_icon`.
 
 use eframe::egui::IconData;
 
@@ -36,8 +36,9 @@ mod tests {
         let alpha = |x: usize, y: usize| icon.rgba[(y * 256 + x) * 4 + 3];
         assert_eq!(alpha(0, 0), 0, "a corner is drawn on");
         assert_eq!(alpha(255, 255), 0, "a corner is drawn on");
-        assert_eq!(alpha(128, 110), 0, "the inside of the A is drawn on");
-        assert_eq!(alpha(94, 128), 255, "the left leg is missing");
-        assert_eq!(alpha(128, 164), 255, "the crossbar is missing");
+        // Only the glow reaches into the inside of the A.
+        assert!(alpha(128, 115) < 255, "the inside of the A is filled in");
+        assert_eq!(alpha(95, 128), 255, "the left leg is missing");
+        assert_eq!(alpha(128, 158), 255, "the crossbar is missing");
     }
 }
