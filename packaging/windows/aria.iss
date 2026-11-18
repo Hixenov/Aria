@@ -44,6 +44,8 @@ UninstallDisplayIcon={app}\aria.exe
 UninstallDisplayName=Aria {#AppVersion}
 CloseApplications=yes
 ShowLanguageDialog=auto
+; Tells Explorer that "Open with" changed, below.
+ChangesAssociations=yes
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
@@ -64,5 +66,33 @@ Name: "{group}\Aria"; Filename: "{app}\aria.exe"
 Name: "{group}\{cm:UninstallProgram,Aria}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Aria"; Filename: "{app}\aria.exe"; Tasks: desktopicon
 
+; Aria in "Open with" for the audio files it plays, for this user only. The default program for
+; these files is left alone: Windows lets the user choose it ("Open with", "Always"). Uninstalling
+; removes what is written here.
+[Registry]
+Root: HKA; Subkey: "Software\Classes\Aria.AudioFile"; ValueType: string; ValueName: ""; ValueData: "Audio file"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Aria.AudioFile\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\aria.exe,0"
+Root: HKA; Subkey: "Software\Classes\Aria.AudioFile\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\aria.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\Applications\aria.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "Aria"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Applications\aria.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\aria.exe"" ""%1"""
+#define AudioType(Ext) \
+  'Root: HKA; Subkey: "Software\Classes\.' + Ext + '\OpenWithProgids"; ValueType: string; ValueName: "Aria.AudioFile"; ValueData: ""; Flags: uninsdeletevalue' + NewLine + \
+  'Root: HKA; Subkey: "Software\Classes\Applications\aria.exe\SupportedTypes"; ValueType: string; ValueName: ".' + Ext + '"; ValueData: ""'
+{#AudioType("mp3")}
+{#AudioType("flac")}
+{#AudioType("wav")}
+{#AudioType("m4a")}
+{#AudioType("aac")}
+{#AudioType("ogg")}
+{#AudioType("oga")}
+{#AudioType("opus")}
+{#AudioType("aif")}
+{#AudioType("aiff")}
+
 [Run]
 Filename: "{app}\aria.exe"; Description: "{cm:LaunchProgram,Aria}"; Flags: nowait postinstall skipifsilent
+
+; For checking: ISCC /DSavePreprocessed=<file> writes the script as compiled.
+#ifdef SavePreprocessed
+  #expr SaveToFile(SavePreprocessed)
+#endif

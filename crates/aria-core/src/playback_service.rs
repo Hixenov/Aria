@@ -74,6 +74,10 @@ const STOPPED_AFTER_FAILURES: Notice =
 const DEVICE_FALLBACK: Notice = Notice::new(NoticeLevel::Warning, "playback-device-fallback");
 /// No output could be opened.
 const NO_DEVICE: Notice = Notice::new(NoticeLevel::Error, "playback-no-device");
+/// Files opened this soon after others go behind them, in the queue, instead of replacing them:
+/// Windows starts Aria once for each of several files opened together, and each launch sends its
+/// file on its own.
+pub const OPEN_JOIN: Duration = Duration::from_millis(1_500);
 /// Some of the files opened are not music Aria plays, or could not be read. Takes `count`.
 pub const OPEN_SKIPPED: &str = "open-skipped";
 
@@ -171,6 +175,8 @@ pub struct PlaybackService {
     snapshot: Option<Arc<LibrarySnapshot>>,
     /// Files played from outside the library this session.
     opened: OpenedTracks,
+    /// When files were last opened, for [`OPEN_JOIN`].
+    last_open: Option<Instant>,
     last_token: u64,
     /// What the engine holds as the track being heard. `None` means nothing is loaded.
     current: Option<Given>,
@@ -259,6 +265,7 @@ impl PlaybackService {
             queue: Queue::new(seed),
             snapshot: None,
             opened: OpenedTracks::default(),
+            last_open: None,
             last_token: 0,
             current: None,
             ended: false,
@@ -1110,8 +1117,18 @@ impl PlaybackService {
                     .with_arg("count", skipped.to_string()),
             );
         }
+        let joins = self.last_open.is_some_and(|at| at.elapsed() < OPEN_JOIN)
+            && self.queue.current().is_some();
         if ids.is_empty() {
             self.publish();
+            return;
+        }
+        self.last_open = Some(Instant::now());
+        if joins {
+            for id in ids {
+                self.queue.add_to_queue(id);
+            }
+            self.queue_changed();
         } else {
             self.play_context(ids, 0);
         }
@@ -3139,6 +3156,33 @@ mod tests {
             "{:?}",
             rig.notices
         );
+    }
+
+    #[test]
+    fn files_opened_one_by_one_in_quick_succession_queue_up_behind_the_first() {
+        // As Explorer does for several selected files: one launch, and one request, for each.
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        let (_a, first) = outside_file("first.wav", 3_000);
+        let (_b, second) = outside_file("second.wav", 3_000);
+        let (_c, third) = outside_file("third.wav", 3_000);
+        rig.send(Command::OpenPaths(vec![first]));
+        rig.send(Command::OpenPaths(vec![second]));
+        rig.send(Command::OpenPaths(vec![third]));
+        assert_eq!(rig.view().current, Some(TrackId(-1)));
+        assert_eq!(rig.upcoming(), [TrackId(-2), TrackId(-3)]);
+    }
+
+    #[test]
+    fn a_file_opened_later_plays_at_once() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        let (_a, first) = outside_file("first.wav", 3_000);
+        let (_b, second) = outside_file("second.wav", 3_000);
+        rig.send(Command::OpenPaths(vec![first]));
+        rig.service.last_open = Some(Instant::now() - OPEN_JOIN);
+        rig.send(Command::OpenPaths(vec![second]));
+        assert_eq!(rig.view().current, Some(TrackId(-2)));
     }
 
     #[test]
