@@ -1,8 +1,9 @@
 //! An output with no device behind it, for tests. Nothing plays until [`FakeControl::pull`].
 //! And a capture with no device behind it, which captures what a test pushes.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use crate::capture::{CaptureFactory, CaptureFormat, CaptureReader, CaptureWriter, capture_ring};
 use crate::device::{DeviceId, DeviceInfo};
@@ -31,6 +32,8 @@ struct FactoryState {
     missing: Vec<DeviceId>,
     /// Devices whose shared outputs run at another format than the factory's.
     shared_formats: Vec<(DeviceId, OutputFormat)>,
+    /// Devices slow to open and to close, and how slow: as a Bluetooth or sleeping USB one.
+    slow: Vec<(DeviceId, Duration, Duration)>,
 }
 
 impl Default for FactoryState {
@@ -45,6 +48,7 @@ impl Default for FactoryState {
             refuse_exclusive: false,
             missing: Vec::new(),
             shared_formats: Vec::new(),
+            slow: Vec::new(),
         }
     }
 }
@@ -110,6 +114,11 @@ impl FakeFactory {
         self.state().shared_formats.push((device, format));
     }
 
+    /// Make opens of `device` take `open`, and the closing of its outputs `close`, from now on.
+    pub fn slow_device(&self, device: DeviceId, open: Duration, close: Duration) {
+        self.state().slow.push((device, open, close));
+    }
+
     /// A control for every output opened so far, oldest first.
     pub fn outputs(&self) -> Vec<FakeControl> {
         self.state().outputs.clone()
@@ -159,6 +168,17 @@ impl OutputFactory for FakeFactory {
         device: Option<&DeviceId>,
         request: OutputRequest,
     ) -> Result<Opened, AudioError> {
+        let (open_delay, close_delay) = device
+            .and_then(|device| {
+                self.state()
+                    .slow
+                    .iter()
+                    .find(|(id, _, _)| id == device)
+                    .map(|(_, open, close)| (*open, *close))
+            })
+            .unwrap_or_default();
+        // Not holding the state, so that a test can look at the factory meanwhile.
+        std::thread::sleep(open_delay);
         let mut state = self.state();
         if state.failures_left > 0 {
             state.failures_left -= 1;
@@ -206,6 +226,8 @@ impl OutputFactory for FakeFactory {
             opened_as: (exclusive, device_format),
             failed: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            close_delay,
+            inputs_added: AtomicUsize::new(0),
         });
         state.outputs.push(FakeControl {
             shared: Arc::clone(&shared),
@@ -225,6 +247,10 @@ struct FakeShared {
     opened_as: (bool, DeviceFormat),
     failed: AtomicBool,
     closed: AtomicBool,
+    /// How long dropping the output takes.
+    close_delay: Duration,
+    /// How many inputs have been added to the output.
+    inputs_added: AtomicUsize,
 }
 
 /// An output driven by hand through its [`FakeControl`].
@@ -235,6 +261,7 @@ pub struct FakeOutput {
 
 impl Drop for FakeOutput {
     fn drop(&mut self) {
+        std::thread::sleep(self.shared.close_delay);
         self.shared.closed.store(true, Ordering::Release);
     }
 }
@@ -245,7 +272,9 @@ impl AudioOutput for FakeOutput {
     }
 
     fn add_input(&mut self, capacity_frames: usize) -> Result<InputHandle, AudioError> {
-        self.control.add_input(capacity_frames)
+        let input = self.control.add_input(capacity_frames)?;
+        self.shared.inputs_added.fetch_add(1, Ordering::AcqRel);
+        Ok(input)
     }
 
     fn failed(&self) -> bool {
@@ -284,6 +313,12 @@ impl FakeControl {
     /// The device the output was opened on. `None` is the system default.
     pub fn device(&self) -> Option<DeviceId> {
         self.shared.device.clone()
+    }
+
+    /// How many inputs the engine has added to the output: one for the music, the copy, the
+    /// microphone or each sound.
+    pub fn inputs_added(&self) -> usize {
+        self.shared.inputs_added.load(Ordering::Acquire)
     }
 
     /// Whether the output was opened exclusively, and at what format.

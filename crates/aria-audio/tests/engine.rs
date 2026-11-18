@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1327,7 +1327,7 @@ fn shutdown_stops_the_thread() {
 /// Opens nothing: the call sticks until the test lets go, like a wedged driver.
 struct StuckFactory {
     reached: Sender<()>,
-    release: Receiver<()>,
+    release: Mutex<Receiver<()>>,
 }
 
 impl OutputFactory for StuckFactory {
@@ -1341,7 +1341,11 @@ impl OutputFactory for StuckFactory {
         _request: OutputRequest,
     ) -> Result<Opened, AudioError> {
         let _ = self.reached.send(());
-        let _ = self.release.recv();
+        let release = self
+            .release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = release.recv();
         Err(AudioError::NoDevice)
     }
 }
@@ -1352,7 +1356,7 @@ fn shutdown_gives_up_on_a_stuck_thread() {
     let (release, release_rx) = mpsc::channel();
     let factory = StuckFactory {
         reached: reached_tx,
-        release: release_rx,
+        release: Mutex::new(release_rx),
     };
     let engine = Engine::start(Box::new(factory), no_microphone(), Box::new(|_| {})).unwrap();
     engine.send(load(track(1, "tone.flac")));

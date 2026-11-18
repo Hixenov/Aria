@@ -55,8 +55,9 @@ pub struct Opened {
 /// wait.
 pub type DeviceLister = Arc<dyn Fn() -> Result<Vec<DeviceInfo>, AudioError> + Send + Sync>;
 
-/// Opens outputs. Each call opens a new, independent one.
-pub trait OutputFactory: Send {
+/// Opens outputs. Each call opens a new, independent one, and calls may come from more than one
+/// thread at once.
+pub trait OutputFactory: Send + Sync {
     /// Open `device`, or the system default when it is `None`.
     ///
     /// A factory that cannot open the device exclusively opens it shared and says so in

@@ -20,7 +20,7 @@ use tempfile::TempDir;
 
 use EngineCommand::{
     Load, Pause, Play, PlaySound, Seek, SetDevice, SetExclusive, SetMicrophone, SetShareMusic,
-    SetSoundDevice, SetVolume,
+    SetSoundDevice, SetVolume, StopSounds,
 };
 use EngineEvent::{
     MicrophoneClosed, MicrophoneFailed, MicrophoneOpened, Output, SoundEnded, SoundFailed,
@@ -197,6 +197,17 @@ impl Rig {
         }
     }
 
+    /// The latest output on the second device, once the engine has put something on it (the
+    /// copy, the microphone or a sound). It is opened on a thread of its own, so the factory has
+    /// it a moment before the engine does.
+    fn second_in_use(&self) -> FakeControl {
+        let second = self.output_on(Some(&second_device()));
+        wait_until("the engine to use the second output", || {
+            second.inputs_added() > 0
+        });
+        second
+    }
+
     fn second_outputs(&self) -> usize {
         self.factory.outputs_on(Some(&second_device())).len()
     }
@@ -252,7 +263,7 @@ fn sharing(gain: f32, path: &Path) -> (Rig, FakeControl, FakeControl) {
     rig.send(share(gain));
     rig.start(1, path);
     let mine = rig.output_on(None);
-    let second = rig.output_on(Some(&second_device()));
+    let second = rig.second_in_use();
     (rig, mine, second)
 }
 
@@ -1290,4 +1301,170 @@ fn a_cable_as_the_microphone_is_refused() {
 
     rig.expect(EngineEvent::MicrophoneIsCable);
     assert!(!rig.mic.open_now());
+}
+
+/// A 660 Hz sound of `frames` frames at 44.1 kHz, in a folder that goes with the guard.
+fn sound_file(frames: usize) -> io::Result<(TempDir, PathBuf)> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("sound.wav");
+    write_tone_wav(&path, 44_100, 2, frames as u64, 660.0)?;
+    Ok((dir, path))
+}
+
+/// Pulls `output` in real time for a second and a half, and fails if the music runs dry.
+fn music_keeps_playing(output: &FakeControl, after: &str) {
+    let chunk = SECOND / 10;
+    for step in 0..15 {
+        thread::sleep(Duration::from_millis(100));
+        let heard = output.pull(chunk);
+        assert!(
+            audible_frames(&heard, 2) * 10 >= chunk * 9,
+            "the music ran dry {} ms after {after}",
+            (step + 1) * 100
+        );
+    }
+}
+
+#[test]
+fn a_second_device_slow_to_open_does_not_hold_up_the_music() {
+    let (_dir, path) = tone(5 * SECOND as u64).unwrap();
+    let (_sound_dir, sound) = sound_file(SECOND / 4).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    // Two seconds, longer than the music's one-second ring.
+    rig.factory
+        .slow_device(second_device(), Duration::from_secs(2), Duration::ZERO);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.start(1, &path);
+    let mine = rig.output_on(None);
+    mine.pull(SECOND / 10);
+    rig.settle();
+
+    rig.send(PlaySound {
+        token: 3,
+        path: sound,
+        gain: 1.0,
+        route: SoundRoute::Second,
+    });
+    music_keeps_playing(&mine, "the sound was fired");
+    // The sound plays once the device is open.
+    rig.expect(SoundStarted { token: 3 });
+    let second = rig.output_on(Some(&second_device()));
+    assert!(!pull_sounding(&second, None, SECOND / 20).is_empty());
+}
+
+#[test]
+fn a_second_device_slow_to_close_does_not_hold_up_the_music() {
+    let (_dir, path) = tone(5 * SECOND as u64).unwrap();
+    let (_sound_dir, sound) = sound_file(SECOND / 4).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.factory
+        .slow_device(second_device(), Duration::ZERO, Duration::from_secs(2));
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.start(1, &path);
+    let mine = rig.output_on(None);
+    rig.send(PlaySound {
+        token: 3,
+        path: sound,
+        gain: 1.0,
+        route: SoundRoute::Second,
+    });
+    rig.expect(SoundStarted { token: 3 });
+    let second = rig.output_on(Some(&second_device()));
+    mine.pull(SECOND / 10);
+    rig.settle();
+
+    // No second device: its output closes, which takes two seconds.
+    rig.send(SetSoundDevice(None));
+    music_keeps_playing(&mine, "the second device was let go");
+    wait_until("the second output to close", || second.is_closed());
+}
+
+#[test]
+fn a_sound_for_both_waits_for_the_second_device_and_starts_on_both_together() {
+    let (_sound_dir, sound) = sound_file(SECOND / 2).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.factory
+        .slow_device(second_device(), Duration::from_millis(300), Duration::ZERO);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(PlaySound {
+        token: 3,
+        path: sound,
+        gain: 1.0,
+        route: SoundRoute::Both,
+    });
+    rig.expect(SoundStarted { token: 3 });
+    let mine = rig.output_on(None);
+    let second = rig.output_on(Some(&second_device()));
+    // Nothing of it was heard on either before the other: both start at the sound's start.
+    let on_mine = mine.pull(SECOND / 10);
+    let on_second = second.pull(SECOND / 10);
+    assert!(audible_frames(&on_mine, 2) > 0);
+    assert!(
+        on_mine == on_second,
+        "the two parts of the sound are not in step"
+    );
+}
+
+#[test]
+fn a_sound_stopped_while_the_second_device_opens_never_plays() {
+    let (_sound_dir, sound) = sound_file(SECOND / 4).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.factory
+        .slow_device(second_device(), Duration::from_millis(400), Duration::ZERO);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(PlaySound {
+        token: 3,
+        path: sound,
+        gain: 1.0,
+        route: SoundRoute::Second,
+    });
+    rig.settle();
+    rig.send(StopSounds);
+    let mut events = Vec::new();
+    loop {
+        let event = rig.next_event();
+        events.push(event.clone());
+        if event == (SoundEnded { token: 3 }) {
+            break;
+        }
+    }
+    let second = rig.output_on(Some(&second_device()));
+    rig.settle();
+    assert!(second.pull(SECOND / 10).iter().all(|sample| *sample == 0.0));
+    events.extend(rig.drain_events());
+    assert!(
+        !events.contains(&SoundStarted { token: 3 }),
+        "the stopped sound started: {events:?}"
+    );
+}
+
+#[test]
+fn a_copy_that_waits_for_a_slow_second_device_plays_in_step_at_once() {
+    let (_dir, path) = tone(4 * SECOND as u64).unwrap();
+    let rig = Rig::new(STEREO_44K);
+    rig.factory
+        .slow_device(second_device(), Duration::from_millis(300), Duration::ZERO);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(share(0.5));
+    rig.send(Load {
+        track: TrackRequest { token: 1, path },
+        start_ms: 0,
+        play: true,
+    });
+    let mine = rig.output_on(None);
+    // The music plays on while the second device opens.
+    while rig.factory.outputs_on(Some(&second_device())).is_empty() {
+        mine.pull(SECOND / 100);
+        thread::sleep(Duration::from_millis(10));
+    }
+    let second = rig.second_in_use();
+
+    // What the music had queued is in the copy, not silence in its place.
+    let local = mine.pull(SECOND / 4);
+    let copy = second.pull(SECOND / 4);
+    assert!(audible_frames(&local, 2) > 0);
+    assert!(
+        copy[FADE..] == scaled(&local[FADE..], 0.5)[..],
+        "the copy is not in step with the music"
+    );
 }
