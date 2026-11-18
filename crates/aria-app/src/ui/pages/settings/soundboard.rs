@@ -287,6 +287,7 @@ fn level_row(
             enabled,
             label: name,
             step: LEVEL_STEP,
+            full: max,
         }
         .show(ui, p);
         if let Some(at) = moved.committed {
@@ -477,6 +478,28 @@ mod tests {
         let updates = updated(&harness);
         assert!(updates.iter().any(|s| s.share_music), "{updates:?}");
         assert!(updates.iter().any(|s| s.mic_enabled), "{updates:?}");
+    }
+
+    #[test]
+    fn assistive_technology_reads_the_volumes_as_shown() {
+        let settings = Settings {
+            share_music: true,
+            share_music_volume: 0.5,
+            mic_enabled: true,
+            mic_volume: 1.0,
+            ..with_cable()
+        };
+        let harness = card(settings, outputs());
+        let value = |key: &str| {
+            let label = harness.state().english(key);
+            harness
+                .get_by_role_and_label(Role::Slider, &label)
+                .accesskit_node()
+                .numeric_value()
+        };
+        // 100 % on a bar that runs to 200 % is read as 100, not as half the bar.
+        assert_eq!(value("settings-mic-volume"), Some(100.0));
+        assert_eq!(value("settings-share-music-volume"), Some(50.0));
     }
 
     #[test]

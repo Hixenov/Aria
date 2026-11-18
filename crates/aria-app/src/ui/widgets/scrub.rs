@@ -22,6 +22,8 @@ pub struct Scrub<'a> {
     pub label: &'a str,
     /// How far an arrow key moves it.
     pub step: f32,
+    /// The level the far end stands for, `1.0` being 100 %: `2.0` for a bar that runs to 200 %.
+    pub full: f32,
 }
 
 /// What the user did to a [`Scrub`] this frame, as fractions of its length.
@@ -42,6 +44,7 @@ impl Scrub<'_> {
             enabled,
             label,
             step,
+            full,
         } = self;
         let id = ui.scope_id().with(id);
         let sense = if enabled {
@@ -50,8 +53,8 @@ impl Scrub<'_> {
             Sense::hover()
         };
         let response = ui.interact(rect, id, sense);
-        // Assistive technology reads the value as a percentage.
-        let percent = f64::from(value) * 100.0;
+        // Assistive technology reads the value as the percentage shown beside the bar.
+        let percent = f64::from(value * full) * 100.0;
         response.widget_info(|| WidgetInfo::slider(enabled, percent, label));
 
         let line = Rect::from_min_max(

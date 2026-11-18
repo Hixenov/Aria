@@ -473,6 +473,7 @@ fn seek_row(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         enabled: seekable,
         label: &label,
         step,
+        full: 1.0,
     };
     let moved = scrub.show(ui, p);
     // While dragging, the bar and the time show where the pointer is.
@@ -602,6 +603,7 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         enabled: !locked,
         label: &label,
         step: VOLUME_STEP,
+        full: 1.0,
     };
     let moved = scrub.show(ui, p);
     // Every move is a change to apply; the app skips the ones that change nothing.

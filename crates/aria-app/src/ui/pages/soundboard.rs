@@ -307,6 +307,7 @@ fn menu(
         enabled: true,
         label: &label,
         step: VOLUME_STEP,
+        full: 1.0,
     }
     .show(ui, &p);
     if let Some(volume) = moved.committed {
