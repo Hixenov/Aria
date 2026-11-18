@@ -309,14 +309,18 @@ fn show_message(_level: rfd::MessageLevel, title: &str, body: &str) {
     eprintln!("Aria: {title}: {body}");
 }
 
-/// The window: titled Aria, 1200×780 (at least 900×600), drawn with glow, and remembered
-/// between runs.
+/// The window: titled Aria, with Aria's icon, 1200×780 (at least 900×600), drawn with glow, and
+/// remembered between runs.
 fn native_options() -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(APP_NAME)
+        .with_inner_size([1200.0, 780.0])
+        .with_min_inner_size([900.0, 600.0]);
+    if let Some(icon) = aria_app::icon::app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(APP_NAME)
-            .with_inner_size([1200.0, 780.0])
-            .with_min_inner_size([900.0, 600.0]),
+        viewport,
         persist_window: true,
         renderer: eframe::Renderer::Glow,
         ..Default::default()

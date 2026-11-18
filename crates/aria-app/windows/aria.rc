@@ -1,0 +1,3 @@
+// Aria's icon, built into aria.exe by build.rs. Windows shows the first icon in the file as the
+// program's own: in Explorer, the Start menu, on the desktop and in the taskbar.
+1 ICON "../../../assets/icon/aria.ico"

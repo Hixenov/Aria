@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
@@ -63,3 +63,5 @@ wasapi = "0.27"
 global-hotkey = "0.10"
 # One Aria at a time: the second copy asks the first to show its window, over a local named pipe.
 interprocess = "2.4.7"
+# Builds Aria's icon into aria.exe on Windows, at build time only.
+embed-resource = "3.0.12"

@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.5] - unreleased (Aria's own icon)
+
+### Added
+
+- Aria's own icon: a white "A" crossed by a sound wave, on a rounded square in Aria's teal. It is built into `aria.exe` on Windows, so Explorer, the Start menu, the desktop shortcut, the taskbar and the list of installed programs show it; the window shows it in its title bar, the taskbar and Alt+Tab on every system; and the installer shows it too. Before, Aria had no icon of its own, and Windows showed its generic one.
+- `crates/aria-app/examples/make_icon.rs`, which draws the icon from a few shapes and writes `assets/icon/aria.ico` (16 to 256 pixels) and `assets/icon/aria-256.png`. Each size is drawn on its own; on the smallest the wave becomes a plain crossbar.
+
+### Changed
+
+- Version 0.2.5.
+- New build-time dependency on Windows: `embed-resource` 3.0.12 (MIT), which hands the icon to the Windows resource compiler. A Windows build now needs the Windows SDK's resource compiler, which the Visual Studio C++ build tools install.
+
 ## [0.2.4] - 2026-11-18 (one Aria at a time, and fixes to the chat features)
 
 Checked with automated tests on Windows and in CI on Linux and macOS. The release build was run on one Windows PC: its log shows three later launches reaching the open copy and quitting. That the window came forward on screen, and the chat fixes, were not reported on; see `docs/testing/0.2.4-manual-check.md`.

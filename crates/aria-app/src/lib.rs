@@ -6,6 +6,7 @@ pub mod app;
 pub mod artwork;
 mod folders;
 mod hotkeys;
+pub mod icon;
 pub mod nav;
 mod shortcuts;
 pub mod ui;
