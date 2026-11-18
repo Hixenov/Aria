@@ -15,7 +15,11 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: version 0.2.6 (release; not yet checked by hand)
+## Status: version 0.2.7 in development (not released); the latest release is 0.2.6
+
+Version 0.2.7 is about getting music into Aria. Open files with Aria (a double-click, "Open with", `aria.exe <files>`, or a drop on the window) and they play; a file outside your library plays without being added, for this session only. Folders dropped or opened are added to the library. The installer adds Aria to "Open with" for the audio files it plays, without taking the default program. And the library's folders are watched, so music copied into them shows up by itself. It is checked with automated tests only. See the [changelog](CHANGELOG.md) and [docs/testing/0.2.7-manual-check.md](docs/testing/0.2.7-manual-check.md).
+
+### Version 0.2.6 (release; not yet checked by hand)
 
 Version 0.2.6 makes Aria more reliable: a second device that is slow to open or close no longer interrupts the music, a saved volume of 0 no longer plays aloud for a moment when exclusive mode is refused, a microphone that opens too late is never started, the microphone reaches the cable sooner, and a few smaller fixes. It is checked with automated tests only; nobody has tried it by hand or listened to it yet. See the [changelog](CHANGELOG.md) and the short hand check in [docs/testing/0.2.6-manual-check.md](docs/testing/0.2.6-manual-check.md).
 

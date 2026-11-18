@@ -42,3 +42,9 @@ The licenses above are those declared in each crate's `Cargo.toml`. These are th
 
 Rust crate dependencies are under their own licenses, checked in CI with `cargo-deny`
 (see `deny.toml`).
+
+## Watching folders (0.2.7)
+
+| Component | License | Used for |
+|-----------|---------|----------|
+| `notify` 8.2 | CC0-1.0 | Watching the library's folders for changes |

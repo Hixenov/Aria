@@ -85,7 +85,16 @@ directory only; the library database, logs and cache still go to the folders abo
 ## One copy at a time (since 0.2.4)
 
 - **The lock.** The running copy holds a lock on `aria.lock` in the data folder. The operating system lets go of it when Aria ends, however it ends.
-- **The pipe.** While Aria runs, it listens on a local named pipe (on Windows, `\\.\pipe\aria-<number>.sock`, where the number is worked out from the data folder's path; on Linux and macOS, a local socket). A second copy of Aria sends it one word, `show`, and the open copy brings its window forward. Nothing else is accepted, nothing is sent back, and nothing is stored. The pipe is local to your computer: it is not a network connection, and Aria still makes no network requests. Other programs on this computer could send the same word, and could do no more than bring Aria's window forward.
+- **The pipe.** While Aria runs, it listens on a local named pipe (on Windows, `\\.\pipe\aria-<number>.sock`, where the number is worked out from the data folder's path; on Linux and macOS, a local socket). A second copy of Aria sends it the word `show`, and, since 0.2.7, the full paths of the files and folders it was started with (as with a double-click or "Open with"), one per line. The open copy brings its window forward and opens them: files play, and folders are added to the library. Nothing else is accepted, nothing is sent back, and the paths are not stored, except that a folder becomes part of the library as Add folder makes it. The pipe is local to your computer: it is not a network connection, and Aria still makes no network requests. Other programs running as you on this computer could send the same, and could do no more than bring Aria's window forward, play files, and add folders to the library.
+
+## Files opened from outside the library (since 0.2.7)
+
+- **What is read.** A file opened with Aria that is not in the library is read for its tags and played. Its path, tags and length are held in memory until Aria closes. They are not written to `library.db`, to the queue, to the history or to `settings.toml`; the path may appear in logs at the debug level, as library paths do.
+- **"Open with".** The installer writes, for your user only, the registry entries that put Aria in "Open with" for audio files (under `HKEY_CURRENT_USER\Software\Classes`: the `Aria.AudioFile` type, `Applications\aria.exe`, and an `OpenWithProgids` value for each file type). Uninstalling removes them. They change no default program.
+
+## Watching the library's folders (since 0.2.7)
+
+While "Watch folders for changes" is on (Settings, Library; on by default), Aria asks the operating system to tell it of changes in the library's folders. It learns only the paths of the files that change, and acts on them only by scanning the library again, as Rescan does. Nothing about them is stored beyond what a scan stores.
 
 ## The microphone (since 0.2.3)
 

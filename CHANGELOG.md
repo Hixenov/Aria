@@ -5,6 +5,35 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.7] - unreleased (getting music into Aria)
+
+Checked with automated tests on Windows. Nothing in it has been tried by hand: no double-click, no "Open with", no drop, and no watched folder in a running window. See `docs/testing/0.2.7-manual-check.md`.
+
+### Added
+
+- **Opening files with Aria.** `aria.exe` started with files plays them, in the order given, as the list being played. With Aria already open, the new launch hands its files to the open window, which comes forward and plays them, and quits. Files dropped on the window play the same way, and while files are held over the window it says what dropping them does.
+  - A file in the library plays as its library track, with its heart and its history.
+  - A file outside the library plays without being added, as asked for: its title, artist and length are read from the file. It is kept until Aria closes: it is never saved with the queue, it gets no history, and its heart in the player bar is greyed out and says why. It has no cover. Nothing in the database changes, so 0.2.6 can still open the library.
+  - A folder is added to the library, as Add folder does.
+  - Files Aria does not play, or cannot read, are skipped, and a notice says how many.
+  - Windows starts Aria once for each of several files opened together. Files that arrive within 1.5 seconds of others go behind them in the queue, instead of replacing them.
+- **"Open with".** The installer adds Aria to "Open with" for mp3, flac, wav, m4a, aac, ogg, oga, opus, aif and aiff, for this user only, without administrator rights. It does not take the default program for these files: to open them with Aria by double-click, choose Aria once with "Open with", "Always". Uninstalling removes the entries.
+- **Watching the library's folders.** Music added, removed or changed in a library folder is scanned by itself, once the changes have stopped for two seconds; a scan reads only the files that changed. Only music files and folders count. A switch in Settings, Library, "Watch folders for changes", turns it off; it is on by default. Some network folders report no changes, and Rescan stays for them.
+
+### Changed
+
+- Version 0.2.7. One new setting, `watch_folders`; no database change.
+- The single-instance pipe carries the files a second launch was started with, after the word `show`, one path per line. Aria 0.2.4 to 0.2.6 read only `show`, so a 0.2.7 launch still brings an older open copy forward (without the files).
+- New dependency: `notify` 8.2 (CC0-1.0), for watching folders; `deny.toml` now allows CC0-1.0.
+- `docs/PRIVACY.md`: the paths on the pipe, and the folder watch.
+
+### Known limitations
+
+- Several files opened together through "Open with" play in an order Windows chooses, which may not be the order shown in Explorer.
+- A file played from outside the library has no cover, and cannot be added to a playlist or the favorites; add its folder to the library for that.
+- A file opened within 1.5 seconds of others joins them in the queue even when it was meant to replace them.
+- With watching on, a large copy into a library folder starts a scan after it ends; a copy that pauses for more than two seconds starts more than one.
+
 ## [0.2.6] - 2026-11-18 (reliability)
 
 Checked with 1082 automated tests on Windows and in CI on Linux and macOS (on an Intel Mac). Nothing in it has been heard or tried by hand yet; see `docs/testing/0.2.6-manual-check.md`, a short check of about 20 minutes that gathers the most important open lines of every earlier list.
