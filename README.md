@@ -9,7 +9,11 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: version 0.2.5 (release; the icon not yet looked at after an install)
+## Status: version 0.2.6 in development (not released); the latest release is 0.2.5
+
+Version 0.2.6 makes Aria more reliable: a second device that is slow to open or close no longer interrupts the music, a saved volume of 0 no longer plays aloud for a moment when exclusive mode is refused, a microphone that opens too late is never started, the microphone reaches the cable sooner, and a few smaller fixes. It is checked with automated tests only. See the [changelog](CHANGELOG.md) and the short hand check in [docs/testing/0.2.6-manual-check.md](docs/testing/0.2.6-manual-check.md).
+
+### Version 0.2.5 (release; the icon not yet looked at after an install)
 
 Version 0.2.5 gives Aria its own icon, a neon cyan "A" with a sound wave for its crossbar, in the program, its window and its installer, and fixes a microphone that is slow to open on the second device. See the [changelog](CHANGELOG.md).
 
@@ -38,7 +42,7 @@ A chat program (Discord, a game, a call) takes sound only from a recording devic
 - The copy and your own music can drift apart by tens of milliseconds. When your output reopens (a rate change in exclusive mode, a device change), the chat hears the same short silence. Turning sharing on in the middle of a track starts the copy with up to about a second of silence, so that it plays in step; your own music is not touched.
 - Aria never opens a virtual cable's recording side ("CABLE Output") as the microphone, whether you choose it or it is the Windows default recording device: the chat would hear itself. Settings warns, and a notice says so.
 - If the cable fails while the microphone is on, the microphone shows as failed and comes back when the cable opens again (with the next sound or Play), or when you toggle it.
-- The latency target from your microphone to the cable is under 60 ms. It has not been measured.
+- The latency target from your microphone to the cable is under 60 ms. In 0.2.6, measured through fake devices on one PC with a 16 kHz microphone and a cable at 44.1 kHz, Aria's own path took 38 to 48 ms; the devices' own buffers come on top of that and were not measured.
 - Built for Linux and macOS, checked by automated tests only; on macOS Aria needs microphone permission.
 
 ### Phase 2c (lossless output and the soundboard), version 0.2.2 (release; parts not yet checked by hand, listed below)
@@ -76,7 +80,7 @@ Settings, Soundboard chooses where sounds go: "My device" (the music's device, t
 - Sounds on your own device are mixed into the music stream, so they break bit-perfect output while they play (the indicator shows "Mixed with a sound"), and they are cut when the music output is closed or reopened (a rate, depth or channel change at a join, a device change, switching exclusive mode, a device failure). A sound removed while it plays keeps playing until it ends.
 - A sound fired while exclusive mode is on and no music plays opens your device exclusively, at the sound's own format: other programs (a video, a call) are silent on that device until 15 seconds after the last sound.
 - The player's volume and mute do not apply to sounds; each sound has its own volume, and "Stop all" stops them.
-- Opening and closing the second device run on the engine thread, which holds about one second of music. A device that is slow to open (Bluetooth, a sleeping USB interface; the wait is up to 7 s) or to close (up to 2 s) can briefly interrupt the music when a sound fires, or 15 seconds after the last one. A second device that fails to open is tried again, with a notice, on every sound.
+- Since 0.2.6 the second device is opened and closed on threads of their own, so a device that is slow to open (Bluetooth, a sleeping USB interface; the wait is up to 7 s) or to close (up to 2 s) does not interrupt the music. A sound for it waits until it is open, and a sound for both devices starts on both together. A second device that fails to open is tried again, with a notice, on every sound. The music's own output still opens on the engine thread.
 - **Voice chat.** To be heard in a voice chat, the second device must be a virtual audio cable that the chat program uses as its microphone. Aria does not provide or install one. Since 0.2.3 Aria can also send the music and your microphone there (above). No cable and no chat program were tested.
 - **Hotkeys** work while Aria runs, including minimized (a press may take about 100 ms to act then), with a switch in Settings that turns them all off. A hotkey must include Ctrl, Alt or Win unless it is F1 to F24 or a numpad key. One used by another sound or by Aria itself (Ctrl+0 to Ctrl+9, on the main row or the numpad, and Ctrl+Alt+R; Command on a Mac), or held by another program, is refused and not saved; one of Aria's own written into the settings or the library by hand is ignored. Aria receives only the registered combinations from the system; it installs no keyboard hook and reads no other keystrokes. In the capture dialog the Win key, numpad `*` and `.`, and Ctrl+C, Ctrl+X and Ctrl+V cannot be captured, and numpad keys are chosen with a "Numpad" switch. Letters follow the keyboard layout. A global hotkey takes its combination from every other program while Aria runs, not only from Aria: for example, Ctrl+S as a sound's hotkey stops saving in editors. Turn the "Global hotkeys" switch off to give them back. On one PC a synthetic key press reached a test window while it was unfocused and minimized; the real app has not been run with hotkeys, and games in the foreground are not tested.
 - Exclusive output and hotkeys are built for Linux and macOS where the crates support them, but verified on Windows only. Exclusive output does not exist there.

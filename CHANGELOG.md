@@ -5,6 +5,33 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.6] - unreleased (reliability)
+
+Checked with 1080 automated tests on Windows. Nothing in it has been heard or tried by hand yet; see `docs/testing/0.2.6-manual-check.md`, a short check of about 20 minutes that gathers the most important open lines of every earlier list.
+
+### Fixed
+
+- With a saved volume of 0 (not muted) and exclusive mode on, a track whose exclusive open was refused played at full volume for a moment, until the core heard that the output was shared. The engine now takes the volume and the mute apart and decides per output: muted, nothing; exclusive, full level, as the locked slider shows; shared, the volume. A shared output plays a volume of 0 silent from its first sample.
+- Opening and closing the second device ran on the engine thread. A device slow to open (Bluetooth, a sleeping USB interface; the wait is up to 7 seconds) or to close (up to 2 seconds) could stop the music when a sound fired, or 15 seconds after the last one. Both now run on threads of their own, and the music plays on. A sound for the second device waits until it is open; a sound for both devices starts on both together. The copy of the music that waits for the second device starts in step with the music, with what the music has queued, instead of a second of silence. A sound stopped while it waits never plays.
+- When a microphone took longer than 7 seconds to open, Aria gave up waiting and reported it failed, but the device could still finish opening a moment later and start, briefly. The stream is now built first and started only if Aria still waits for it.
+- AIFC files of uncompressed PCM that lofty does not name (`twos`, `in24`, `in32`, `23ni`, `42ni`, `raw `) were stored as compressed and shown without a badge. They now count as lossless. Files already in the library keep their old label, since a rescan reads only changed files; to relabel them, remove the folder in Settings, Library and add it again (favorites and playlists are kept by file path).
+- A sound's hotkey of Ctrl+1 written into the settings or the library by hand was registered, and took the shortcut from Aria. Aria's own shortcuts are now ignored when the settings and the library are read.
+- At the log level "Trace", the WASAPI output thread called the logger on every device period, though the line was dropped. Libraries that log through the `log` crate, `wasapi` among them, are now held at Debug; Aria's own lines still log at Trace.
+
+### Changed
+
+- The microphone's sample-rate converter works in chunks of about 2 ms instead of 1024 frames. Measured with an impulse, it adds 3 ms between 44.1 and 48 kHz and 9 ms for a 16 kHz microphone, where it added 21 ms and 63 ms. End to end through fake devices, with a 16 kHz microphone and a cable at 44.1 kHz, the microphone reached the cable 38 to 48 ms after it was spoken, where it took 100 ms (a real-time measurement on one PC; it leaves out the devices' own buffers). The music keeps the large chunks.
+- Ctrl+Numpad0 to Ctrl+Numpad9 count as Aria's own shortcuts, as Ctrl+0 to Ctrl+9 do, because inside Aria the numpad's digits act as the main row's: they are refused as a sound's hotkey, and one saved before is no longer registered. Choose another, for example Ctrl+Alt+Numpad1.
+- Version 0.2.6. No database or settings change.
+- New direct dependency: `log` 0.4.35 (MIT or Apache-2.0), already in the build through `wasapi` and `tracing-subscriber`.
+- `OutputFactory` must now be `Sync` as well as `Send`, since the second device is opened from a thread of its own.
+
+### Known limitations
+
+- The music's own output still opens and closes on the engine thread; the engine holds about a second of music, so a device that is slow to open can still delay the start of playback.
+- A sound for both devices waits for the second device before it starts on yours.
+- What you heard before the second device opened is not in the copy: the copy starts where your music is when it opens. With a device that opens quickly this is the start of the track.
+
 ## [0.2.5] - 2026-11-18 (Aria's own icon)
 
 Checked with automated tests on Windows and in CI on Linux and macOS. Windows reads the icon from the release `aria.exe` and from the installer. The icon was not looked at after an install, in the Start menu or the taskbar.
