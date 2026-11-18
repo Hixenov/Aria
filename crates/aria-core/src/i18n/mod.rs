@@ -356,6 +356,7 @@ mod tests {
         "hotkey-dialog-numpad",
         "player-mic-on",
         "player-mic-failed",
+        "player-mic-device",
         "settings-share-music",
         "settings-share-music-hint",
         "settings-share-music-volume",

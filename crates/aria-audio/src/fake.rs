@@ -361,6 +361,7 @@ impl CaptureFactory for FakeCapture {
         if named.is_some_and(|listed| crate::device::is_virtual_cable(&listed.name)) {
             return Err(AudioError::CableAsMicrophone);
         }
+        let name = named.map(|listed| listed.name.clone());
         if state.deny {
             return Err(AudioError::PermissionDenied);
         }
@@ -370,6 +371,7 @@ impl CaptureFactory for FakeCapture {
         let open = Arc::new(AtomicBool::new(true));
         let (writer, reader) =
             capture_ring(self.format, Box::new(FakeCaptureOpen(Arc::clone(&open))));
+        let reader = reader.named(name);
         state.writer = Some(writer);
         state.open = Some(open);
         state.opened += 1;

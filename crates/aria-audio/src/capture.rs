@@ -85,11 +85,24 @@ pub struct CaptureReader {
     format: CaptureFormat,
     consumer: rtrb::Consumer<f32>,
     health: Arc<CaptureHealth>,
+    /// The device's name, when it has one.
+    name: Option<String>,
     /// Whatever keeps the stream open; dropped with the reader, after the ring.
     _stream: Box<dyn Any + Send>,
 }
 
 impl CaptureReader {
+    /// The name of the device it captures from, when it has one.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// The same reader, named `name`.
+    pub(crate) fn named(mut self, name: Option<String>) -> Self {
+        self.name = name;
+        self
+    }
+
     /// The format the samples are in.
     pub fn format(&self) -> CaptureFormat {
         self.format
@@ -152,6 +165,7 @@ pub(crate) fn capture_ring(
             format,
             consumer,
             health,
+            name: None,
             _stream: stream,
         },
     )
@@ -258,6 +272,7 @@ fn open_capture(device: Option<&DeviceId>) -> Result<(cpal::Stream, CaptureReade
         channels: config.channels(),
     };
     let (writer, reader) = capture_ring(format, Box::new(()));
+    let reader = reader.named(device_name(&device));
     let stream_config = config.config();
     let stream = match config.sample_format() {
         SampleFormat::F32 => build_capture::<f32>(&device, stream_config, writer),

@@ -105,7 +105,7 @@ pub enum EngineCommand {
 }
 
 /// What the engine reports. Tracks start and end when they are heard, not when they are decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineEvent {
     TrackStarted {
         token: u64,
@@ -154,8 +154,11 @@ pub enum EngineEvent {
     },
     /// The second device could not be opened for a sound, or failed while one played on it.
     SoundDeviceFailed,
-    /// The microphone is open and goes into the second device.
-    MicrophoneOpened,
+    /// The microphone is open and goes into the second device. `name` is the device's, when it
+    /// has one.
+    MicrophoneOpened {
+        name: Option<String>,
+    },
     /// The microphone was closed: turned off, or its second device went away or changed.
     MicrophoneClosed,
     /// The microphone could not be opened, or was lost. `denied` when the operating system
@@ -1507,6 +1510,7 @@ impl Worker {
             .capture
             .open(self.mic_device.as_ref())
             .and_then(|reader| {
+                let name = reader.name().map(str::to_owned);
                 let input = second
                     .output
                     .add_input(Microphone::ring_frames(second.format))?;
@@ -1517,11 +1521,12 @@ impl Worker {
                     self.mic_gain,
                     self.mic_device.clone(),
                 )
+                .map(|mic| (mic, name))
             });
         match opened {
-            Ok(mic) => {
+            Ok((mic, name)) => {
                 self.mic = Some(mic);
-                self.emit(EngineEvent::MicrophoneOpened);
+                self.emit(EngineEvent::MicrophoneOpened { name });
             }
             Err(error) => {
                 tracing::debug!(%error, "the microphone could not be opened");

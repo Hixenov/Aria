@@ -621,9 +621,24 @@ fn talking(gain: f32) -> (Rig, FakeControl) {
     let rig = Rig::new(STEREO_44K);
     rig.send(SetSoundDevice(Some(second_device())));
     rig.send(microphone(true, gain));
-    rig.expect(MicrophoneOpened);
+    rig.expect(MicrophoneOpened { name: None });
     let second = rig.output_on(Some(&second_device()));
     (rig, second)
+}
+
+#[test]
+fn the_opened_microphone_is_named() {
+    let rig = Rig::new(STEREO_44K);
+    rig.mic.set_devices(vec![DeviceInfo {
+        id: DeviceId("usb".into()),
+        name: "USB Microphone".into(),
+        is_default: true,
+    }]);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneOpened {
+        name: Some("USB Microphone".into()),
+    });
 }
 
 /// `frames` frames of a steady `level` in `channels` channels.
@@ -647,10 +662,10 @@ fn mic_events(events: &[EngineEvent]) -> Vec<EngineEvent> {
         .filter(|event| {
             matches!(
                 event,
-                MicrophoneOpened | MicrophoneClosed | MicrophoneFailed { .. }
+                MicrophoneOpened { .. } | MicrophoneClosed | MicrophoneFailed { .. }
             )
         })
-        .copied()
+        .cloned()
         .collect()
 }
 
@@ -696,7 +711,7 @@ fn a_mono_microphone_reaches_both_channels() {
     let rig = Rig::with_microphone(STEREO_44K, IDLE_GRACE, mono);
     rig.send(SetSoundDevice(Some(second_device())));
     rig.send(microphone(true, 1.0));
-    rig.expect(MicrophoneOpened);
+    rig.expect(MicrophoneOpened { name: None });
     let second = rig.output_on(Some(&second_device()));
 
     speak(&rig, &steady(0.25, 441, 1));
@@ -840,7 +855,7 @@ fn a_lost_capture_reports_failed_and_retries_on_the_next_change() {
     assert_eq!(rig.mic.opened(), 1, "retried without a change");
 
     rig.send(microphone(true, 1.0));
-    rig.expect(MicrophoneOpened);
+    rig.expect(MicrophoneOpened { name: None });
     assert_eq!(rig.mic.opened(), 2);
 }
 
@@ -849,7 +864,7 @@ fn the_second_output_stays_open_while_the_microphone_is_on() {
     let rig = Rig::with_idle_grace(STEREO_44K, SHORT_GRACE);
     rig.send(SetSoundDevice(Some(second_device())));
     rig.send(microphone(true, 1.0));
-    rig.expect(MicrophoneOpened);
+    rig.expect(MicrophoneOpened { name: None });
     let second = rig.output_on(Some(&second_device()));
 
     thread::sleep(3 * SHORT_GRACE);
@@ -871,7 +886,7 @@ fn the_microphone_is_resampled_to_the_second_output() {
     let rig = Rig::with_microphone(STEREO_44K, IDLE_GRACE, mono_48k);
     rig.send(SetSoundDevice(Some(second_device())));
     rig.send(microphone(true, 1.0));
-    rig.expect(MicrophoneOpened);
+    rig.expect(MicrophoneOpened { name: None });
     let second = rig.output_on(Some(&second_device()));
 
     // Half a second, 20 ms at a time.
@@ -906,7 +921,7 @@ fn a_second_device_change_moves_the_microphone() {
 
     rig.send(SetSoundDevice(Some(other.clone())));
     rig.expect(MicrophoneClosed);
-    rig.expect(MicrophoneOpened);
+    rig.expect(MicrophoneOpened { name: None });
     let moved = rig.output_on(Some(&other));
 
     speak(&rig, &steady(0.25, 441, 2));
@@ -923,7 +938,7 @@ fn the_input_limit_holds_copy_microphone_and_six_sounds() {
     rig.send(SetSoundDevice(Some(second_device())));
     rig.send(share(0.5));
     rig.send(microphone(true, 1.0));
-    rig.expect(MicrophoneOpened);
+    rig.expect(MicrophoneOpened { name: None });
     rig.start(1, &path);
     let second = rig.output_on(Some(&second_device()));
 
@@ -1115,7 +1130,7 @@ fn a_failed_second_output_fails_the_microphone_and_it_comes_back_with_it() {
         gain: 1.0,
         route: SoundRoute::Second,
     });
-    rig.expect(MicrophoneOpened);
+    rig.expect(MicrophoneOpened { name: None });
     assert!(rig.mic.open_now());
     assert_eq!(rig.second_outputs(), 2);
 }

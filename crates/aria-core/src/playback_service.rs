@@ -126,6 +126,8 @@ pub struct PlayerView {
     pub volume_locked: bool,
     /// Whether the microphone is open and going to the second device.
     pub microphone: MicState,
+    /// The open microphone's name, when it has one.
+    pub microphone_name: Option<String>,
 }
 
 /// A track handed to the engine, under the token that names it there.
@@ -433,7 +435,7 @@ impl PlaybackService {
                 self.events.extend(reaction.event);
                 self.requests.extend(reaction.request);
             }
-            EngineEvent::MicrophoneOpened
+            EngineEvent::MicrophoneOpened { .. }
             | EngineEvent::MicrophoneClosed
             | EngineEvent::MicrophoneFailed { .. }
             | EngineEvent::MicrophoneIsCable => {
@@ -668,6 +670,7 @@ impl PlaybackService {
                 .map(TrackFormat::of),
             volume_locked: self.volume_locked(),
             microphone: self.chat.state(),
+            microphone_name: self.chat.name().map(str::to_owned),
         };
         self.events.push(Event::Player(view));
     }

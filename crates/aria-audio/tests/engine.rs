@@ -274,8 +274,9 @@ impl Rig {
         loop {
             audio.extend(output.pull(CHUNK_FRAMES));
             while let Ok(event) = self.events.try_recv() {
+                let done = last(&event);
                 events.push(event);
-                if last(&event) {
+                if done {
                     return (audio, events);
                 }
             }
@@ -1517,7 +1518,7 @@ fn without_states(events: &[EngineEvent]) -> Vec<EngineEvent> {
     events
         .iter()
         .filter(|event| !matches!(event, Output(_)))
-        .copied()
+        .cloned()
         .collect()
 }
 
@@ -2304,7 +2305,7 @@ fn sound_events(events: &[EngineEvent]) -> Vec<EngineEvent> {
     events
         .iter()
         .filter(|e| is_sound_event(e))
-        .copied()
+        .cloned()
         .collect()
 }
 

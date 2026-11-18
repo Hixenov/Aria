@@ -268,6 +268,7 @@ output-system-mixer-hint = Playing through the system mixer, which may change th
 player-volume-locked = Volume is set on the device while exclusive mode is on.
 player-mic-on = Microphone on: your voice goes to the second device. Click to turn it off.
 player-mic-failed = The microphone couldn't be opened. Click to turn it off.
+player-mic-device = Microphone: { $name }
 settings-exclusive = Exclusive mode
 settings-exclusive-hint = Other programs are silent on the device while Aria plays. Set the level on the device.
 settings-exclusive-windows-only = Exclusive mode is available on Windows only.

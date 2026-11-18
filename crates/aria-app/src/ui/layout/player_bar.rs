@@ -646,10 +646,30 @@ fn microphone(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         MicState::Failed => (icons::MICROPHONE_SLASH, "player-mic-failed"),
     };
     let name = tr.tr(key);
+    // Which microphone it is, for the tooltip and for assistive technology.
+    let device = bar
+        .view
+        .microphone_name
+        .as_deref()
+        .filter(|_| bar.view.microphone == MicState::On)
+        .map(|device| {
+            let mut args = FluentArgs::new();
+            args.set("name", device);
+            tr.tr_args("player-mic-device", &args).into_owned()
+        });
     let control = IconButton::new(glyph, &name, p)
         .size(button, icon)
         .selected(bar.view.microphone == MicState::On);
-    if ui.add(control).on_hover_text(&*name).clicked() {
+    let response = ui.add(control);
+    if let Some(device) = &device {
+        ui.ctx()
+            .accesskit_node_builder(response.id, |node| node.set_description(device.as_str()));
+    }
+    let tooltip = match &device {
+        Some(device) => format!("{name}\n{device}"),
+        None => name.into_owned(),
+    };
+    if response.on_hover_text(tooltip).clicked() {
         out.push(PlayerAction::ToggleMicrophone);
     }
 }

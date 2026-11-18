@@ -267,6 +267,7 @@ output-system-mixer-hint = Նվագարկում համակարգի խառնիչ�
 player-volume-locked = Ձայնը կարգավորվում է սարքում, քանի դեռ բացառիկ ռեժիմը միացված է։
 player-mic-on = Խոսափողը միացված է․ ձեր ձայնը գնում է երկրորդ սարքին։ Սեղմեք՝ անջատելու համար։
 player-mic-failed = Չհաջողվեց բացել խոսափողը։ Սեղմեք՝ այն անջատելու համար։
+player-mic-device = Խոսափող՝ { $name }
 settings-exclusive = Բացառիկ ռեժիմ
 settings-exclusive-hint = Մինչ Aria-ն նվագում է, մյուս ծրագրերը լռում են այս սարքում։ Մակարդակը կարգավորեք սարքում։
 settings-exclusive-windows-only = Բացառիկ ռեժիմը հասանելի է միայն Windows-ում։

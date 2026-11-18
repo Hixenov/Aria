@@ -86,6 +86,7 @@ fn view(current: Option<i64>, playing: bool, duration_ms: u64) -> PlayerView {
         format: None,
         volume_locked: false,
         microphone: MicState::Off,
+        microphone_name: None,
     }
 }
 
@@ -911,6 +912,29 @@ fn the_icon_shows_only_while_on_and_a_click_toggles() {
             .state()
             .actions
             .contains(&PlayerAction::ToggleMicrophone)
+    );
+}
+
+#[test]
+fn the_icon_names_the_microphone() {
+    let mut harness = bar_harness(
+        PlayerView {
+            microphone: MicState::On,
+            microphone_name: Some("USB Microphone".into()),
+            ..view(Some(1), true, 200_000)
+        },
+        0,
+    );
+    harness.run();
+    let label = en("player-mic-on");
+    let icon = harness.get_by_role_and_label(Role::Button, &label);
+    let node = icon.accesskit_node();
+    let description = node.description().map(|d| d.to_string());
+    assert!(
+        description
+            .as_deref()
+            .is_some_and(|text| text.contains("USB Microphone")),
+        "{description:?}"
     );
 }
 

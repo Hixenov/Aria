@@ -78,6 +78,8 @@ pub(crate) struct Chat {
     share: Option<(bool, f32)>,
     mic: Option<(bool, Option<DeviceId>, f32)>,
     state: MicState,
+    /// The open microphone's name, when it has one.
+    name: Option<String>,
 }
 
 impl Chat {
@@ -104,6 +106,7 @@ impl Chat {
             // Off is off at once: the engine closes it, and a failure no longer matters.
             if !mic.0 && self.state != MicState::Off {
                 self.state = MicState::Off;
+                self.name = None;
                 changed = true;
             }
             commands.push(EngineCommand::SetMicrophone {
@@ -120,7 +123,10 @@ impl Chat {
     /// notice to show. Other events are not for this.
     pub(crate) fn on_engine(&mut self, event: EngineEvent) -> (bool, Option<Notice>) {
         let (state, notice) = match event {
-            EngineEvent::MicrophoneOpened => (MicState::On, None),
+            EngineEvent::MicrophoneOpened { name } => {
+                self.name = name;
+                (MicState::On, None)
+            }
             EngineEvent::MicrophoneClosed => (MicState::Off, None),
             EngineEvent::MicrophoneIsCable => (MicState::Failed, Some(MICROPHONE_IS_CABLE)),
             EngineEvent::MicrophoneFailed { denied } => (
@@ -145,11 +151,39 @@ impl Chat {
     pub(crate) fn state(&self) -> MicState {
         self.state
     }
+
+    /// The open microphone's name, when it is open and has one.
+    pub(crate) fn name(&self) -> Option<&str> {
+        self.name.as_deref().filter(|_| self.state == MicState::On)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opened() -> EngineEvent {
+        EngineEvent::MicrophoneOpened { name: None }
+    }
+
+    #[test]
+    fn the_open_microphone_is_named_until_it_closes() {
+        let mut chat = Chat::default();
+        let on = Settings {
+            mic_enabled: true,
+            soundboard_device: Some(DeviceId("cable".into())),
+            ..Settings::default()
+        };
+        chat.on_settings(&on);
+        assert_eq!(chat.name(), None);
+        let usb = EngineEvent::MicrophoneOpened {
+            name: Some("USB Microphone".into()),
+        };
+        assert_eq!(chat.on_engine(usb), (true, None));
+        assert_eq!(chat.name(), Some("USB Microphone"));
+        chat.on_engine(EngineEvent::MicrophoneClosed);
+        assert_eq!(chat.name(), None);
+    }
 
     fn device(name: &str) -> DeviceInfo {
         DeviceInfo {
@@ -286,14 +320,14 @@ mod tests {
         }));
         assert_eq!(chat.state(), MicState::Off);
 
-        assert_eq!(chat.on_engine(EngineEvent::MicrophoneOpened), (true, None));
+        assert_eq!(chat.on_engine(opened()), (true, None));
         assert_eq!(chat.state(), MicState::On);
         assert_eq!(
             chat.on_engine(EngineEvent::MicrophoneFailed { denied: false }),
             (true, Some(MICROPHONE_FAILED))
         );
         assert_eq!(chat.state(), MicState::Failed);
-        assert_eq!(chat.on_engine(EngineEvent::MicrophoneOpened), (true, None));
+        assert_eq!(chat.on_engine(opened()), (true, None));
         assert_eq!(chat.on_engine(EngineEvent::MicrophoneClosed), (true, None));
         assert_eq!(chat.state(), MicState::Off);
         assert_eq!(chat.on_engine(EngineEvent::Stopped), (false, None));
