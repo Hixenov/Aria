@@ -5,9 +5,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.2.3] - unreleased (music and microphone to the chat)
+## [0.2.3] - 2026-11-18 (music and microphone to the chat)
 
-Nobody has run this version by hand, nobody has listened to it, and no virtual cable or chat program was tried: see `docs/testing/music-to-chat-manual-check.md`, where every line for a person is pending. No test opens a real microphone; the microphone is tested with a fake capture only.
+This release build was started on one Windows PC with a real library, and its log shows it starting cleanly and decoding tracks. Nobody has checked the new chat features by hand: no one has listened through a virtual cable, and no chat program was tried. See `docs/testing/music-to-chat-manual-check.md`, where every line for a person is pending. No test opens a real microphone; the microphone is tested with a fake capture only.
 
 ### Added
 

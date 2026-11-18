@@ -9,9 +9,9 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: music and microphone to a chat, version 0.2.3 (unreleased; not checked by hand)
+## Status: music and microphone to a chat, version 0.2.3 (release; the chat features not yet checked by hand)
 
-Version 0.2.3 lets friends in a voice chat hear the music Aria plays and your voice, through a virtual audio cable, on top of 0.2.2 (below). **Nobody has run 0.2.3 by hand, nobody has listened to it, and no cable or chat program was tried.** It is tested with automated tests and fake devices only; no test opens a real microphone. Every line for a person in [docs/testing/music-to-chat-manual-check.md](docs/testing/music-to-chat-manual-check.md) is pending.
+Version 0.2.3 lets friends in a voice chat hear the music Aria plays and your voice, through a virtual audio cable, on top of 0.2.2 (below). **The 0.2.3 build was started on one Windows PC with a real library and played tracks, but nobody has checked the chat features by hand: no one has listened through a cable, and no chat program was tried.** They are tested with automated tests and fake devices only; no test opens a real microphone. The installer was installed and uninstalled on that PC. Every line for a person in [docs/testing/music-to-chat-manual-check.md](docs/testing/music-to-chat-manual-check.md) is pending.
 
 ### Music and your microphone in a voice chat
 

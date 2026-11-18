@@ -34,11 +34,15 @@ program; the latency; the Windows microphone mark; how the rows and icons look.
 
 ## What the agent ran on real hardware
 
-Nothing for 0.2.3: the agent opened no microphone and played nothing through a cable.
+The agent opened no microphone and played nothing through a cable. PC: Windows 11 Pro for
+Workstations.
 
 | Check | Who | Result |
 |-------|-----|--------|
-| `aria.exe` and `Aria-0.2.3-setup.exe` built, installed, launched, uninstalled | pending | Done separately before any release; not recorded here |
+| `aria.exe` and `Aria-0.2.3-setup.exe` built from `93ba680` | agent | Yes, 2026-11-17 |
+| Silent per-user install of `Aria-0.2.3-setup.exe` | agent | Installed into `%LOCALAPPDATA%\Programs\Aria`; `aria.exe` matched the build byte for byte; the uninstall entry read "Aria 0.2.3"; Start menu shortcuts made |
+| Silent uninstall | agent | The program folder, the uninstall entry and the shortcuts were removed; settings and the library were left as they were (hashes compared) |
+| The same `aria.exe` started with a real library | user | Started four times on 2026-11-17 without an error in the log, and decoded MP3 tracks. Nothing else about the run was reported |
 
 ## What you need to check by hand
 
