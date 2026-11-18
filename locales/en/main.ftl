@@ -159,6 +159,7 @@ microphone-failed = The microphone couldn't be opened. The music and sounds go o
 microphone-denied = The system refused Aria the microphone. Allow microphone access for desktop apps in the system's privacy settings.
 microphone-on = Microphone on
 microphone-off = Microphone off
+microphone-needs-device = Choose a second device in Settings, Soundboard, to send the microphone to the chat.
 microphone-is-cable = The microphone chosen is a virtual cable, so it wasn't opened: the chat would hear itself. Choose your real microphone in Settings, Soundboard.
 hotkey-not-allowed = A hotkey needs Ctrl, Alt or Win, unless its key is an F key or a numpad key.
 hotkey-taken = This hotkey is already used in Aria.

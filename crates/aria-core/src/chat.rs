@@ -22,6 +22,9 @@ pub(crate) const MICROPHONE_IS_CABLE: Notice =
     Notice::new(NoticeLevel::Warning, "microphone-is-cable");
 /// The microphone hotkey turned the microphone on.
 pub(crate) const MICROPHONE_ON: Notice = Notice::new(NoticeLevel::Info, "microphone-on");
+/// The microphone hotkey could not turn the microphone on: there is no second device.
+pub(crate) const MICROPHONE_NEEDS_DEVICE: Notice =
+    Notice::new(NoticeLevel::Warning, "microphone-needs-device");
 /// The microphone hotkey turned the microphone off.
 pub(crate) const MICROPHONE_OFF: Notice = Notice::new(NoticeLevel::Info, "microphone-off");
 

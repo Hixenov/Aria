@@ -341,6 +341,7 @@ mod tests {
         "microphone-denied",
         "microphone-on",
         "microphone-off",
+        "microphone-needs-device",
         "microphone-is-cable",
         "settings-mic-is-cable",
         "hotkey-not-allowed",

@@ -598,8 +598,14 @@ impl Worker {
         self.update(settings);
     }
 
-    /// Flips "Send my microphone", as the microphone hotkey does. It needs no library.
+    /// Flips "Send my microphone", as the microphone hotkey does. It needs no library. Without a
+    /// second device it is not turned on, as in Settings, and the notice says why; it can always
+    /// be turned off.
     fn toggle_microphone(&mut self) {
+        if !self.settings.mic_enabled && self.settings.soundboard_device.is_none() {
+            self.emit([Event::Notice(chat::MICROPHONE_NEEDS_DEVICE)]);
+            return;
+        }
         let settings = Settings {
             mic_enabled: !self.settings.mic_enabled,
             ..self.settings.clone()
@@ -1407,16 +1413,32 @@ mod tests {
         Event::Notice(Notice::new(NoticeLevel::Info, key))
     }
 
+    /// Settings with a second device, which the microphone needs.
+    fn with_cable() -> Settings {
+        Settings {
+            soundboard_device: Some(DeviceId("cable".into())),
+            ..Settings::default()
+        }
+    }
+
+    /// No library, and a second device.
+    fn no_library_with_cable() -> BackendServices {
+        BackendServices {
+            settings: with_cable(),
+            ..no_library()
+        }
+    }
+
     #[test]
     fn toggle_microphone_flips_saves_and_notices() {
         let (sink, saved) = recording_sink(0);
         let (waker, _wakes) = counting_waker();
-        let handle = Backend::start(Some(sink), no_library(), waker, FAST).unwrap();
+        let handle = Backend::start(Some(sink), no_library_with_cable(), waker, FAST).unwrap();
 
         handle.send(Command::ToggleMicrophone);
         let on = Settings {
             mic_enabled: true,
-            ..Settings::default()
+            ..with_cable()
         };
         drain_until(&handle, |e| {
             e.contains(&Event::SettingsReplaced(on.clone()))
@@ -1425,18 +1447,65 @@ mod tests {
 
         handle.send(Command::ToggleMicrophone);
         drain_until(&handle, |e| {
+            e.contains(&Event::SettingsReplaced(with_cable()))
+                && e.contains(&microphone_notice("microphone-off"))
+        });
+        assert!(handle.shutdown(MAX));
+        assert_eq!(saved.lock().unwrap().last(), Some(&with_cable()));
+    }
+
+    #[test]
+    fn toggle_microphone_without_a_second_device_says_so_and_stays_off() {
+        let (sink, saved) = recording_sink(0);
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(Some(sink), no_library(), waker, FAST).unwrap();
+
+        handle.send(Command::ToggleMicrophone);
+        let needs = Event::Notice(Notice::new(NoticeLevel::Warning, "microphone-needs-device"));
+        let events = drain_until(&handle, |e| e.contains(&needs));
+        assert!(
+            !events.contains(&microphone_notice("microphone-on")),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::SettingsReplaced(s) if s.mic_enabled)),
+            "{events:?}"
+        );
+        assert!(handle.shutdown(MAX));
+        assert!(saved.lock().unwrap().iter().all(|s| !s.mic_enabled));
+    }
+
+    #[test]
+    fn toggle_microphone_turns_it_off_without_a_second_device_too() {
+        // Left on from before the second device was removed.
+        let services = BackendServices {
+            settings: Settings {
+                mic_enabled: true,
+                ..Settings::default()
+            },
+            ..no_library()
+        };
+        let (waker, _wakes) = counting_waker();
+        let handle = Backend::start(None, services, waker, FAST).unwrap();
+
+        handle.send(Command::ToggleMicrophone);
+        drain_until(&handle, |e| {
             e.contains(&Event::SettingsReplaced(Settings::default()))
                 && e.contains(&microphone_notice("microphone-off"))
         });
         assert!(handle.shutdown(MAX));
-        assert_eq!(saved.lock().unwrap().last(), Some(&Settings::default()));
     }
 
     #[test]
     fn toggle_microphone_keeps_the_other_settings() {
         let (waker, _wakes) = counting_waker();
         let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
-        let dark = with_theme(Theme::Dark);
+        let dark = Settings {
+            soundboard_device: Some(DeviceId("cable".into())),
+            ..with_theme(Theme::Dark)
+        };
         handle.send(Command::UpdateSettings(dark.clone()));
 
         handle.send(Command::ToggleMicrophone);
@@ -1454,7 +1523,7 @@ mod tests {
     #[test]
     fn with_the_library_off_toggle_microphone_still_works() {
         let (waker, _wakes) = counting_waker();
-        let handle = Backend::start(None, no_library(), waker, FAST).unwrap();
+        let handle = Backend::start(None, no_library_with_cable(), waker, FAST).unwrap();
 
         handle.send(Command::ToggleMicrophone);
 
@@ -1501,9 +1570,10 @@ mod tests {
         let (waker, _wakes) = counting_waker();
         let handle = Backend::start(None, services, waker, FAST).unwrap();
 
-        // On, but no second device: nothing opens.
+        // No second device: the toggle says so, and nothing opens.
         handle.send(Command::ToggleMicrophone);
-        drain_until(&handle, |e| e.contains(&microphone_notice("microphone-on")));
+        let needs = Event::Notice(Notice::new(NoticeLevel::Warning, "microphone-needs-device"));
+        drain_until(&handle, |e| e.contains(&needs));
         assert!(!control.open_now());
 
         handle.send(Command::UpdateSettings(Settings {
