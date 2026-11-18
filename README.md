@@ -9,7 +9,11 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: music and microphone to a chat, version 0.2.3 (release; the chat features not yet checked by hand)
+## Status: version 0.2.4 (unreleased; not checked by hand)
+
+Version 0.2.4 keeps Aria to one copy at a time: starting it again brings the open window forward instead of opening a second copy on the same library. It also fixes the chat features of 0.2.3: the microphone hotkey without a second device, the microphone's name in the player bar, the music falling back onto the second device, a slow microphone holding up the music, and how screen readers read the microphone volume. It is tested with automated tests only; see [docs/testing/0.2.4-manual-check.md](docs/testing/0.2.4-manual-check.md). Close any older copy of Aria before starting 0.2.4: older versions do not take part in the check.
+
+### Version 0.2.3: music and microphone to a chat (release; the chat features not yet checked by hand)
 
 Version 0.2.3 lets friends in a voice chat hear the music Aria plays and your voice, through a virtual audio cable, on top of 0.2.2 (below). **The 0.2.3 build was started on one Windows PC with a real library and played tracks, but nobody has checked the chat features by hand: no one has listened through a cable, and no chat program was tried.** They are tested with automated tests and fake devices only; no test opens a real microphone. The installer was installed and uninstalled on that PC. Every line for a person in [docs/testing/music-to-chat-manual-check.md](docs/testing/music-to-chat-manual-check.md) is pending.
 

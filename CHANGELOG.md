@@ -5,6 +5,35 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.4] - unreleased (one Aria at a time, and fixes to the chat features)
+
+Checked with automated tests on Windows and in CI on Linux and macOS. Nothing in this version has been run by hand yet: see `docs/testing/0.2.4-manual-check.md`.
+
+### Added
+
+- One Aria at a time per data folder. Starting Aria while it is already open brings the open window forward (shown, restored if minimized, and focused) instead of starting a second copy, which would write the same library database at once. If the open copy does not answer within two seconds, a message says that Aria is already open. The first copy holds a lock on `aria.lock` in the data folder; the second asks it to show itself over a local named pipe.
+- The player-bar microphone icon names the microphone in its tooltip ("Microphone: <name>"), and assistive technology reads the same line. "System default" shows the default microphone's own name.
+
+### Fixed
+
+- The microphone hotkey turned the switch on and said "Microphone on" without a second device, though nothing could open. It now leaves it off and says to choose a second device in Settings, Soundboard, as the greyed-out switch there does.
+- When the chosen music device could not be opened and the music fell back to the system default, and that default was the second device, the music copy went into the very device the music plays on, and the microphone stayed open there. Both now stop, as when the music is moved onto the second device.
+- A slow or stuck microphone held the music thread for as long as it took to open (up to several seconds), so the music could run dry. The microphone now opens on a thread of its own.
+- Screen readers read the microphone volume bar as a share of its 200 % range (50 % at 100 %). They now read the percentage shown beside it.
+
+### Changed
+
+- Version 0.2.4. No database or settings change.
+- New dependency: `interprocess` 2.4.7, for the single-instance pipe. Two of its helpers are 0BSD-licensed, which `deny.toml` now allows.
+- `docs/PRIVACY.md`: the lock file and the local pipe.
+
+### Known limitations
+
+- A copy of 0.2.3 or older does not take the lock, so 0.2.4 cannot tell that one is open, and the two can still run side by side. Close older copies before starting 0.2.4.
+- Windows may refuse to bring a window forward when another program has just been used; then Aria's taskbar button flashes instead.
+- Bringing the window forward is tested only as far as the request reaching the open copy; the window's own behaviour is not tested by hand yet.
+- `ARIA_CONFIG_DIR` changes only the settings folder, so two copies with different settings folders still share one library and are still held to one.
+
 ## [0.2.3] - 2026-11-18 (music and microphone to the chat)
 
 This release build was started on one Windows PC with a real library, and its log shows it starting cleanly and decoding tracks. Nobody has checked the new chat features by hand: no one has listened through a virtual cable, and no chat program was tried. See `docs/testing/music-to-chat-manual-check.md`, where every line for a person is pending. No test opens a real microphone; the microphone is tested with a fake capture only.

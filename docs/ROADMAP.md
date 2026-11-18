@@ -19,7 +19,8 @@ Spotify's developer terms. Local files get the full audio engine (Phase 2).
    released as a pre-release); 2b, favorites, playlists, playback history and Home (0.2.1,
    released as a pre-release, not yet checked by hand); 2c, lossless output and the soundboard (0.2.2, released, not yet checked by hand); then the
    music and the microphone to a voice chat through a virtual cable (0.2.3, released,
-   not yet checked by hand).
+   not yet checked by hand); then one Aria at a time and fixes to the chat features (0.2.4,
+   not yet released).
 3. **Spotify.** Library, search and playlist access through the Web API (OAuth PKCE) and
    Spotify Connect remote control. No in-app audio streaming.
 4. **Desktop experience.** System tray (including the minimize-to-tray preference stored in

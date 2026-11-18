@@ -118,7 +118,11 @@ fn listen(name: &str, wakes: Arc<Wakes>) -> io::Result<()> {
                             wakes.wake();
                         }
                     }
-                    Err(error) => tracing::debug!(%error, "a call on the instance pipe failed"),
+                    Err(error) => {
+                        tracing::debug!(%error, "a call on the instance pipe failed");
+                        // A pipe that keeps failing must not spin this thread.
+                        thread::sleep(Duration::from_millis(100));
+                    }
                 }
             }
         })?;

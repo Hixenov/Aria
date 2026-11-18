@@ -49,6 +49,9 @@ Everything Aria writes stays on your machine:
 8. The artwork cache, `artwork\` inside the cache folder: small thumbnails made from the
    cover art embedded in your audio files. "Clear artwork cache" in Settings empties it, and it
    is rebuilt by a rescan.
+9. `aria.lock`, in the data folder (since 0.2.4): an empty file that the running copy of Aria
+   holds locked, so that a second copy knows it is open. It holds no data and may be deleted
+   while Aria is closed.
 
 Aria only reads your audio files; it never writes to or deletes them. Removing a folder from
 the library removes its tracks' rows from `library.db`, not the files. Favorites, playlist
@@ -78,6 +81,11 @@ directory only; the library database, logs and cache still go to the folders abo
 - **Sounds.** For each sound Aria stores the full path of its audio file, its name, its volume and its hotkey, in the `sounds` table of `library.db` (the hotkey of "Stop all", the chosen second output device, where sounds go, and the global-hotkeys switch are in `settings.toml`). The files are never copied, changed or deleted by Aria. Removing a sound removes its row, not the file; as with other deleted rows, SQLite may leave the old contents on disk in `library.db` and `library.db-wal` until the space is reused. Deleting `library.db` (and its `-wal`, `-shm` and `.bak` files) while Aria is closed removes all sounds with the rest of the library.
 - **Hotkeys.** Global hotkeys are registered with the operating system. Aria receives only the combinations you registered, when you press them. It installs no keyboard hook and does not see any other key you press, in Aria or in other programs. While a combination is registered, the system gives it to Aria alone: other programs no longer receive it until Aria lets it go (when you change or clear the hotkey, turn "Global hotkeys" off, or quit).
 - **Second device.** The second output device is an output; for a voice chat it must be a virtual audio cable installed separately.
+
+## One copy at a time (since 0.2.4)
+
+- **The lock.** The running copy holds a lock on `aria.lock` in the data folder. The operating system lets go of it when Aria ends, however it ends.
+- **The pipe.** While Aria runs, it listens on a local named pipe (on Windows, `\\.\pipe\aria-<number>.sock`, where the number is worked out from the data folder's path; on Linux and macOS, a local socket). A second copy of Aria sends it one word, `show`, and the open copy brings its window forward. Nothing else is accepted, nothing is sent back, and nothing is stored. The pipe is local to your computer: it is not a network connection, and Aria still makes no network requests. Other programs on this computer could send the same word, and could do no more than bring Aria's window forward.
 
 ## The microphone (since 0.2.3)
 
