@@ -15,9 +15,9 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: version 0.2.6 in development (not released); the latest release is 0.2.5
+## Status: version 0.2.6 (release; not yet checked by hand)
 
-Version 0.2.6 makes Aria more reliable: a second device that is slow to open or close no longer interrupts the music, a saved volume of 0 no longer plays aloud for a moment when exclusive mode is refused, a microphone that opens too late is never started, the microphone reaches the cable sooner, and a few smaller fixes. It is checked with automated tests only. See the [changelog](CHANGELOG.md) and the short hand check in [docs/testing/0.2.6-manual-check.md](docs/testing/0.2.6-manual-check.md).
+Version 0.2.6 makes Aria more reliable: a second device that is slow to open or close no longer interrupts the music, a saved volume of 0 no longer plays aloud for a moment when exclusive mode is refused, a microphone that opens too late is never started, the microphone reaches the cable sooner, and a few smaller fixes. It is checked with automated tests only; nobody has tried it by hand or listened to it yet. See the [changelog](CHANGELOG.md) and the short hand check in [docs/testing/0.2.6-manual-check.md](docs/testing/0.2.6-manual-check.md).
 
 ### Version 0.2.5 (release; the icon not yet looked at after an install)
 

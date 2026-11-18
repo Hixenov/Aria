@@ -5,9 +5,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.2.6] - unreleased (reliability)
+## [0.2.6] - 2026-11-18 (reliability)
 
-Checked with 1080 automated tests on Windows. Nothing in it has been heard or tried by hand yet; see `docs/testing/0.2.6-manual-check.md`, a short check of about 20 minutes that gathers the most important open lines of every earlier list.
+Checked with 1082 automated tests on Windows and in CI on Linux and macOS (on an Intel Mac). Nothing in it has been heard or tried by hand yet; see `docs/testing/0.2.6-manual-check.md`, a short check of about 20 minutes that gathers the most important open lines of every earlier list.
 
 ### Fixed
 
@@ -25,6 +25,8 @@ Checked with 1080 automated tests on Windows. Nothing in it has been heard or tr
 - Version 0.2.6. No database or settings change.
 - New direct dependency: `log` 0.4.35 (MIT or Apache-2.0), already in the build through `wasapi` and `tracing-subscriber`.
 - `OutputFactory` must now be `Sync` as well as `Send`, since the second device is opened from a thread of its own.
+- The macOS check in CI runs on GitHub's Intel runners: four runs in a row found no Apple Silicon runner and were cancelled unrun.
+- New tests through the whole backend: a sound plays at the volume set for it, and the music volume in the chat changes what the cable gets, also while the music plays.
 
 ### Known limitations
 
