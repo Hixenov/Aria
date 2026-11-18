@@ -256,7 +256,13 @@ fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>, out: &mut Vec<PlayerAction>
             output_line(ui, bar);
         });
     });
-    if let Some(PageAction::SetFavorite { track, favorite }) =
+    if aria_core::opened::is_opened(track) {
+        // Played from outside the library: no row to keep a heart on. The label says why.
+        let label = bar.tr.tr("player-opened-no-heart");
+        let [size, icon] = HEART_BUTTON;
+        let heart = IconButton::new(icons::HEART, &label, p).size(size, icon);
+        ui.add_enabled(false, heart).on_disabled_hover_text(&*label);
+    } else if let Some(PageAction::SetFavorite { track, favorite }) =
         track_menu::heart(ui, bar.tr, p, bar.collections, track)
     {
         out.push(PlayerAction::SetFavorite { track, favorite });

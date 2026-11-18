@@ -23,7 +23,7 @@ use aria_core::{
     settings::{SIDEBAR_MAX, SIDEBAR_MIN, Settings},
     soundboard::SoundboardState,
 };
-use aria_library::{PLAYLIST_NAME_MAX, SOUND_NAME_MAX, SoundId};
+use aria_library::{LibrarySnapshot, PLAYLIST_NAME_MAX, SOUND_NAME_MAX, SoundId};
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
 use crate::{
@@ -155,6 +155,13 @@ pub struct AriaApp {
     library: LibraryView,
     /// What the backend last reported of the player.
     player: PlayerView,
+    /// The tracks opened from outside the library this session, as the backend last reported
+    /// them.
+    opened: Arc<[aria_library::Track]>,
+    /// The library's snapshot with the opened tracks in it too, once something has been opened:
+    /// the player bar and the queue name whatever plays, while the pages list the library's own.
+    /// See [`Self::playing_snapshot`].
+    playing: Arc<LibrarySnapshot>,
     /// Favorites, playlists and recent plays as the backend last reported them. Empty until
     /// it does.
     collections: Arc<Collections>,
@@ -241,6 +248,8 @@ impl AriaApp {
             sound_picker: SoundPicker::default(),
             library: LibraryView::default(),
             player: PlayerView::default(),
+            opened: Arc::from(Vec::new()),
+            playing: Arc::default(),
             collections: Arc::default(),
             soundboard: Arc::default(),
             name_dialog: None,
@@ -308,6 +317,7 @@ impl AriaApp {
         self.collect_folder_failures(&ctx);
         self.collect_picked_folder();
         self.collect_picked_sounds();
+        self.open_dropped(&ctx);
         self.handle_shortcuts(&ctx);
 
         self.poll_artwork(&ctx);
@@ -323,12 +333,54 @@ impl AriaApp {
         // After the dialogs, so one that opened this frame already has the keys to itself.
         self.run_hotkeys(&ctx);
         self.toasts.show(&ctx, &self.localizer, &palette);
+        self.show_drop_hint(&ctx, &palette);
+    }
+
+    /// Opens what was dropped on the window this frame, in the order dropped: files play, and
+    /// folders are added to the library.
+    fn open_dropped(&mut self, ctx: &egui::Context) {
+        let paths: Vec<std::path::PathBuf> = ctx.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        });
+        if !paths.is_empty() {
+            self.send(Command::OpenPaths(paths));
+        }
+    }
+
+    /// While files are held over the window, says what dropping them does.
+    fn show_drop_hint(&self, ctx: &egui::Context, p: &Palette) {
+        if ctx.input(|input| input.raw.hovered_files.is_empty()) {
+            return;
+        }
+        let screen = ctx.content_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::unique("aria_drop_hint"),
+        ));
+        painter.rect_filled(screen, 0.0, p.bg.gamma_multiply(0.85));
+        painter.text(
+            screen.center(),
+            egui::Align2::CENTER_CENTER,
+            self.localizer.tr("drop-hint"),
+            egui::TextStyle::Heading.resolve(&ctx.global_style()),
+            p.text,
+        );
     }
 
     fn show_right_panel(&mut self, ui: &mut egui::Ui, palette: &Palette) {
         let mut queue = QueuePanel {
             view: &self.player,
-            snapshot: &self.library.snapshot,
+            snapshot: if self.opened.is_empty() {
+                &self.library.snapshot
+            } else {
+                &self.playing
+            },
             artwork: self.artwork.as_mut(),
         };
         let actions = right_panel::show(
@@ -364,7 +416,7 @@ impl AriaApp {
     }
 
     fn show_player_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, palette: &Palette) {
-        let now = NowPlaying::of(&self.player, &self.library.snapshot, &self.localizer);
+        let now = NowPlaying::of(&self.player, self.playing_snapshot(), &self.localizer);
         let position_ms = self.clock.as_ref().map_or(0, |clock| {
             player_bar::position_ms(clock.read(), &self.player)
         });
@@ -458,6 +510,28 @@ impl AriaApp {
         }
     }
 
+    /// The snapshot the player bar and the queue name tracks from: the library's, with the tracks
+    /// opened from outside it.
+    fn playing_snapshot(&self) -> &LibrarySnapshot {
+        if self.opened.is_empty() {
+            &self.library.snapshot
+        } else {
+            &self.playing
+        }
+    }
+
+    /// Rebuilds [`Self::playing`], once something has been opened: a copy of the library's
+    /// snapshot with the opened tracks added, which sort first by their negative ids.
+    fn rebuild_playing(&mut self) {
+        if self.opened.is_empty() {
+            return;
+        }
+        let mut playing = (*self.library.snapshot).clone();
+        playing.tracks.extend(self.opened.iter().cloned());
+        playing.tracks.sort_by_key(|track| track.id);
+        self.playing = Arc::new(playing);
+    }
+
     /// Applies one event from the backend. [`Self::show`] does this for each event the backend
     /// has sent; tests call it to play the backend's part.
     pub fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
@@ -474,6 +548,11 @@ impl AriaApp {
             Event::SettingsSaved => tracing::trace!("settings saved"),
             Event::LibraryUpdated(snapshot) => {
                 self.library.snapshot = snapshot;
+                self.rebuild_playing();
+            }
+            Event::Opened(opened) => {
+                self.opened = opened;
+                self.rebuild_playing();
             }
             Event::Collections(collections) => self.collections = collections,
             Event::Soundboard(soundboard) => {
@@ -1016,6 +1095,17 @@ impl AriaApp {
 impl AriaApp {
     /// What brings the window forward, when another copy of Aria has asked for it since the
     /// last call: shown, restored if minimized, and focused.
+    /// Opens the files and folders another launch of Aria was started with, as it asked.
+    fn open_requested(&mut self) {
+        let Some(instance) = &self.deps.instance else {
+            return;
+        };
+        let paths = instance.take_opened();
+        if !paths.is_empty() {
+            self.send(Command::OpenPaths(paths));
+        }
+    }
+
     fn window_requests(&self) -> Vec<egui::ViewportCommand> {
         let asked = self.deps.instance.as_ref().is_some_and(Instance::take_wake);
         if !asked {
@@ -1037,6 +1127,7 @@ impl eframe::App for AriaApp {
         for command in self.window_requests() {
             ctx.send_viewport_cmd(command);
         }
+        self.open_requested();
         self.drain_events(ctx);
         self.run_hotkeys(ctx);
     }
@@ -1368,6 +1459,73 @@ mod tests {
             .count()
     }
 
+    #[test]
+    fn files_a_second_launch_was_started_with_are_opened_here() {
+        use aria_core::instance::{self, Claim};
+        let dir = tempfile::tempdir().unwrap();
+        let Claim::First(held) = instance::claim(dir.path(), instance::REACH_WAIT).unwrap() else {
+            panic!("expected to be the first");
+        };
+        let deps = AppDeps {
+            instance: Some(held),
+            ..AppDeps::none()
+        };
+        let localizer = Localizer::new(Language::En).unwrap();
+        let mut app = AriaApp::new(Settings::default(), localizer, deps, vec![]);
+        let paths: Vec<std::path::PathBuf> = vec!["C:/Music/a.mp3".into()];
+        let second = instance::claim_opening(dir.path(), instance::REACH_WAIT, &paths).unwrap();
+        assert!(matches!(second, Claim::Running { reached: true }));
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(10) {
+            app.open_requested();
+            if !app.sent.borrow().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let sent = app.sent.borrow();
+        assert!(
+            matches!(sent.as_slice(), [Command::OpenPaths(opened)] if *opened == paths),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn files_dropped_on_the_window_are_opened_in_the_order_dropped() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 780.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app(vec![]));
+        harness.run();
+        let paths: Vec<std::path::PathBuf> = vec!["C:/Music/a.mp3".into(), "C:/Music/Album".into()];
+        /// A file dropped by the test: only its path is read.
+        #[derive(Debug)]
+        struct Dropped(std::path::PathBuf);
+        impl egui::DroppedFile for Dropped {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                Err("not read".into())
+            }
+        }
+        harness.input_mut().dropped_files = paths
+            .iter()
+            .map(|path| Arc::new(Dropped(path.clone())) as egui::DroppedFileHandle)
+            .collect();
+        harness.run();
+        let opened: Vec<Vec<std::path::PathBuf>> = harness
+            .state()
+            .sent
+            .borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::OpenPaths(paths) => Some(paths.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opened, [paths], "dropped once, opened once");
+    }
+
     fn list_devices_sent(harness: &Harness<'_, AriaApp>) -> usize {
         harness
             .state()
@@ -1515,6 +1673,54 @@ mod tests {
         };
         app.handle_event(&ctx, Event::Soundboard(Arc::new(state.clone())));
         assert_eq!(*app.soundboard(), state);
+    }
+
+    fn opened_track(id: i64, title: &str) -> aria_library::Track {
+        aria_library::Track {
+            id: aria_library::TrackId(id),
+            folder: aria_library::FolderId(0),
+            path: format!("C:/Downloads/{title}.mp3").into(),
+            title: title.to_owned(),
+            artist: Some(Arc::from("Somebody")),
+            album: None,
+            album_artist: None,
+            track_no: None,
+            disc_no: None,
+            year: None,
+            genre: None,
+            duration_ms: 1000,
+            sample_rate: 44_100,
+            channels: 2,
+            bits_per_sample: 0,
+            codec: Arc::from("mp3"),
+            artwork: None,
+            added_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_track_opened_from_outside_the_library_is_named_on_the_bar_and_in_the_queue() {
+        let mut app = app(vec![]);
+        let ctx = egui::Context::default();
+        app.handle_event(
+            &ctx,
+            Event::Opened(Arc::from(vec![opened_track(-1, "Outside")])),
+        );
+        app.handle_event(
+            &ctx,
+            Event::Player(PlayerView {
+                current: Some(aria_library::TrackId(-1)),
+                ..PlayerView::default()
+            }),
+        );
+        let now = NowPlaying::of(&app.player, app.playing_snapshot(), &app.localizer);
+        let now = now.expect("a current track");
+        assert_eq!(
+            (now.title.as_str(), now.artist.as_str()),
+            ("Outside", "Somebody")
+        );
+        // Not in the library's own lists.
+        assert!(app.library.snapshot.tracks.is_empty());
     }
 
     fn space_harness() -> Harness<'static, AriaApp> {

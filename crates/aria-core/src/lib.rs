@@ -10,6 +10,7 @@ pub mod instance;
 pub mod library_service;
 pub mod logging;
 pub mod notice;
+pub mod opened;
 pub mod paths;
 pub mod playback_service;
 pub mod player;

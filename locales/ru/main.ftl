@@ -39,6 +39,8 @@ player-repeat-one = Повтор: один трек
 player-mute = Выключить звук
 player-unmute = Включить звук
 player-seek = Перемотка
+player-opened-no-heart = Открыт не из вашей библиотеки, поэтому без сердечка. Добавьте его папку в Настройках, раздел «Библиотека», чтобы сохранить трек.
+drop-hint = Отпустите, чтобы воспроизвести. Папки добавятся в библиотеку.
 player-unknown-title = Неизвестное название
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Появится на этапе { $phase }
@@ -122,6 +124,12 @@ library-scan-skipped = { $count ->
     [one] Не удалось прочитать { $count } файл или папку, при сканировании они пропущены.
     [few] Не удалось прочитать { $count } файла или папки, при сканировании они пропущены.
    *[other] Не удалось прочитать { $count } файлов или папок, при сканировании они пропущены.
+}
+# $count (Number) - how many of the files opened were skipped
+open-skipped = { $count ->
+    [one] Пропущен { $count } файл: Aria не играет такой формат или не смогла его прочитать.
+    [few] Пропущено { $count } файла: Aria не играет такой формат или не смогла их прочитать.
+   *[other] Пропущено { $count } файлов: Aria не играет такой формат или не смогла их прочитать.
 }
 # $folder (String) - the last part of the folder's path, e.g. Music
 library-folder-unavailable = Папка { $folder } недоступна, или все её файлы перемещены либо удалены. Треки сохранены, а папку можно удалить в настройках.

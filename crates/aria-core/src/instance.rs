@@ -3,15 +3,17 @@
 //! Two copies of Aria on the same folder would write one library database at once. The first
 //! copy holds an exclusive lock on a file in the data folder for as long as it runs, and the
 //! system lets go of it when the process ends, however it ends. A second copy that finds the
-//! lock taken asks the first, over a local named pipe, to show its window, and then quits
-//! before it opens anything else. The pipe carries one word and never leaves the computer.
+//! lock taken asks the first, over a local named pipe, to show its window and to open the files
+//! it was started with, and then quits before it opens anything else. The pipe carries a word and
+//! those paths, and never leaves the computer.
 
 use std::{
     fs::{File, OpenOptions, TryLockError},
     io::{self, BufRead, BufReader, Read, Write},
-    path::Path,
+    mem,
+    path::{Path, PathBuf},
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -24,8 +26,12 @@ use interprocess::local_socket::{
 
 /// The file whose lock marks the running copy.
 const LOCK_FILE: &str = "aria.lock";
-/// What the second copy sends: show your window.
+/// What the second copy sends first: show your window.
 const SHOW: &str = "show";
+/// What starts each line after it that names a file or folder to open.
+const OPEN: &str = "open ";
+/// The most a request may hold, so a stray writer cannot fill memory.
+const MAX_REQUEST: u64 = 4 * 1024 * 1024;
 /// How long a second copy keeps trying to reach the first, which may still be starting.
 pub const REACH_WAIT: Duration = Duration::from_secs(2);
 
@@ -48,6 +54,8 @@ pub struct Instance {
 struct Wakes {
     pending: AtomicBool,
     waker: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// Files and folders other copies were started with, not yet taken.
+    opened: Mutex<Vec<PathBuf>>,
 }
 
 impl Wakes {
@@ -72,11 +80,30 @@ impl Instance {
     pub fn take_wake(&self) -> bool {
         self.wakes.pending.swap(false, Ordering::SeqCst)
     }
+
+    /// The files and folders other copies were started with since the last call, in order.
+    pub fn take_opened(&self) -> Vec<PathBuf> {
+        let mut opened = self
+            .wakes
+            .opened
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        mem::take(&mut *opened)
+    }
 }
 
 /// Claims `data_dir` for this copy of Aria, or, if another copy holds it, asks that one to show
 /// its window, trying for up to `reach_wait`.
 pub fn claim(data_dir: &Path, reach_wait: Duration) -> io::Result<Claim> {
+    claim_opening(data_dir, reach_wait, &[])
+}
+
+/// As [`claim`], and if another copy holds the folder, asks it to open `paths` too.
+pub fn claim_opening(
+    data_dir: &Path,
+    reach_wait: Duration,
+    paths: &[PathBuf],
+) -> io::Result<Claim> {
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -94,7 +121,7 @@ pub fn claim(data_dir: &Path, reach_wait: Duration) -> io::Result<Claim> {
             Ok(Claim::First(Instance { _lock: lock, wakes }))
         }
         Err(TryLockError::WouldBlock) => Ok(Claim::Running {
-            reached: reach(&name, reach_wait),
+            reached: reach(&name, reach_wait, paths),
         }),
         Err(TryLockError::Error(error)) => Err(error),
     }
@@ -114,7 +141,14 @@ fn listen(name: &str, wakes: Arc<Wakes>) -> io::Result<()> {
             for connection in listener.incoming() {
                 match connection {
                     Ok(stream) => {
-                        if asks_to_show(stream) {
+                        if let Some(paths) = read_request(stream) {
+                            if !paths.is_empty() {
+                                wakes
+                                    .opened
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .extend(paths);
+                            }
                             wakes.wake();
                         }
                     }
@@ -129,29 +163,60 @@ fn listen(name: &str, wakes: Arc<Wakes>) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether what came over `stream` is the one request there is. Reads one short line at most.
-fn asks_to_show(stream: Stream) -> bool {
-    let mut line = String::new();
-    let read = BufReader::new(stream)
-        .take(SHOW.len() as u64 + 2)
-        .read_line(&mut line);
-    read.is_ok() && line.trim_end() == SHOW
+/// What came over `stream`: the paths to open, if it asks to show the window, which it does on
+/// its first line. Each line after that names a path, after [`OPEN`]; other lines are ignored.
+/// `None` for anything that is not such a request.
+fn read_request(stream: Stream) -> Option<Vec<PathBuf>> {
+    let mut lines = BufReader::new(stream.take(MAX_REQUEST)).lines();
+    let first = lines.next()?.ok()?;
+    if first.trim_end() != SHOW {
+        return None;
+    }
+    let mut paths = Vec::new();
+    for line in lines {
+        // A request cut short keeps what came whole.
+        let Ok(line) = line else { break };
+        if let Some(path) = line.strip_prefix(OPEN).filter(|path| !path.is_empty()) {
+            paths.push(PathBuf::from(path));
+        }
+    }
+    Some(paths)
 }
 
-/// Asks the copy listening on `name` to show its window, trying until `wait` has passed.
-fn reach(name: &str, wait: Duration) -> bool {
+/// The request for the window and for `paths`, as [`read_request`] reads it. A path that cannot
+/// be written on one line is left out.
+fn request(paths: &[PathBuf]) -> String {
+    let mut text = format!("{SHOW}\n");
+    for path in paths {
+        match path.to_str() {
+            Some(path) if !path.contains(['\n', '\r']) => {
+                text.push_str(OPEN);
+                text.push_str(path);
+                text.push('\n');
+            }
+            _ => tracing::debug!("a path that cannot be sent to the open copy is left out"),
+        }
+    }
+    text
+}
+
+/// Asks the copy listening on `name` to show its window and open `paths`, trying until `wait`
+/// has passed.
+fn reach(name: &str, wait: Duration, paths: &[PathBuf]) -> bool {
+    let request = request(paths);
+    // The first line alone asks for the window. Aria 0.2.4 to 0.2.6 read only that, and may hang
+    // up before the paths, which they cannot open anyway: that is not a failure to reach them.
+    let (show, rest) = request.split_at(SHOW.len() + 1);
     let started = Instant::now();
     loop {
         let sent = ns_name(name)
             .and_then(Stream::connect)
             .and_then(|mut stream| {
-                stream.write_all(
-                    format!(
-                        "{SHOW}
-"
-                    )
-                    .as_bytes(),
-                )
+                stream.write_all(show.as_bytes())?;
+                if let Err(error) = stream.write_all(rest.as_bytes()) {
+                    tracing::debug!(%error, "the open copy took the request for its window only");
+                }
+                Ok(())
             });
         match sent {
             Ok(()) => return true,
@@ -248,6 +313,48 @@ mod tests {
             Claim::Running { reached: true }
         ));
         assert!(wait_until(|| instance.take_wake()));
+    }
+
+    #[test]
+    fn a_second_claim_passes_its_files_on_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance = first(dir.path());
+        let paths: Vec<PathBuf> = vec![
+            r"C:\Music\one.mp3".into(),
+            r"C:\Music\with spaces & ünïcode — 曲.flac".into(),
+            "/home/someone/Music/Album".into(),
+        ];
+        let second = claim_opening(dir.path(), REACH_WAIT, &paths).unwrap();
+        assert!(matches!(second, Claim::Running { reached: true }));
+        assert!(wait_until(|| instance.take_wake()));
+        assert_eq!(instance.take_opened(), paths);
+        assert!(instance.take_opened().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn a_copy_that_only_asks_to_show_still_wakes_the_first() {
+        // As Aria 0.2.4 to 0.2.6 ask.
+        let dir = tempfile::tempdir().unwrap();
+        let instance = first(dir.path());
+        let name = pipe_name_text(dir.path());
+        let mut stream = ns_name(&name).and_then(Stream::connect).unwrap();
+        stream.write_all(b"show\n").unwrap();
+        drop(stream);
+        assert!(wait_until(|| instance.take_wake()));
+        assert!(instance.take_opened().is_empty());
+    }
+
+    #[test]
+    fn anything_else_on_the_pipe_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance = first(dir.path());
+        let name = pipe_name_text(dir.path());
+        let mut stream = ns_name(&name).and_then(Stream::connect).unwrap();
+        stream.write_all(b"open C:\\x.mp3\nhello\n").unwrap();
+        drop(stream);
+        thread::sleep(SHORT);
+        assert!(!instance.take_wake());
+        assert!(instance.take_opened().is_empty());
     }
 
     #[test]

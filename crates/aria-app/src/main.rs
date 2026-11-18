@@ -26,11 +26,13 @@ use aria_app::{
 };
 use aria_core::{
     CpalCapture, SystemFactory,
+    command::Command,
     error::I18nError,
     i18n::{Localizer, os_language},
     instance::{self, Claim, Instance},
     logging::{self, LoggingHandle},
     notice::{Notice, NoticeLevel},
+    opened::launch_paths,
     paths::AppPaths,
     runtime::{Backend, BackendConfig, BackendServices, LibraryPaths, SettingsSink, Waker},
     settings::{Language, Settings, store::SettingsStore},
@@ -122,10 +124,13 @@ fn main() -> anyhow::Result<()> {
     let window_failed_body = localizer.tr("error-startup-window").into_owned();
     log_stage("i18n", stage.elapsed());
 
-    // 5. One Aria per data folder. A second copy shows the first and quits here, before it
-    // opens the library.
+    // 5. One Aria per data folder. A second copy shows the first, hands it the files it was
+    // started with, and quits here, before it opens the library.
     let stage = Instant::now();
-    let Some(instance) = claim_folder(paths.as_ref(), &localizer) else {
+    let opened = std::env::current_dir()
+        .map(|base| launch_paths(std::env::args_os().skip(1), &base))
+        .unwrap_or_default();
+    let Some(instance) = claim_folder(paths.as_ref(), &localizer, &opened) else {
         return Ok(());
     };
     log_stage("instance", stage.elapsed());
@@ -159,6 +164,12 @@ fn main() -> anyhow::Result<()> {
             None
         }
     };
+    // The files Aria was started with, as with a double-click or "Open with".
+    if let Some(backend) = &backend
+        && !opened.is_empty()
+    {
+        backend.send(Command::OpenPaths(opened));
+    }
     log_stage("backend", stage.elapsed());
 
     // 7. Global hotkeys. Their manager and press handler must be made here, on the main thread,
@@ -262,11 +273,15 @@ fn library_paths(paths: &AppPaths) -> LibraryPaths {
 /// one must quit: that copy has been asked to show its window, or, if it did not answer, the
 /// user is told. `Some(None)` means running without the check, when the folder is unknown or
 /// cannot be locked.
-fn claim_folder(paths: Option<&AppPaths>, localizer: &Localizer) -> Option<Option<Instance>> {
+fn claim_folder(
+    paths: Option<&AppPaths>,
+    localizer: &Localizer,
+    opened: &[std::path::PathBuf],
+) -> Option<Option<Instance>> {
     let Some(paths) = paths else {
         return Some(None);
     };
-    match instance::claim(&paths.data_dir, instance::REACH_WAIT) {
+    match instance::claim_opening(&paths.data_dir, instance::REACH_WAIT, opened) {
         Ok(Claim::First(instance)) => Some(Some(instance)),
         Ok(Claim::Running { reached }) => {
             tracing::info!(reached, "Aria is already running; this copy quits");

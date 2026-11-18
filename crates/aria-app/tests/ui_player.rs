@@ -210,6 +210,19 @@ fn shows_title_and_artist() {
 }
 
 #[test]
+fn a_track_opened_from_outside_the_library_has_no_heart_to_click() {
+    let mut harness = bar_harness(view(Some(-1), true, 200_000), 0);
+    harness.run();
+    let label = en("player-opened-no-heart");
+    assert!(is_disabled(&harness, Role::Button, &label));
+    // A library track's heart is there to click.
+    let mut harness = bar_harness(view(Some(1), true, 200_000), 0);
+    harness.run();
+    assert!(!is_disabled(&harness, Role::Button, &en("track-favorite")));
+    assert!(harness.query_by_label(&label).is_none());
+}
+
+#[test]
 fn a_track_without_a_row_shows_unknown_never_a_path() {
     let mut harness = app_harness();
     let ctx = harness.ctx.clone();

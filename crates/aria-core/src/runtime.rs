@@ -44,6 +44,7 @@ use crate::{
     event::Event,
     library_service::{self, LibraryEvent, LibraryHandle, LibraryRequest, LibraryService},
     notice::{Notice, NoticeLevel},
+    opened,
     playback_service::PlaybackService,
     settings::{Settings, store::SettingsStore},
 };
@@ -435,6 +436,16 @@ impl Worker {
                     }
                     Some(Command::Rescan) => self.to_library(LibraryRequest::Rescan),
                     Some(Command::ClearArtwork) => self.to_library(LibraryRequest::ClearArtwork),
+                    // A file played from outside the library has no heart and no playlist.
+                    Some(
+                        Command::SetFavorite { track, .. }
+                        | Command::AddToPlaylist { track, .. }
+                        | Command::CreatePlaylist {
+                            first: Some(track), ..
+                        },
+                    ) if opened::is_opened(track) => {
+                        tracing::debug!("ignoring a collection change for an opened track");
+                    }
                     Some(Command::SetFavorite { track, favorite }) => {
                         self.to_collections(LibraryRequest::SetFavorite { track, favorite });
                     }

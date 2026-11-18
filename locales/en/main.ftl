@@ -39,6 +39,8 @@ player-repeat-one = Repeat: one track
 player-mute = Mute
 player-unmute = Unmute
 player-seek = Seek
+player-opened-no-heart = Opened from outside your library, so it has no heart. Add its folder in Settings, Library to keep it.
+drop-hint = Drop to play. Folders are added to your library.
 player-unknown-title = Unknown title
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Coming in Phase { $phase }
@@ -121,6 +123,11 @@ notice-dismiss = Dismiss
 library-scan-skipped = { $count ->
     [one] { $count } file or folder couldn't be read and was skipped.
    *[other] { $count } files or folders couldn't be read and were skipped.
+}
+# $count (Number) - how many of the files opened were skipped
+open-skipped = { $count ->
+    [one] { $count } file was skipped: it isn't music Aria plays, or it couldn't be read.
+   *[other] { $count } files were skipped: they aren't music Aria plays, or they couldn't be read.
 }
 # $folder (String) - the last part of the folder's path, e.g. Music
 library-folder-unavailable = The folder { $folder } can't be reached, or all its files were moved or deleted. Its tracks are kept, and you can remove the folder in Settings.

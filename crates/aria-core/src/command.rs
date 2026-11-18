@@ -31,6 +31,11 @@ pub enum Command {
         /// The index in `ids` of the track to start.
         start: usize,
     },
+    /// Play these files, in this order, as the list being played: each from the library if it is
+    /// there, else read from the file and played without being added. Folders among them are
+    /// added to the library. Files Aria does not play are skipped with a notice. As a
+    /// double-click, "Open with", the command line or a drop asks.
+    OpenPaths(Vec<PathBuf>),
     /// Put a track at the front of the user queue.
     PlayNext(TrackId),
     /// Put a track at the end of the user queue.

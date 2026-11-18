@@ -19,8 +19,9 @@
 //! decides then, and a `Load` puts its choice on.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     mem,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -29,7 +30,7 @@ use aria_audio::{
     DeviceId, EngineCommand, EngineEvent, EngineHandle, OutputPath, OutputState, PlaybackClock,
     TrackRequest,
 };
-use aria_library::{LibrarySnapshot, Quality, QueueRecord, SoundId, Track, TrackId};
+use aria_library::{LibrarySnapshot, Quality, QueueRecord, SoundId, Track, TrackId, read_tags};
 
 use crate::{
     chat::{Chat, MicState},
@@ -38,6 +39,7 @@ use crate::{
     hotkey::Hotkey,
     library_service::LibraryRequest,
     notice::{Notice, NoticeLevel},
+    opened::{OpenedTracks, is_audio_file, is_opened, path_key, without_opened},
     player::{PreviousAction, Queue, RepeatMode, UpNext},
     settings::Settings,
     soundboard::{SOUND_FAILED, Soundboard, StoredSound},
@@ -72,6 +74,8 @@ const STOPPED_AFTER_FAILURES: Notice =
 const DEVICE_FALLBACK: Notice = Notice::new(NoticeLevel::Warning, "playback-device-fallback");
 /// No output could be opened.
 const NO_DEVICE: Notice = Notice::new(NoticeLevel::Error, "playback-no-device");
+/// Some of the files opened are not music Aria plays, or could not be read. Takes `count`.
+pub const OPEN_SKIPPED: &str = "open-skipped";
 
 /// Whether this platform has the exclusive output. Off Windows the setting is kept but does
 /// nothing: the engine is never asked for it and the volume is never locked.
@@ -165,6 +169,8 @@ pub struct PlaybackService {
     queue: Queue,
     /// `None` until the first one arrives.
     snapshot: Option<Arc<LibrarySnapshot>>,
+    /// Files played from outside the library this session.
+    opened: OpenedTracks,
     last_token: u64,
     /// What the engine holds as the track being heard. `None` means nothing is loaded.
     current: Option<Given>,
@@ -252,6 +258,7 @@ impl PlaybackService {
             clock,
             queue: Queue::new(seed),
             snapshot: None,
+            opened: OpenedTracks::default(),
             last_token: 0,
             current: None,
             ended: false,
@@ -307,6 +314,7 @@ impl PlaybackService {
     pub fn handle(&mut self, command: Command) {
         match command {
             Command::PlayContext { ids, start } => self.play_context(ids, start),
+            Command::OpenPaths(paths) => self.open_paths(paths),
             Command::PlayNext(id) => {
                 if self.exists(id) {
                     self.queue.play_next(id);
@@ -634,6 +642,9 @@ impl PlaybackService {
     }
 
     fn row(&self, id: TrackId) -> Option<&Track> {
+        if is_opened(id) {
+            return self.opened.track(id);
+        }
         self.snapshot.as_ref()?.track(id)
     }
 
@@ -782,6 +793,14 @@ impl PlaybackService {
         if !self.history || self.play_recorded {
             return;
         }
+        // A file played from outside the library has no history.
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|given| is_opened(given.track))
+        {
+            return;
+        }
         if let Some(current) = &self.current {
             self.requests
                 .push(LibraryRequest::RecordPlay(current.track));
@@ -802,12 +821,14 @@ impl PlaybackService {
     fn save_pending(&mut self) -> bool {
         let (current, position_ms) = (self.queue.current(), self.position());
         if mem::take(&mut self.lists_dirty) {
-            let record = self.queue.to_record(position_ms);
+            let record = without_opened(self.queue.to_record(position_ms));
             self.requests.push(LibraryRequest::SaveQueue(record));
         } else if self.saved_position != Some((current, position_ms)) {
+            // An opened track is never saved: nothing is current for the next run.
+            let opened = current.is_some_and(is_opened);
             self.requests.push(LibraryRequest::SavePosition {
-                current,
-                position_ms,
+                current: current.filter(|id| !is_opened(*id)),
+                position_ms: if opened { 0 } else { position_ms },
             });
         } else {
             return false;
@@ -1051,6 +1072,51 @@ impl PlaybackService {
         self.publish();
     }
 
+    /// Plays the files among `paths` in their order, each from the library where it is in it and
+    /// else read from the file, and adds the folders among them to the library.
+    fn open_paths(&mut self, paths: Vec<PathBuf>) {
+        let library: HashMap<PathBuf, TrackId> = self
+            .snapshot
+            .iter()
+            .flat_map(|snapshot| snapshot.tracks.iter())
+            .map(|track| (path_key(&track.path), track.id))
+            .collect();
+        let known = self.opened.all().len();
+        let (mut ids, mut skipped) = (Vec::new(), 0usize);
+        for path in paths {
+            if path.is_dir() {
+                self.requests.push(LibraryRequest::AddFolder(path));
+                continue;
+            }
+            let id = is_audio_file(&path)
+                .then(|| {
+                    library
+                        .get(&path_key(&path))
+                        .copied()
+                        .or_else(|| self.opened.open(&path, read_tags))
+                })
+                .flatten();
+            match id {
+                Some(id) => ids.push(id),
+                None => skipped += 1,
+            }
+        }
+        if self.opened.all().len() != known {
+            self.events.push(Event::Opened(self.opened.all()));
+        }
+        if skipped > 0 {
+            self.notify(
+                Notice::new(NoticeLevel::Warning, OPEN_SKIPPED)
+                    .with_arg("count", skipped.to_string()),
+            );
+        }
+        if ids.is_empty() {
+            self.publish();
+        } else {
+            self.play_context(ids, 0);
+        }
+    }
+
     fn play_context(&mut self, ids: Vec<TrackId>, start: usize) {
         if start >= ids.len() {
             return;
@@ -1288,6 +1354,8 @@ mod tests {
         views: Vec<PlayerView>,
         /// The soundboard states shown, oldest first.
         boards: Vec<Arc<SoundboardState>>,
+        /// The tracks opened from outside the library, as last shown.
+        opened: Arc<[Track]>,
         /// The sounds last handed to the service, as the library would.
         stored: Vec<StoredSound>,
         requests: Vec<LibraryRequest>,
@@ -1316,6 +1384,7 @@ mod tests {
                 notices: Vec::new(),
                 views: Vec::new(),
                 boards: Vec::new(),
+                opened: Arc::from(Vec::new()),
                 stored: Vec::new(),
                 requests: Vec::new(),
                 last_pull: Cell::new(None),
@@ -1340,6 +1409,7 @@ mod tests {
                     Event::Notice(notice) => self.notices.push(notice),
                     Event::Player(view) => self.views.push(view),
                     Event::Soundboard(board) => self.boards.push(board),
+                    Event::Opened(opened) => self.opened = opened,
                     other => panic!("the service does not send {other:?}"),
                 }
             }
@@ -3003,6 +3073,109 @@ mod tests {
             rig.service.history,
             "history is on until the settings say otherwise"
         );
+    }
+
+    /// A 16-bit stereo tone of `ms` at 44.1 kHz, outside any library, in a folder that goes with
+    /// the guard.
+    fn outside_file(name: &str, ms: u64) -> (TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        aria_audio::testing::write_tone_wav(&path, 44_100, 2, ms * 44, 440.0).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_file_outside_the_library_plays_without_being_added() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        let (_dir, outside) = outside_file("outside.wav", 3_000);
+
+        rig.send(Command::OpenPaths(vec![outside.clone()]));
+        let opened = TrackId(-1);
+        assert_eq!(rig.view().current, Some(opened));
+        assert!(rig.view().playing);
+        assert_eq!(rig.opened.len(), 1);
+        assert_eq!(rig.opened[0].path, outside);
+        assert_eq!(rig.opened[0].id, opened);
+        assert!(
+            !rig.requests
+                .iter()
+                .any(|request| matches!(request, LibraryRequest::AddFolder(_))),
+            "{:?}",
+            rig.requests
+        );
+        rig.run_until("the opened file to be heard", heard(rig.current_token()));
+    }
+
+    #[test]
+    fn a_file_in_the_library_opens_as_its_library_track() {
+        let music = Music::new().tone(3_000).tone(3_000);
+        let mut rig = Rig::with(&music);
+        let path = music.tracks[1].path.clone();
+        rig.send(Command::OpenPaths(vec![path]));
+        assert_eq!(rig.view().current, Some(t(2)));
+        assert!(rig.opened.is_empty());
+    }
+
+    #[test]
+    fn several_files_play_in_the_order_given_and_others_are_skipped_with_a_notice() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        let (_a, first) = outside_file("first.wav", 3_000);
+        let (_b, second) = outside_file("second.wav", 3_000);
+        let text = first.with_file_name("notes.txt");
+        std::fs::write(&text, "not music").unwrap();
+
+        rig.send(Command::OpenPaths(vec![
+            first,
+            text,
+            music.tracks[0].path.clone(),
+            second,
+        ]));
+        assert_eq!(rig.view().current, Some(TrackId(-1)));
+        assert_eq!(rig.upcoming(), [t(1), TrackId(-2)]);
+        assert!(
+            rig.notices.iter().any(|notice| notice.key == OPEN_SKIPPED),
+            "{:?}",
+            rig.notices
+        );
+    }
+
+    #[test]
+    fn a_folder_opened_is_added_to_the_library() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        let folder = tempfile::tempdir().unwrap();
+        rig.send(Command::OpenPaths(vec![folder.path().to_path_buf()]));
+        assert!(
+            rig.requests.iter().any(
+                |request| matches!(request, LibraryRequest::AddFolder(path) if path == folder.path())
+            ),
+            "{:?}",
+            rig.requests
+        );
+        assert_eq!(rig.view().current, None, "nothing starts for a folder");
+    }
+
+    #[test]
+    fn opened_tracks_are_never_saved_with_the_queue_nor_counted_as_played() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music).counting_soon();
+        let (_dir, outside) = outside_file("outside.wav", 3_000);
+        rig.send(Command::OpenPaths(vec![
+            outside,
+            music.tracks[0].path.clone(),
+        ]));
+        rig.run_until("the threshold", |rig| rig.position() >= TEST_PLAY_MS);
+        rig.tick();
+        rig.service.finish();
+        rig.collect();
+        assert!(plays(&rig).is_empty(), "an opened track was counted");
+        let saved = rig.saved_records();
+        let last = saved.last().expect("the queue was saved");
+        assert_eq!(last.context, [t(1)], "{last:?}");
+        assert!(last.user.iter().all(|id| id.0 > 0), "{last:?}");
+        assert_eq!(last.current, None, "{last:?}");
     }
 
     #[test]

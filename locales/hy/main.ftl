@@ -41,6 +41,8 @@ player-repeat-one = Կրկնություն՝ մեկ երգ
 player-mute = Անջատել ձայնը
 player-unmute = Միացնել ձայնը
 player-seek = Հետ կամ առաջ տալ
+player-opened-no-heart = Բացվել է ձեր գրադարանից դուրս, ուստի սիրտ չունի։ Ավելացրեք դրա պանակը Կարգավորումներում՝ Գրադարան բաժնում, որպեսզի պահեք այն։
+drop-hint = Բաց թողեք՝ նվագելու համար։ Պանակները կավելացվեն գրադարանին։
 player-unknown-title = Անհայտ վերնագիր
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Կհայտնվի { $phase }-րդ փուլում
@@ -123,6 +125,11 @@ notice-dismiss = Փակել
 library-scan-skipped = { $count ->
     [one] Չհաջողվեց կարդալ { $count } ֆայլ կամ պանակ, և այն բաց է թողնվել։
    *[other] Չհաջողվեց կարդալ { $count } ֆայլ կամ պանակ, և դրանք բաց են թողնվել։
+}
+# $count (Number) - how many of the files opened were skipped
+open-skipped = { $count ->
+    [one] { $count } ֆայլ բաց է թողնվել. Aria-ն չի նվագում այդ ձևաչափը, կամ չհաջողվեց այն կարդալ։
+   *[other] { $count } ֆայլ բաց է թողնվել. Aria-ն չի նվագում այդ ձևաչափը, կամ չհաջողվեց դրանք կարդալ։
 }
 # $folder (String) - the last part of the folder's path, e.g. Music
 library-folder-unavailable = { $folder } պանակը հասանելի չէ, կամ դրա բոլոր ֆայլերը տեղափոխվել կամ ջնջվել են։ Երգերը պահպանված են, իսկ պանակը կարող եք հեռացնել Կարգավորումներում։
