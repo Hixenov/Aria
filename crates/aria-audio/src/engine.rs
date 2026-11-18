@@ -1201,6 +1201,10 @@ impl Worker {
             .is_some_and(|second| second.output.failed())
         {
             tracing::debug!("the second output failed");
+            if self.mic_opening.take().is_some() {
+                // Opened again with the second output, as an open one is.
+                self.mic_lost_with_second = true;
+            }
             if self.mic.take().is_some() {
                 // Tried again when the second output opens again.
                 self.mic_lost_with_second = true;
@@ -1482,11 +1486,13 @@ impl Worker {
         }
     }
 
-    /// Whether anything needs the second output now: a sound on it, or the music being copied
-    /// while it plays.
+    /// Whether anything needs the second output now: a sound on it, the microphone, open or
+    /// opening, or the music being copied while it plays.
     fn second_needed(&self) -> bool {
         self.sound_on(Target::Second)
             || self.mic.is_some()
+            // One still opening will need it in a moment.
+            || self.mic_opening.is_some()
             || (self.copy.is_some() && self.playing && self.has_track())
     }
 

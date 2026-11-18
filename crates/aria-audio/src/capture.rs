@@ -74,6 +74,11 @@ impl CaptureWriter {
         written
     }
 
+    /// How many samples are in the ring, not yet read.
+    pub(crate) fn waiting(&self) -> usize {
+        self.producer.buffer().capacity() - self.producer.slots()
+    }
+
     /// Mark the capture dead, as a lost device does.
     pub(crate) fn fail(&self) {
         self.health.failed.store(true, Ordering::Release);

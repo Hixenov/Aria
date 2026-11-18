@@ -305,6 +305,8 @@ struct CaptureState {
     devices: Vec<DeviceInfo>,
     /// How long an open takes, as a slow or stuck device's would.
     open_delay: std::time::Duration,
+    /// How many opens have begun, finished or not.
+    asked: usize,
 }
 
 /// A capture with no device behind it, for tests. It captures what [`FakeCaptureControl::push`]
@@ -354,7 +356,11 @@ impl CaptureFactory for FakeCapture {
     }
 
     fn open(&self, device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
-        let delay = capture_state(&self.state).open_delay;
+        let delay = {
+            let mut state = capture_state(&self.state);
+            state.asked += 1;
+            state.open_delay
+        };
         if !delay.is_zero() {
             std::thread::sleep(delay);
         }
@@ -386,6 +392,19 @@ impl CaptureFactory for FakeCapture {
 }
 
 impl FakeCaptureControl {
+    /// How many opens have begun, finished or not.
+    pub fn asked(&self) -> usize {
+        capture_state(&self.state).asked
+    }
+
+    /// How many captured samples the engine has not taken yet: none when nothing is open.
+    pub fn waiting(&self) -> usize {
+        capture_state(&self.state)
+            .writer
+            .as_ref()
+            .map_or(0, CaptureWriter::waiting)
+    }
+
     /// Capture `samples` into the open capture, as much as its ring holds. Returns how many went
     /// in: none when nothing is open.
     pub fn push(&self, samples: &[f32]) -> usize {

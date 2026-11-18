@@ -219,6 +219,32 @@ impl Rig {
     }
 }
 
+/// Pulls `from` in small steps, pulling `beside` along with it when given (the copy is fed only
+/// with what the music's output takes in), until `frames` stereo frames have come after the
+/// leading silence. Returns those frames. On a slow machine the audio comes later, not less.
+fn pull_sounding(from: &FakeControl, beside: Option<&FakeControl>, frames: usize) -> Vec<f32> {
+    let deadline = Instant::now() + DEADLINE;
+    let mut heard: Vec<f32> = Vec::new();
+    loop {
+        if let Some(beside) = beside {
+            beside.pull(SECOND / 100);
+        }
+        heard.extend(from.pull(SECOND / 100));
+        let start = heard
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .position(|frame| frame.iter().any(|sample| *sample != 0.0));
+        if let Some(start) = start
+            && heard.len() / 2 - start >= frames
+        {
+            return heard[2 * start..2 * (start + frames)].to_vec();
+        }
+        assert!(Instant::now() < deadline, "only silence came");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// A rig sharing the music at `gain` to the second device, with `path` playing and its rings full.
 fn sharing(gain: f32, path: &Path) -> (Rig, FakeControl, FakeControl) {
     let rig = Rig::new(STEREO_44K);
@@ -451,22 +477,10 @@ fn pause_and_seek_act_on_the_copy() {
     rig.send(Seek(1_010));
     rig.send(Play);
     wait_until("playback", || rig.read().playing);
-    rig.settle();
     // Each output acts on the seek when it is next pulled, and then gets the audio from there.
-    mine.pull(SECOND / 10);
-    second.pull(SECOND / 100);
-    rig.settle();
-    let copy = second.pull(SECOND / 4);
+    // A quarter of a second of samples, in stereo frames.
+    let sounding = pull_sounding(&second, Some(&mine), SECOND / 8 + 1);
     let from = 2 * 44_541;
-    let sounding: Vec<f32> = copy
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .skip_while(|frame| frame.iter().all(|sample| *sample == 0.0))
-        .flatten()
-        .copied()
-        .collect();
-    assert!(sounding.len() > SECOND / 4, "the copy did not carry on");
     let check = &sounding[FADE..SECOND / 4];
     let expected = &music[from + FADE..from + SECOND / 4];
     assert!(check == expected, "the copy did not seek with the music");
@@ -731,13 +745,12 @@ fn a_microphone_turned_off_while_it_opens_stays_closed() {
     rig.send(SetSoundDevice(Some(second_device())));
     rig.mic.delay_open(Duration::from_millis(400));
     rig.send(microphone(true, 1.0));
-    rig.settle();
+    wait_until("the open to begin", || rig.mic.asked() == 1);
     rig.send(microphone(false, 1.0));
-    // Long after the open has finished, it is closed again and nothing was said of it.
-    thread::sleep(Duration::from_millis(800));
-    rig.settle();
+    // Once the open has finished, it is closed again and nothing was said of it.
+    wait_until("the late open to finish", || rig.mic.opened() == 1);
     wait_until("the late microphone to close", || !rig.mic.open_now());
-    assert_eq!(rig.mic.opened(), 1);
+    rig.settle();
     let events = rig.drain_events();
     assert!(
         !events
@@ -752,13 +765,17 @@ fn steady(level: f32, frames: usize, channels: usize) -> Vec<f32> {
     vec![level; frames * channels]
 }
 
-/// Push `samples` into the microphone and give the engine a pass or two to move them.
+/// Push `samples` into the microphone and wait until the engine has taken them, then give it a
+/// moment to move them on.
 fn speak(rig: &Rig, samples: &[f32]) {
     assert_eq!(
         rig.mic.push(samples),
         samples.len(),
         "the capture ring is full"
     );
+    wait_until("the engine to take the microphone's samples", || {
+        rig.mic.waiting() == 0
+    });
     rig.settle();
 }
 
@@ -984,6 +1001,25 @@ fn the_second_output_stays_open_while_the_microphone_is_on() {
 }
 
 #[test]
+fn a_microphone_slower_than_the_idle_grace_still_opens() {
+    let rig = Rig::with_idle_grace(STEREO_44K, SHORT_GRACE);
+    rig.mic.delay_open(3 * SHORT_GRACE);
+    rig.send(SetSoundDevice(Some(second_device())));
+    rig.send(microphone(true, 1.0));
+    rig.expect(MicrophoneOpened { name: None });
+    let second = rig.output_on(Some(&second_device()));
+    assert!(
+        !second.is_closed(),
+        "the second output closed while the microphone opened"
+    );
+    assert_eq!(
+        rig.second_outputs(),
+        1,
+        "the second output was closed and opened again"
+    );
+}
+
+#[test]
 fn the_microphone_is_resampled_to_the_second_output() {
     let mono_48k = CaptureFormat {
         sample_rate: 48_000,
@@ -1031,7 +1067,7 @@ fn a_second_device_change_moves_the_microphone() {
     let moved = rig.output_on(Some(&other));
 
     speak(&rig, &steady(0.25, 441, 2));
-    assert!(moved.pull(441) == steady(0.25, 441, 2));
+    assert!(pull_sounding(&moved, None, 441) == steady(0.25, 441, 2));
 }
 
 #[test]
