@@ -6,10 +6,11 @@
 //! but that ring.
 
 use std::any::Any;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample};
@@ -198,34 +199,69 @@ impl CaptureFactory for CpalCapture {
 
     fn open(&self, device: Option<&DeviceId>) -> Result<CaptureReader, AudioError> {
         let device = device.cloned();
-        let (opened_tx, opened_rx) = mpsc::channel();
-        let (stop, stopped) = mpsc::channel::<()>();
-        let (closed_tx, closed) = mpsc::channel::<()>();
-        let thread = thread::Builder::new()
-            .name("aria-audio-capture".into())
-            .spawn(move || {
-                // Nothing is ever sent: this hangs up as the thread ends.
-                let _closed = closed_tx;
-                hold_capture(device, opened_tx, stopped);
-            })
-            .map_err(device_error)?;
-        let mut reader = opened_rx.recv_timeout(OPEN_WAIT).map_err(|e| match e {
-            RecvTimeoutError::Timeout => {
-                AudioError::Device("the microphone took too long to open".into())
-            }
-            RecvTimeoutError::Disconnected => {
-                AudioError::Device("the capture thread stopped".into())
-            }
-        })??;
-        // On a timeout the thread is left behind. If it ever finishes opening, nobody is
-        // listening, and it closes the stream again.
-        reader._stream = Box::new(StreamCloser {
-            stop: Some(stop),
-            closed: Some(closed),
-            thread: Some(thread),
-        });
-        Ok(reader)
+        open_on_thread(
+            OPEN_WAIT,
+            move || build_capture_stream(device.as_ref()),
+            |stream: &cpal::Stream| stream.play().map_err(capture_error),
+        )
     }
+}
+
+/// How far an open on its own thread has got, so that a stream built after the caller gave up
+/// waiting is never started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenState {
+    Waiting,
+    GaveUp,
+    Starting,
+}
+
+/// Opens a capture on a thread of its own, which keeps the stream (a `Stream` is not `Send` on
+/// every host), and waits up to `wait` for it. `build` makes the stream without starting it, and
+/// `start` starts it. A stream built after the wait is dropped without being started, so a slow
+/// device is not opened after the microphone was reported as failed.
+fn open_on_thread<S: 'static>(
+    wait: Duration,
+    build: impl FnOnce() -> Result<(S, CaptureReader), AudioError> + Send + 'static,
+    start: impl FnOnce(&S) -> Result<(), AudioError> + Send + 'static,
+) -> Result<CaptureReader, AudioError> {
+    let state = Arc::new(Mutex::new(OpenState::Waiting));
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let (stop, stopped) = mpsc::channel::<()>();
+    let (closed_tx, closed) = mpsc::channel::<()>();
+    let thread_state = Arc::clone(&state);
+    let thread = thread::Builder::new()
+        .name("aria-audio-capture".into())
+        .spawn(move || {
+            // Nothing is ever sent: this hangs up as the thread ends.
+            let _closed = closed_tx;
+            hold_capture(build, start, &thread_state, &opened_tx, &stopped);
+        })
+        .map_err(device_error)?;
+    let mut received = opened_rx.recv_timeout(wait);
+    if matches!(received, Err(RecvTimeoutError::Timeout)) {
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        if *state == OpenState::Waiting {
+            // Never started now: the thread drops what it builds.
+            *state = OpenState::GaveUp;
+        } else {
+            drop(state);
+            // Built in time and being started: what starting says is on its way.
+            received = opened_rx.recv_timeout(wait);
+        }
+    }
+    let mut reader = received.map_err(|e| match e {
+        RecvTimeoutError::Timeout => {
+            AudioError::Device("the microphone took too long to open".into())
+        }
+        RecvTimeoutError::Disconnected => AudioError::Device("the capture thread stopped".into()),
+    })??;
+    reader._stream = Box::new(StreamCloser {
+        stop: Some(stop),
+        closed: Some(closed),
+        thread: Some(thread),
+    });
+    Ok(reader)
 }
 
 /// Ends the capture thread when dropped, and waits for the stream to close.
@@ -244,28 +280,45 @@ impl Drop for StreamCloser {
     }
 }
 
-/// A `Stream` is not `Send` on every host, so it is built and dropped on this one thread, which
-/// sleeps until `stopped` hangs up.
-fn hold_capture(
-    device: Option<DeviceId>,
-    opened: mpsc::Sender<Result<CaptureReader, AudioError>>,
-    stopped: mpsc::Receiver<()>,
+/// Builds the stream, starts it if it is still wanted, and keeps it on this thread until `stopped`
+/// hangs up, which it does when the reader drops.
+fn hold_capture<S>(
+    build: impl FnOnce() -> Result<(S, CaptureReader), AudioError>,
+    start: impl FnOnce(&S) -> Result<(), AudioError>,
+    state: &Mutex<OpenState>,
+    opened: &mpsc::Sender<Result<CaptureReader, AudioError>>,
+    stopped: &mpsc::Receiver<()>,
 ) {
-    match open_capture(device.as_ref()) {
-        Ok((stream, reader)) => {
-            if opened.send(Ok(reader)).is_ok() {
-                // Nothing is ever sent, so this only returns when the reader drops.
-                let _ = stopped.recv();
-            }
-            drop(stream);
-        }
+    let (stream, reader) = match build() {
+        Ok(built) => built,
         Err(error) => {
             let _ = opened.send(Err(error));
+            return;
         }
+    };
+    {
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        if *state == OpenState::GaveUp {
+            tracing::debug!("the microphone opened after the wait, and was closed unstarted");
+            return;
+        }
+        *state = OpenState::Starting;
     }
+    if let Err(error) = start(&stream) {
+        let _ = opened.send(Err(error));
+        return;
+    }
+    if opened.send(Ok(reader)).is_ok() {
+        // Nothing is ever sent, so this only returns when the reader drops.
+        let _ = stopped.recv();
+    }
+    drop(stream);
 }
 
-fn open_capture(device: Option<&DeviceId>) -> Result<(cpal::Stream, CaptureReader), AudioError> {
+/// Builds a capture stream on `device`, not yet started.
+fn build_capture_stream(
+    device: Option<&DeviceId>,
+) -> Result<(cpal::Stream, CaptureReader), AudioError> {
     let host = cpal::default_host();
     let device = find_device(&host, DeviceKind::Input, device)?;
     // Chosen, or the system default: a cable's recording side would loop the chat into itself.
@@ -289,7 +342,6 @@ fn open_capture(device: Option<&DeviceId>) -> Result<(cpal::Stream, CaptureReade
             "unsupported sample format: {other}"
         ))),
     }?;
-    stream.play().map_err(capture_error)?;
     Ok((stream, reader))
 }
 
@@ -363,6 +415,82 @@ mod tests {
         sample_rate: 100,
         channels: 2,
     };
+
+    /// A stream with no device behind it, which says whether it was started and dropped.
+    struct FakeStream {
+        started: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for FakeStream {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    /// Opens a fake stream that takes `build_time` to build, waiting `wait` for it, and returns
+    /// the result with the stream's flags.
+    fn open_fake(
+        wait: Duration,
+        build_time: Duration,
+    ) -> (
+        Result<CaptureReader, AudioError>,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+    ) {
+        let started = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let stream = FakeStream {
+            started: Arc::clone(&started),
+            dropped: Arc::clone(&dropped),
+        };
+        let result = open_on_thread(
+            wait,
+            move || {
+                thread::sleep(build_time);
+                let (_writer, reader) = capture_ring(STEREO_100, Box::new(()));
+                Ok((stream, reader))
+            },
+            |stream: &FakeStream| {
+                stream.started.store(true, Ordering::Release);
+                Ok(())
+            },
+        );
+        (result, started, dropped)
+    }
+
+    #[test]
+    fn a_capture_built_in_time_is_started_and_kept_until_its_reader_drops() {
+        let (result, started, dropped) =
+            open_fake(Duration::from_secs(5), Duration::from_millis(10));
+        let reader = result.expect("the capture opens");
+        assert!(started.load(Ordering::Acquire));
+        assert!(!dropped.load(Ordering::Acquire));
+        drop(reader);
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "the stream outlived its reader"
+        );
+    }
+
+    #[test]
+    fn a_capture_built_after_the_wait_is_never_started() {
+        let (result, started, dropped) =
+            open_fake(Duration::from_millis(50), Duration::from_millis(300));
+        assert!(matches!(result, Err(AudioError::Device(_))));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !dropped.load(Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the late stream was kept"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !started.load(Ordering::Acquire),
+            "a capture given up on was started"
+        );
+    }
 
     #[test]
     fn the_ring_holds_a_second_and_drops_on_overflow() {
