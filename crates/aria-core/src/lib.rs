@@ -18,6 +18,7 @@ pub mod redact;
 pub mod runtime;
 pub mod settings;
 pub mod soundboard;
+pub mod watch;
 
 // What `aria-app` needs from the crates below it, which it reaches only through this one.
 pub use aria_audio::{

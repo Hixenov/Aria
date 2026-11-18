@@ -104,7 +104,7 @@ pub fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
             general(ui, ctx.tr, &ctx.palette, &mut settings);
             playback::show(ui, ctx, &mut settings);
             soundboard::show(ui, ctx, &mut settings);
-            library::show(ui, ctx);
+            library::show(ui, ctx, &mut settings);
             advanced(ui, ctx, &mut settings.log_level);
             about(ui, ctx.tr, &ctx.palette);
         });
@@ -496,6 +496,25 @@ mod tests {
             panic!("expected one UpdateSettings, got {:?}", harness.state().out);
         };
         assert!(!settings.history_enabled);
+    }
+
+    #[test]
+    fn the_watch_folders_switch_updates_settings() {
+        let mut harness = page();
+        let label = harness.state().english("settings-watch-folders");
+        // The Library card is further down the page.
+        harness
+            .get_by_role_and_label(Role::CheckBox, &label)
+            .scroll_to_me();
+        harness.run();
+        harness
+            .get_by_role_and_label(Role::CheckBox, &label)
+            .click();
+        harness.run();
+        let [PageAction::UpdateSettings(settings)] = harness.state().out.as_slice() else {
+            panic!("expected one UpdateSettings, got {:?}", harness.state().out);
+        };
+        assert!(!settings.watch_folders);
     }
 
     #[test]

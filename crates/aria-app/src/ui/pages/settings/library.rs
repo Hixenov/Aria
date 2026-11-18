@@ -1,8 +1,9 @@
-//! The Library card: the folders, and adding, rescanning and clearing the artwork cache.
+//! The Library card: the folders, watching them, and adding, rescanning and clearing the artwork
+//! cache.
 
-use aria_core::i18n::FluentArgs;
+use aria_core::{i18n::FluentArgs, settings::Settings};
 use aria_library::Folder;
-use eframe::egui::{Button, Label, RichText, TextStyle, Ui};
+use eframe::egui::{Button, Checkbox, Label, RichText, TextStyle, Ui};
 
 use super::{
     Dialog, PageAction, PageCtx, SPACE, buttons_row, caption, divider, group, open_dialog, row,
@@ -14,7 +15,7 @@ const ICON_SIZE: f32 = 16.0;
 
 /// The folder list, and the buttons under it. Draws from whatever snapshot there is, which is
 /// empty while the library is off or loading, so it never waits.
-pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
+pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
     let tr = ctx.tr;
     let p = ctx.palette;
     let snapshot = ctx.library.snapshot.clone();
@@ -27,6 +28,16 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
             folder_row(ui, ctx, folder);
             divider(ui);
         }
+        let watch = tr.tr("settings-watch-folders");
+        let hint = tr.tr("settings-watch-folders-hint");
+        row(ui, &p, &watch, |ui| {
+            let checkbox = Checkbox::without_text(&mut s.watch_folders);
+            let response = ui.add(checkbox).accessible_name(&*watch);
+            ui.ctx()
+                .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
+        });
+        caption(ui, &p, &hint, TextStyle::Small);
+        divider(ui);
         buttons_row(ui, |ui| {
             if ui.button(tr.tr("local-add-folder")).clicked() {
                 ctx.out.push(PageAction::PickFolder);

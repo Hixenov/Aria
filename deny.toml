@@ -36,6 +36,9 @@ allow = [
     # Added for interprocess (the single-instance pipe): its helpers doctest-file and recvmsg are
     # 0BSD only, a public-domain-like licence with no conditions at all.
     "0BSD",
+    # Added for notify (watching the library's folders): a public-domain dedication with no
+    # conditions.
+    "CC0-1.0",
 ]
 
 [bans]

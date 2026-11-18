@@ -425,6 +425,8 @@ mod tests {
         "playlist-unavailable",
         "playlists-empty",
         "playlists-empty-hint",
+        "settings-watch-folders",
+        "settings-watch-folders-hint",
         "settings-history",
         "settings-history-hint",
         "settings-history-clear",

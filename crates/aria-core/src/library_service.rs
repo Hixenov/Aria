@@ -266,6 +266,15 @@ impl LibraryHandle {
         }
     }
 
+    /// A way to ask for a rescan from another thread, such as the folder watcher's.
+    pub fn rescanner(&self) -> impl Fn() + Send + 'static {
+        let requests = self.requests.clone();
+        move || {
+            // Fails only once the thread has exited, when nothing is listening.
+            let _ = requests.send(LibraryRequest::Rescan);
+        }
+    }
+
     /// Sends [`LibraryRequest::Shutdown`], then waits up to `timeout` for the thread to exit.
     ///
     /// Returns `true` if it exited cleanly in time. Returns `false` if it timed out, in which case

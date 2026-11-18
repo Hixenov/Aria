@@ -19,6 +19,7 @@ const SIDEBAR_DEFAULT: f32 = 220.0;
 const VOLUME_DEFAULT: f32 = 1.0;
 const GAPLESS_DEFAULT: bool = true;
 const HISTORY_ENABLED_DEFAULT: bool = true;
+const WATCH_FOLDERS_DEFAULT: bool = true;
 const EXCLUSIVE_OUTPUT_DEFAULT: bool = false;
 const GLOBAL_HOTKEYS_DEFAULT: bool = true;
 /// The music's level in the chat, as a share of full.
@@ -230,6 +231,11 @@ fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::E
     lenient(d, HISTORY_ENABLED_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::watch_folders`].
+fn lenient_watch_folders<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, WATCH_FOLDERS_DEFAULT)
+}
+
 /// [`lenient`] for [`Settings::exclusive_output`].
 fn lenient_exclusive_output<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     lenient(d, EXCLUSIVE_OUTPUT_DEFAULT)
@@ -326,6 +332,10 @@ pub struct Settings {
     /// Whether plays are recorded. Plays already stored stay when it is switched off.
     #[serde(deserialize_with = "lenient_history_enabled")]
     pub history_enabled: bool,
+    /// Whether the library's folders are watched, so that changes in them are scanned without a
+    /// manual rescan.
+    #[serde(deserialize_with = "lenient_watch_folders")]
+    pub watch_folders: bool,
     /// Whether the device is held alone, at each track's own format. Only Windows has this.
     #[serde(deserialize_with = "lenient_exclusive_output")]
     pub exclusive_output: bool,
@@ -383,6 +393,7 @@ impl Default for Settings {
             output_device: None,
             gapless: GAPLESS_DEFAULT,
             history_enabled: HISTORY_ENABLED_DEFAULT,
+            watch_folders: WATCH_FOLDERS_DEFAULT,
             exclusive_output: EXCLUSIVE_OUTPUT_DEFAULT,
             soundboard_device: None,
             soundboard_target: SoundTarget::Mine,

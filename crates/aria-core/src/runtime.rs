@@ -23,6 +23,7 @@ use std::{
     fmt,
     hash::{BuildHasher, RandomState},
     io, mem,
+    path::PathBuf,
     sync::Arc,
     thread,
     time::Duration,
@@ -47,6 +48,7 @@ use crate::{
     opened,
     playback_service::PlaybackService,
     settings::{Settings, store::SettingsStore},
+    watch::{self, FolderWatcher},
 };
 
 pub use crate::library_service::LibraryPaths;
@@ -92,12 +94,15 @@ pub type Waker = Arc<dyn Fn() + Send + Sync>;
 pub struct BackendConfig {
     /// How long settings updates must be quiet before the latest is written.
     pub debounce: Duration,
+    /// How long changes in the library's folders must have stopped before they are scanned.
+    pub watch_quiet: Duration,
 }
 
 impl Default for BackendConfig {
     fn default() -> Self {
         Self {
             debounce: Duration::from_millis(500),
+            watch_quiet: watch::QUIET,
         }
     }
 }
@@ -228,6 +233,12 @@ impl Backend {
             Some(link) => (Some(link.handle), Some(link.events)),
             None => (None, None),
         };
+        // Without it the library is scanned at start and by hand only.
+        let watcher = library.as_ref().and_then(|library| {
+            FolderWatcher::start(cfg.watch_quiet, library.rescanner())
+                .map_err(|error| tracing::warn!(%error, "the library's folders cannot be watched"))
+                .ok()
+        });
         let PlaybackLink {
             service: playback,
             events: engine_events,
@@ -249,6 +260,8 @@ impl Backend {
             deadline: None,
             failing: false,
             settings,
+            watcher,
+            library_folders: Vec::new(),
         };
         let done_guard = DoneGuard::new(done_tx);
         let thread = thread::Builder::new()
@@ -400,6 +413,10 @@ struct Worker {
     /// The settings in effect. A reset keeps their volume and mute, and the microphone hotkey
     /// flips their microphone switch.
     settings: Settings,
+    /// Watches the library's folders while the settings ask for it.
+    watcher: Option<FolderWatcher>,
+    /// The library's folders, as the last snapshot listed them.
+    library_folders: Vec<PathBuf>,
 }
 
 impl Worker {
@@ -601,9 +618,25 @@ impl Worker {
         });
     }
 
+    /// Watches the library's folders if the settings ask for it, and none if not.
+    fn sync_watch(&mut self) {
+        let folders = if self.settings.watch_folders {
+            self.library_folders.as_slice()
+        } else {
+            &[]
+        };
+        if let Some(watcher) = &mut self.watcher {
+            watcher.watch(folders);
+        }
+    }
+
     /// Puts `settings` in effect and schedules their save.
     fn apply(&mut self, settings: Settings) {
+        let watching = self.settings.watch_folders;
         self.settings = settings.clone();
+        if settings.watch_folders != watching {
+            self.sync_watch();
+        }
         self.playback.on_settings(&settings);
         self.flush_playback();
         self.update(settings);
@@ -654,6 +687,15 @@ impl Worker {
     fn library_event(&mut self, event: LibraryEvent) {
         match event {
             LibraryEvent::Snapshot(snapshot) => {
+                let folders: Vec<PathBuf> = snapshot
+                    .folders
+                    .iter()
+                    .map(|folder| folder.path.clone())
+                    .collect();
+                if folders != self.library_folders {
+                    self.library_folders = folders;
+                    self.sync_watch();
+                }
                 // The UI hears of the snapshot before any view that refers to it.
                 self.emit([Event::LibraryUpdated(Arc::clone(&snapshot))]);
                 self.playback.on_snapshot(snapshot);
@@ -865,11 +907,13 @@ mod tests {
 
     const FAST: BackendConfig = BackendConfig {
         debounce: Duration::from_millis(50),
+        watch_quiet: watch::QUIET,
     };
     /// A debounce no test outlives, so only shutdown can write a pending
     /// update.
     const SLOW: BackendConfig = BackendConfig {
         debounce: Duration::from_secs(3600),
+        watch_quiet: watch::QUIET,
     };
     /// Upper bound for every wait; generous so slow CI runners do not flake.
     const MAX: Duration = Duration::from_secs(2);
@@ -1493,6 +1537,64 @@ mod tests {
             settings: with_cable(),
             ..no_library()
         }
+    }
+
+    /// A backend whose library has the empty folder `music` in it, watched as `watch` says.
+    fn watching(dir: &Path, watch: bool) -> (BackendHandle, PathBuf) {
+        let music = dir.join("music");
+        fs::create_dir(&music).unwrap();
+        let services = BackendServices {
+            settings: Settings {
+                watch_folders: watch,
+                ..Settings::default()
+            },
+            ..services(Some(library_paths(dir)))
+        };
+        let (waker, _) = counting_waker();
+        let cfg = BackendConfig {
+            watch_quiet: Duration::from_millis(200),
+            ..FAST
+        };
+        let handle = Backend::start(None, services, waker, cfg).unwrap();
+        handle.send(Command::AddFolder(music.clone()));
+        let has_folder = |e: &Event| matches!(e, Event::LibraryUpdated(s) if s.folders.len() == 1);
+        drain_until_within(&handle, LIBRARY_MAX, |e| e.iter().any(has_folder));
+        // The folder's first scan, and the watch, settle.
+        thread::sleep(Duration::from_millis(500));
+        handle.drain();
+        (handle, music)
+    }
+
+    fn copy_a_track_into(music: &Path) {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../aria-audio/tests/fixtures/tone.ogg");
+        fs::copy(fixture, music.join("new.ogg")).unwrap();
+    }
+
+    #[test]
+    fn music_copied_into_a_library_folder_appears_without_a_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, music) = watching(dir.path(), true);
+        copy_a_track_into(&music);
+        let has_track = |e: &Event| matches!(e, Event::LibraryUpdated(s) if s.tracks.len() == 1);
+        drain_until_within(&handle, LIBRARY_MAX, |e| e.iter().any(has_track));
+        assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn with_watching_off_a_folder_waits_for_a_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, music) = watching(dir.path(), false);
+        copy_a_track_into(&music);
+        thread::sleep(Duration::from_millis(1_500));
+        let has_track = |e: &Event| matches!(e, Event::LibraryUpdated(s) if !s.tracks.is_empty());
+        assert!(
+            !handle.drain().iter().any(has_track),
+            "a folder was scanned though watching is off"
+        );
+        handle.send(Command::Rescan);
+        drain_until_within(&handle, LIBRARY_MAX, |e| e.iter().any(has_track));
+        assert!(handle.shutdown(MAX));
     }
 
     #[test]
