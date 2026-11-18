@@ -22,7 +22,7 @@ use aria_audio::{
 use tempfile::TempDir;
 
 use EngineCommand::{
-    Load, Pause, Play, PlaySound, Seek, SetDevice, SetExclusive, SetGapless, SetNext,
+    Load, Pause, Play, PlaySound, Seek, SetDevice, SetExclusive, SetGapless, SetMuted, SetNext,
     SetSoundDevice, SetVolume, Stop, StopSounds,
 };
 use EngineEvent::{
@@ -1806,6 +1806,43 @@ fn a_refused_exclusive_open_falls_back_to_shared() {
 }
 
 #[test]
+fn a_volume_of_zero_is_silent_only_on_a_shared_output() {
+    // Exclusive, a volume of 0 plays at full level, as the locked slider shows; only mute silences.
+    let rig = Rig::exclusive(STEREO_44K);
+    rig.send(SetVolume(0.0));
+    rig.start(track(1, "tone.flac"));
+    let exclusive = rig.output(0);
+    assert!(exclusive.opened_as().0);
+    assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+    assert!(
+        audible_frames(&exclusive.pull(SECOND / 4)) > 0,
+        "exclusive at 0 is silent"
+    );
+    rig.send(SetMuted(true));
+    assert_eq!(rig.next_state().path, OutputPath::Converted);
+    exclusive.pull(CHUNK_FRAMES);
+    let muted = exclusive.pull(CHUNK_FRAMES);
+    assert!(
+        muted.iter().all(|sample| *sample == 0.0),
+        "mute let sound through"
+    );
+
+    // Asked for exclusive and refused, the same 0 is silent from the first sample.
+    let rig = Rig::new(STEREO_48K);
+    rig.factory.refuse_exclusive(true);
+    rig.send(SetExclusive(true));
+    rig.send(SetVolume(0.0));
+    rig.start(track(1, "tone.flac"));
+    let shared = rig.output(0);
+    assert!(!shared.opened_as().0);
+    let audio = shared.pull(SECOND / 4);
+    assert!(
+        audio.iter().all(|sample| *sample == 0.0),
+        "a shared output played a volume of 0 aloud"
+    );
+}
+
+#[test]
 fn each_condition_that_breaks_bit_perfect_is_reported() {
     // 24 bits on a device that takes only 16.
     let rig = Rig::exclusive(STEREO_48K);
@@ -1840,9 +1877,9 @@ fn each_condition_that_breaks_bit_perfect_is_reported() {
     let rig = Rig::exclusive(STEREO_48K);
     rig.send(load(track(1, "tone.flac")));
     assert_eq!(rig.next_state(), CD_BIT_PERFECT);
-    rig.send(SetVolume(0.0));
+    rig.send(SetMuted(true));
     assert_eq!(rig.next_state(), state(OutputPath::Converted, 44_100, 16));
-    rig.send(SetVolume(0.3));
+    rig.send(SetMuted(false));
     assert_eq!(rig.next_state(), CD_BIT_PERFECT);
 }
 
@@ -1865,7 +1902,7 @@ fn volume_is_unity_in_exclusive_mode() {
     );
 
     // Mute still silences.
-    rig.send(SetVolume(0.0));
+    rig.send(SetMuted(true));
     assert_eq!(rig.next_state().path, OutputPath::Converted);
     // The gain ramps down within one buffer.
     exclusive.pull(CHUNK_FRAMES);
@@ -1874,7 +1911,7 @@ fn volume_is_unity_in_exclusive_mode() {
         muted.iter().all(|sample| *sample == 0.0),
         "mute let sound through"
     );
-    rig.send(SetVolume(0.5));
+    rig.send(SetMuted(false));
     assert_eq!(rig.next_state(), CD_BIT_PERFECT);
 
     // Shared again, the volume is back.

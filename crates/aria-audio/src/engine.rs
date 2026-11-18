@@ -62,12 +62,16 @@ pub enum EngineCommand {
     Pause,
     /// Move within the track being heard. Past the end, this is the end of the track.
     Seek(u64),
+    /// The music's volume, 0.0 to 1.0, on a shared output. An exclusive output plays at full
+    /// level whatever it is, as the locked slider shows, so a volume of 0 is silent only where the
+    /// output turns out shared.
     SetVolume(f32),
+    /// Silence the music on every output, exclusive ones too, or let it play again.
+    SetMuted(bool),
     SetDevice(Option<DeviceId>),
     SetGapless(bool),
     /// Ask for outputs that hold the device alone, at each track's own format. While an output is
-    /// exclusive, the music plays at full level whatever the volume, unless the volume is zero,
-    /// which mutes. Tracks of one rate join as before; at a change of rate, or a depth wider than
+    /// exclusive, the music plays at full level whatever the volume, unless it is muted. Tracks of one rate join as before; at a change of rate, or a depth wider than
     /// the output carries, the output is opened again once the track before has been heard out.
     SetExclusive(bool),
     /// Drop the track and what follows it. Sounds play on.
@@ -532,6 +536,7 @@ struct Worker {
     clock: Arc<PlaybackClock>,
     device: Option<DeviceId>,
     volume: f32,
+    muted: bool,
     gapless: bool,
     /// Whether exclusive outputs are asked for.
     exclusive: bool,
@@ -608,6 +613,7 @@ impl Worker {
             clock,
             device: None,
             volume: 1.0,
+            muted: false,
             gapless: true,
             exclusive: false,
             playing: false,
@@ -773,9 +779,11 @@ impl Worker {
             EngineCommand::Seek(position_ms) => self.seek(position_ms),
             EngineCommand::SetVolume(volume) => {
                 self.volume = volume;
-                if let Some(sink) = &self.sink {
-                    sink.input.set_gain(self.gain(sink.exclusive));
-                }
+                self.apply_gain();
+            }
+            EngineCommand::SetMuted(muted) => {
+                self.muted = muted;
+                self.apply_gain();
             }
             EngineCommand::SetDevice(device) => {
                 self.share_dirty = true;
@@ -817,14 +825,24 @@ impl Worker {
         self.sink.as_ref().map(|sink| sink.format)
     }
 
-    /// The music gain on an output. An exclusive one plays at exactly 1.0, unless the volume
-    /// mutes it.
+    /// The music gain on an output. Muted, nothing; an exclusive one plays at exactly 1.0; a
+    /// shared one at the volume.
     fn gain(&self, exclusive: bool) -> f32 {
-        let audible = self.volume.is_finite() && self.volume > 0.0;
-        match (exclusive, audible) {
-            (true, true) => 1.0,
-            (true, false) => 0.0,
-            (false, _) => self.volume,
+        if self.muted {
+            0.0
+        } else if exclusive {
+            1.0
+        } else if self.volume.is_finite() {
+            self.volume.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Sets the open output's music gain after the volume or mute changed.
+    fn apply_gain(&self) {
+        if let Some(sink) = &self.sink {
+            sink.input.set_gain(self.gain(sink.exclusive));
         }
     }
 
