@@ -22,6 +22,10 @@ Checked with 1122 automated tests on Windows and in CI on Linux and macOS (on an
   - "Turn off" in the same menu stops it, also during the fade, and the music comes back to its level.
   - The timer is not kept when Aria closes. Sounds from the soundboard are not faded.
 
+### Fixed
+
+- With "Music also to the second device" on, the chat could miss the first second of a track on a fast machine and hear silence in its place: the music's output can open later in the engine's pass than the copy was tried, and the music queued before the copy started was not kept for it (0.2.6 kept it only once the second device began opening). It is now kept from the moment sharing is on.
+
 ### Changed
 
 - Version 0.2.8. One new setting, `replay_gain`; no database change.
