@@ -133,7 +133,12 @@ mod tests {
 
     use super::*;
 
-    const SHORT_QUIET: Duration = Duration::from_millis(300);
+    /// FSEvents hands over a burst in batches that can be more than 300 ms apart.
+    const SHORT_QUIET: Duration = if cfg!(target_os = "macos") {
+        Duration::from_millis(1_500)
+    } else {
+        Duration::from_millis(300)
+    };
     /// Time for the system to start delivering a new watch's changes.
     const SETTLE: Duration = Duration::from_millis(300);
 
