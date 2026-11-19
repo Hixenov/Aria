@@ -17,10 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS on Intel: in November 2026 GitHub's Apple Silicon runners (macos-latest) were
-        # often not to be had, and the job was cancelled unrun. Put macos-latest back when they
-        # are.
-        os: [windows-latest, ubuntu-latest, macos-15-intel]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       # Keep `toolchain` in sync with rust-toolchain.toml.

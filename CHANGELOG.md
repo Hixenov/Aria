@@ -26,6 +26,9 @@ Checked with 1122 automated tests on Windows and in CI on Linux and macOS (on an
 
 - Version 0.2.8. One new setting, `replay_gain`; no database change.
 - The engine takes a gain with each track (`TrackRequest::gain`), applied before the resampler, so a gapless join keeps each side's own gain, and a new `FadeOut` command.
+- **macOS and Linux files in the release.** A new workflow, `.github/workflows/release.yml`, builds Aria when a release is published, runs the tests on that build (`cargo test --release`), and attaches `Aria-<version>-macos-arm64.zip` (an `Aria.app` for Apple silicon, signed ad hoc, not by a developer) and `Aria-<version>-linux-x86_64.tar.gz` (the program, built on Ubuntu 22.04, with a desktop entry and the icon), then writes `SHA256SUMS.txt` for every file. Neither has been run by hand.
+- The macOS check in CI is back on `macos-latest` (Apple silicon).
+- README describes what Aria does now; what changed in each version stays in this changelog.
 
 ### Not done
 

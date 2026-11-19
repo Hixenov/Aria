@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Aria
+GenericName=Music Player
+Comment=Play your music library
+Exec=aria %F
+Icon=aria
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/mpeg;audio/flac;audio/x-flac;audio/wav;audio/x-wav;audio/ogg;audio/vorbis;audio/opus;audio/mp4;audio/aac;audio/x-m4a;audio/aiff;audio/x-aiff;
+StartupWMClass=aria

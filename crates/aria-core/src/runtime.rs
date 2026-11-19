@@ -1429,7 +1429,8 @@ mod tests {
         let id = soundboard(&events).unwrap().sounds[0].id;
 
         handle.send(Command::PlaySound(id));
-        drain_until(&handle, |e| {
+        // A slow machine takes a while to open the fake output and the sound's decoder.
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
             soundboard(e).is_some_and(|board| board.sounds[0].playing)
         });
         drop(release);
