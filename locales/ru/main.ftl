@@ -105,6 +105,18 @@ restore-not-a-backup = В этой папке нет резервной копи
 restore-newer = Эту копию сделала более новая версия Aria, и эта версия не может её восстановить.
 restore-failed = Не удалось восстановить резервную копию.
 restore-done = Восстановлено из резервной копии. Прежняя библиотека сохранена рядом под именем «library.db.before-restore».
+playlist-import = Импорт…
+playlist-export = Экспорт…
+# $name (String) - the playlist's name; $count (Number) - how many entries it got
+playlist-imported = { $count ->
+    [one] Создан плейлист { $name }: { $count } запись.
+    [few] Создан плейлист { $name }: { $count } записи.
+   *[other] Создан плейлист { $name }: { $count } записей.
+}
+playlist-import-empty = В этом файле плейлиста нет ни одного файла.
+# $name (String) - the playlist's name
+playlist-exported = Плейлист { $name } сохранён.
+playlist-file-failed = Не удалось прочитать или записать файл плейлиста.
 settings-history = Вести историю прослушиваний
 settings-history-hint = История хранится только на этом компьютере.
 settings-library = Библиотека

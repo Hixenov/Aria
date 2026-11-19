@@ -391,6 +391,8 @@ impl PlaybackService {
             | Command::ResetSettings
             | Command::AddFolder(_)
             | Command::BackUp(_)
+            | Command::ImportPlaylist(_)
+            | Command::ExportPlaylist { .. }
             | Command::Restore(_)
             | Command::RemoveFolder(_)
             | Command::Rescan

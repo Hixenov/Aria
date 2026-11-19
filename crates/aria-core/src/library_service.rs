@@ -34,7 +34,8 @@ use std::{
 
 use aria_library::{
     Collections, Folder, FolderId, Library, LibraryError, LibrarySnapshot, Opened, PlaylistId,
-    QueueRecord, ScanProgress, ScanSummary, Sound, SoundId, TrackId,
+    QueueRecord, ScanProgress, ScanSummary, Sound, SoundId, TrackId, parse_m3u, playlist_name,
+    write_m3u,
 };
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
@@ -72,6 +73,14 @@ pub(crate) const UNAVAILABLE: Notice = Notice {
     key: "library-unavailable",
     args: Vec::new(),
 };
+/// A playlist was made of an M3U file. Takes `name` and `count`.
+pub const PLAYLIST_IMPORTED: &str = "playlist-imported";
+/// An M3U file listed no files.
+pub const PLAYLIST_IMPORT_EMPTY: &str = "playlist-import-empty";
+/// A playlist was saved as an M3U8 file. Takes `name`.
+pub const PLAYLIST_EXPORTED: &str = "playlist-exported";
+/// A playlist file could not be read or written.
+pub const PLAYLIST_FILE_FAILED: &str = "playlist-file-failed";
 /// A folder inside a folder of the library was refused.
 const FOLDER_NESTED: Notice = Notice {
     level: NoticeLevel::Warning,
@@ -115,6 +124,10 @@ pub enum LibraryRequest {
     RemoveFolder(FolderId),
     /// Scan all folders. During a scan, this queues one more.
     Rescan,
+    /// Make a playlist of the M3U file at this path.
+    ImportPlaylist(PathBuf),
+    /// Write a playlist to an M3U8 file.
+    ExportPlaylist { id: PlaylistId, to: PathBuf },
     /// Write a copy of the database to `to`, which must not exist, for the backup called `name`.
     BackUp { to: PathBuf, name: String },
     /// Delete the thumbnails. The next scan rebuilds them.
@@ -338,7 +351,9 @@ fn serve_disabled(requests: &Receiver<LibraryRequest>, on_event: &OnEvent) {
             | LibraryRequest::SetSoundVolume { .. }
             | LibraryRequest::SetSoundHotkey { .. }
             | LibraryRequest::RemoveSound(_)
-            | LibraryRequest::BackUp { .. } => on_event(LibraryEvent::Notice(UNAVAILABLE)),
+            | LibraryRequest::BackUp { .. }
+            | LibraryRequest::ImportPlaylist(_)
+            | LibraryRequest::ExportPlaylist { .. } => on_event(LibraryEvent::Notice(UNAVAILABLE)),
             _ => {}
         }
     }
@@ -519,6 +534,61 @@ impl Service {
             LibraryRequest::ClearHistory => {
                 let result = library.clear_history().map(|()| true);
                 self.finish_collection_change(library, result);
+            }
+            LibraryRequest::ImportPlaylist(file) => {
+                let name = file
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .and_then(|stem| playlist_name(&stem).map(str::to_owned))
+                    .unwrap_or_else(|| "Playlist".to_owned());
+                let base = file.parent().map(Path::to_path_buf).unwrap_or_default();
+                let notice = match std::fs::read(&file) {
+                    Err(error) => {
+                        tracing::warn!(%error, "the playlist file could not be read");
+                        Notice::new(NoticeLevel::Error, PLAYLIST_FILE_FAILED)
+                    }
+                    Ok(bytes) => {
+                        let paths = parse_m3u(&String::from_utf8_lossy(&bytes), &base);
+                        if paths.is_empty() {
+                            Notice::new(NoticeLevel::Warning, PLAYLIST_IMPORT_EMPTY)
+                        } else {
+                            let result = library
+                                .import_playlist(&name, &paths, now_secs())
+                                .map(|_| true);
+                            let imported = result.is_ok();
+                            self.finish_collection_change(library, result);
+                            if !imported {
+                                return None;
+                            }
+                            Notice::new(NoticeLevel::Info, PLAYLIST_IMPORTED)
+                                .with_arg("name", name)
+                                .with_arg("count", paths.len().to_string())
+                        }
+                    }
+                };
+                self.emit(LibraryEvent::Notice(notice));
+            }
+            LibraryRequest::ExportPlaylist { id, to } => {
+                let written = library.playlist_entries(id).map(|entries| {
+                    entries.map(|(name, entries)| {
+                        std::fs::write(&to, write_m3u(&entries)).map(|()| name)
+                    })
+                });
+                let notice = match written {
+                    Ok(Some(Ok(name))) => {
+                        Notice::new(NoticeLevel::Info, PLAYLIST_EXPORTED).with_arg("name", name)
+                    }
+                    Ok(None) => return None,
+                    Ok(Some(Err(error))) => {
+                        tracing::warn!(%error, "the playlist file could not be written");
+                        Notice::new(NoticeLevel::Error, PLAYLIST_FILE_FAILED)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "the playlist could not be read for export");
+                        Notice::new(NoticeLevel::Error, PLAYLIST_FILE_FAILED)
+                    }
+                };
+                self.emit(LibraryEvent::Notice(notice));
             }
             LibraryRequest::BackUp { to, name } => {
                 let notice = match library.back_up(&to) {

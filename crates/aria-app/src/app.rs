@@ -23,7 +23,7 @@ use aria_core::{
     settings::{SIDEBAR_MAX, SIDEBAR_MIN, Settings},
     soundboard::SoundboardState,
 };
-use aria_library::{LibrarySnapshot, PLAYLIST_NAME_MAX, SOUND_NAME_MAX, SoundId};
+use aria_library::{LibrarySnapshot, PLAYLIST_NAME_MAX, PlaylistId, SOUND_NAME_MAX, SoundId};
 use eframe::egui::{self, CentralPanel, Frame, Margin, UiBuilder, accesskit::Role};
 
 use crate::{
@@ -154,6 +154,11 @@ pub struct AriaApp {
     backup_picker: FolderPicker,
     /// The dialog for choosing a backup to restore.
     restore_picker: FolderPicker,
+    /// The dialog for choosing an M3U file to import.
+    import_picker: FolderPicker,
+    /// The dialog for choosing where a playlist is exported, and the playlist it is for.
+    export_picker: FolderPicker,
+    exporting: Option<PlaylistId>,
     /// What the backend last reported of the library and the player. Starts empty, since a
     /// disabled library sends nothing at all.
     library: LibraryView,
@@ -252,6 +257,9 @@ impl AriaApp {
             sound_picker: SoundPicker::default(),
             backup_picker: FolderPicker::default(),
             restore_picker: FolderPicker::default(),
+            import_picker: FolderPicker::new(crate::folders::pick_playlist_file_with_system),
+            export_picker: FolderPicker::default(),
+            exporting: None,
             library: LibraryView::default(),
             player: PlayerView::default(),
             opened: Arc::from(Vec::new()),
@@ -609,6 +617,14 @@ impl AriaApp {
         if let Some(folder) = self.restore_picker.picked() {
             self.send(Command::Restore(folder));
         }
+        if let Some(file) = self.import_picker.picked() {
+            self.send(Command::ImportPlaylist(file));
+        }
+        if let Some(to) = self.export_picker.picked()
+            && let Some(id) = self.exporting.take()
+        {
+            self.send(Command::ExportPlaylist { id, to });
+        }
     }
 
     /// Adds the sound files the user chose in the dialog, if some were chosen since the last
@@ -748,6 +764,24 @@ impl AriaApp {
             PageAction::PlayNext(id) => self.send(Command::PlayNext(id)),
             PageAction::AddToQueue(id) => self.send(Command::AddToQueue(id)),
             PageAction::PickFolder => self.pick_folder(ctx),
+            PageAction::ImportPlaylist => {
+                if let Err(err) = self.import_picker.start(ctx) {
+                    tracing::warn!(%err, "could not open the file dialog");
+                    self.notify(ctx, PICK_FOLDER_FAILED);
+                }
+            }
+            PageAction::ExportPlaylist { id, name } => {
+                let started = self.export_picker.start_with(ctx, move || {
+                    crate::folders::save_playlist_file_with_system(&name)
+                });
+                match started {
+                    Ok(()) => self.exporting = Some(id),
+                    Err(err) => {
+                        tracing::warn!(%err, "could not open the save dialog");
+                        self.notify(ctx, PICK_FOLDER_FAILED);
+                    }
+                }
+            }
             PageAction::PickBackupFolder => {
                 if let Err(err) = self.backup_picker.start(ctx) {
                     tracing::warn!(%err, "could not open the folder dialog");

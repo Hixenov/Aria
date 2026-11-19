@@ -463,6 +463,12 @@ impl Worker {
                     }
                     Some(Command::Rescan) => self.to_library(LibraryRequest::Rescan),
                     Some(Command::BackUp(parent)) => self.back_up(&parent),
+                    Some(Command::ImportPlaylist(file)) => {
+                        self.to_collections(LibraryRequest::ImportPlaylist(file));
+                    }
+                    Some(Command::ExportPlaylist { id, to }) => {
+                        self.to_collections(LibraryRequest::ExportPlaylist { id, to });
+                    }
                     Some(Command::Restore(folder)) => self.restore(folder),
                     Some(Command::ClearArtwork) => self.to_library(LibraryRequest::ClearArtwork),
                     // A file played from outside the library has no heart and no playlist.
@@ -1691,6 +1697,59 @@ mod tests {
         });
         assert!(backup::restore_pending(dir.path()));
         drop(music);
+        assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn a_playlist_is_imported_from_m3u_and_exported_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, music) = watching(dir.path(), false);
+        let list = dir.path().join("Road trip.m3u");
+        fs::write(
+            &list,
+            "#EXTM3U
+music/one.mp3
+# a note
+music/two.flac
+",
+        )
+        .unwrap();
+
+        handle.send(Command::ImportPlaylist(list));
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            notice_with(e, library_service::PLAYLIST_IMPORTED).is_some()
+        });
+        let imported = notice_with(&events, library_service::PLAYLIST_IMPORTED).unwrap();
+        assert_eq!(
+            imported.args,
+            [("name", "Road trip".into()), ("count", "2".into())]
+        );
+        let collections = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                Event::Collections(collections) => Some(Arc::clone(collections)),
+                _ => None,
+            })
+            .expect("the collections with the new playlist");
+        let playlist = &collections.playlists[0];
+        assert_eq!(playlist.name, "Road trip");
+        // The files are not in the library: kept, and counted as unavailable.
+        assert_eq!(playlist.unavailable, 2);
+
+        let out = dir.path().join("out.m3u8");
+        handle.send(Command::ExportPlaylist {
+            id: playlist.id,
+            to: out.clone(),
+        });
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            notice_with(e, library_service::PLAYLIST_EXPORTED).is_some()
+        });
+        let text = fs::read_to_string(&out).unwrap();
+        assert_eq!(
+            aria_library::parse_m3u(&text, Path::new("/")),
+            [music.join("one.mp3"), music.join("two.flac")]
+        );
         assert!(handle.shutdown(MAX));
     }
 

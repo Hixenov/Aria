@@ -36,6 +36,15 @@ pub enum Command {
     /// added to the library. Files Aria does not play are skipped with a notice. As a
     /// double-click, "Open with", the command line or a drop asks.
     OpenPaths(Vec<PathBuf>),
+    /// Make a playlist of the M3U file at this path, named after the file.
+    ImportPlaylist(PathBuf),
+    /// Save a playlist as an M3U8 file at `to`.
+    ExportPlaylist {
+        /// The playlist.
+        id: PlaylistId,
+        /// The file to write.
+        to: PathBuf,
+    },
     /// Back the library and the settings up into a new folder inside this one.
     BackUp(PathBuf),
     /// Restore the backup in this folder when Aria starts again.

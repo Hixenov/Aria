@@ -102,6 +102,17 @@ restore-not-a-backup = That folder holds no Aria backup. Choose the folder named
 restore-newer = That backup was made by a newer version of Aria, and this one cannot restore it.
 restore-failed = The backup could not be restored.
 restore-done = Restored from the backup. The library you had before is kept beside it, named "library.db.before-restore".
+playlist-import = Import…
+playlist-export = Export…
+# $name (String) - the playlist's name; $count (Number) - how many entries it got
+playlist-imported = { $count ->
+    [one] Made the playlist { $name }, with { $count } entry.
+   *[other] Made the playlist { $name }, with { $count } entries.
+}
+playlist-import-empty = That playlist file lists no files.
+# $name (String) - the playlist's name
+playlist-exported = Saved the playlist { $name }.
+playlist-file-failed = The playlist file could not be read or written.
 settings-history = Keep playback history
 settings-history-hint = History stays on this computer.
 settings-library = Library

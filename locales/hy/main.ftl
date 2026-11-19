@@ -104,6 +104,17 @@ restore-not-a-backup = Այս պանակում Aria-ի պահուստային պ
 restore-newer = Այս պատճենը ստեղծել է Aria-ի ավելի նոր տարբերակը, և այս տարբերակը չի կարող այն վերականգնել։
 restore-failed = Չհաջողվեց վերականգնել պահուստային պատճենը։
 restore-done = Վերականգնվեց պահուստային պատճենից։ Նախկին գրադարանը պահված է կողքին՝ «library.db.before-restore» անունով։
+playlist-import = Ներմուծել…
+playlist-export = Արտահանել…
+# $name (String) - the playlist's name; $count (Number) - how many entries it got
+playlist-imported = { $count ->
+    [one] Ստեղծվեց { $name } երգացանկը՝ { $count } գրառումով։
+   *[other] Ստեղծվեց { $name } երգացանկը՝ { $count } գրառումով։
+}
+playlist-import-empty = Այս երգացանկի ֆայլում ոչ մի ֆայլ չկա։
+# $name (String) - the playlist's name
+playlist-exported = { $name } երգացանկը պահվեց։
+playlist-file-failed = Չհաջողվեց կարդալ կամ գրել երգացանկի ֆայլը։
 settings-history = Պահել նվագարկման պատմությունը
 settings-history-hint = Պատմությունը մնում է միայն այս համակարգչում։
 settings-library = Գրադարան

@@ -93,6 +93,10 @@ pub enum PageAction {
     AddToQueue(TrackId),
     /// Ask the user for a folder to add to the library.
     PickFolder,
+    /// Ask for an M3U file to make a playlist of.
+    ImportPlaylist,
+    /// Ask where to save this playlist as an M3U8 file.
+    ExportPlaylist { id: PlaylistId, name: String },
     /// Ask for the folder to put a backup of the library and the settings in.
     PickBackupFolder,
     /// Ask for the folder of a backup to restore.

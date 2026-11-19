@@ -144,6 +144,11 @@ fn none_yet(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
                 ctx.out
                     .push(PageAction::AskPlaylistName(NameFor::New { first: None }));
             }
+            let import =
+                Button::new(ctx.tr.tr("playlist-import")).min_size(vec2(0.0, EMPTY_BUTTON_HEIGHT));
+            if ui.add(import).clicked() {
+                ctx.out.push(PageAction::ImportPlaylist);
+            }
         },
     );
 }
@@ -151,10 +156,15 @@ fn none_yet(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
 /// "New playlist", then one row per playlist.
 fn list(ui: &mut Ui, ctx: &mut PageCtx<'_>, selected: &mut Option<PlaylistId>) {
     let new = ctx.tr.tr("playlist-new");
-    if ui.button(&*new).clicked() {
-        ctx.out
-            .push(PageAction::AskPlaylistName(NameFor::New { first: None }));
-    }
+    ui.horizontal(|ui| {
+        if ui.button(&*new).clicked() {
+            ctx.out
+                .push(PageAction::AskPlaylistName(NameFor::New { first: None }));
+        }
+        if ui.button(ctx.tr.tr("playlist-import")).clicked() {
+            ctx.out.push(PageAction::ImportPlaylist);
+        }
+    });
     ui.add_space(SPACE[1]);
     ScrollArea::vertical()
         .id_salt("aria_playlist_list")
@@ -224,6 +234,12 @@ fn detail(
             if ui.button(tr.tr("playlist-rename")).clicked() {
                 ctx.out
                     .push(PageAction::AskPlaylistName(NameFor::Rename(playlist.id)));
+            }
+            if ui.button(tr.tr("playlist-export")).clicked() {
+                ctx.out.push(PageAction::ExportPlaylist {
+                    id: playlist.id,
+                    name: playlist.name.clone(),
+                });
             }
         });
     });
@@ -537,6 +553,32 @@ mod tests {
         assert_eq!(
             harness.state().0.out,
             [PageAction::AskPlaylistName(NameFor::New { first: None })]
+        );
+    }
+
+    #[test]
+    fn import_asks_for_a_file_with_or_without_playlists() {
+        for playlists in [vec![], vec![playlist(1, "Mix", &[(0, 1)], 0)]] {
+            let mut harness = page(playlists);
+            let import = harness.state().0.english("playlist-import");
+            harness.get_by_role_and_label(Role::Button, &import).click();
+            harness.run();
+            assert_eq!(harness.state().0.out, [PageAction::ImportPlaylist]);
+        }
+    }
+
+    #[test]
+    fn export_asks_where_to_save_the_selected_playlist() {
+        let mut harness = page(vec![playlist(1, "Mix", &[(0, 1)], 0)]);
+        let export = harness.state().0.english("playlist-export");
+        harness.get_by_role_and_label(Role::Button, &export).click();
+        harness.run();
+        assert_eq!(
+            harness.state().0.out,
+            [PageAction::ExportPlaylist {
+                id: PlaylistId(1),
+                name: "Mix".into()
+            }]
         );
     }
 

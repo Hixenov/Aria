@@ -173,10 +173,24 @@ impl<T: Send + 'static> Picker<T> {
     ///
     /// Fails if no thread could be started, in which case no dialog opens.
     pub(crate) fn start(&mut self, ctx: &Context) -> io::Result<()> {
+        let pick = self.pick;
+        self.start_with(ctx, pick)
+    }
+
+    /// As [`Self::start`], with the dialog `pick` instead of the picker's own, as for a save
+    /// dialog that offers a file name.
+    ///
+    /// # Errors
+    ///
+    /// Fails if no thread could be started, in which case no dialog opens.
+    pub(crate) fn start_with(
+        &mut self,
+        ctx: &Context,
+        pick: impl FnOnce() -> Option<T> + Send + 'static,
+    ) -> io::Result<()> {
         if self.open {
             return Ok(());
         }
-        let pick = self.pick;
         let report = PickReport {
             results: self.report.clone(),
             ctx: ctx.clone(),
@@ -247,6 +261,29 @@ impl<T> Drop for PickReport<T> {
 /// Shows the system's folder dialog, and waits for it on this thread.
 fn pick_folder_with_system() -> Option<PathBuf> {
     let dialog = rfd::AsyncFileDialog::new().pick_folder();
+    pollster::block_on(dialog).map(|handle| handle.path().to_path_buf())
+}
+
+/// Shows the system's file dialog for an M3U playlist, and waits for it on this thread.
+pub(crate) fn pick_playlist_file_with_system() -> Option<PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .add_filter("M3U", &["m3u8", "m3u"])
+        .pick_file();
+    pollster::block_on(dialog).map(|handle| handle.path().to_path_buf())
+}
+
+/// Shows the system's save dialog for a playlist called `name`, and waits for it on this
+/// thread.
+pub(crate) fn save_playlist_file_with_system(name: &str) -> Option<PathBuf> {
+    // Characters no file name may have on Windows.
+    let file: String = name
+        .chars()
+        .map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
+        .collect();
+    let dialog = rfd::AsyncFileDialog::new()
+        .add_filter("M3U8", &["m3u8"])
+        .set_file_name(format!("{file}.m3u8"))
+        .save_file();
     pollster::block_on(dialog).map(|handle| handle.path().to_path_buf())
 }
 
