@@ -43,10 +43,13 @@ const MAX_REBUILDS: usize = 3;
 const REBUILD_WINDOW: Duration = Duration::from_secs(10);
 
 /// One track to play. The token names it in events and on the clock.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TrackRequest {
     pub token: u64,
     pub path: PathBuf,
+    /// The factor to play the track at, as ReplayGain asks: 1.0 leaves it as it is. Anything
+    /// but 1.0 makes the path other than bit-perfect.
+    pub gain: f32,
 }
 
 /// What the engine can be told to do.
@@ -480,6 +483,9 @@ impl Segment {
 /// The track being decoded.
 struct Feed {
     decoder: TrackDecoder,
+    /// The gain of the track being decoded, applied before the resampler, so that what a join
+    /// leaves inside it keeps the gain of the track before.
+    gain: f32,
     /// Built when there is an output, whose format it depends on.
     resampler: Option<Resampler>,
     /// Frames read from the decoder for the current segment.
@@ -487,9 +493,10 @@ struct Feed {
 }
 
 impl Feed {
-    fn new(decoder: TrackDecoder) -> Self {
+    fn new(decoder: TrackDecoder, gain: f32) -> Self {
         Self {
             decoder,
+            gain: track_gain(gain),
             resampler: None,
             frames_read: 0,
         }
@@ -516,6 +523,11 @@ impl Feed {
         self.frames_read += (block.len() / usize::from(channels)) as u64;
         mixed.clear();
         convert_channels(block, channels, format.channels, mixed);
+        if self.gain != 1.0 {
+            for sample in mixed.iter_mut() {
+                *sample *= self.gain;
+            }
+        }
         resampler.process(mixed, out)?;
         Ok(true)
     }
@@ -546,6 +558,16 @@ struct WaitingSound {
     decoder: TrackDecoder,
     gain: f32,
     route: SoundRoute,
+}
+
+/// A track's gain as the engine plays it: 0.0 to 10.0 (20 dB, the most ReplayGain lifts), and 1.0
+/// for one that is not a number.
+fn track_gain(gain: f32) -> f32 {
+    if gain.is_finite() {
+        gain.clamp(0.0, 10.0)
+    } else {
+        1.0
+    }
 }
 
 /// Drop an output on a thread of its own, since closing a device can take seconds and the music
@@ -1019,11 +1041,12 @@ impl Worker {
             },
         };
         let index = self.queued_index();
+        let gain = track.gain;
         let mut segment = Segment::new(track, decoder.info(), index, reached, started);
         if past_end.is_some() {
             segment.end_index = Some(index);
         } else {
-            self.feed = Some(Feed::new(decoder));
+            self.feed = Some(Feed::new(decoder, gain));
         }
         self.segments.push_back(segment);
     }
@@ -1434,6 +1457,7 @@ impl Worker {
         let frames = scale(feed.frames_read, format.sample_rate, rate);
         let join = segment.start_index + frames * u64::from(format.channels);
         segment.end_index = Some(join);
+        feed.gain = track_gain(track.gain);
         let next = Segment::new(track, decoder.info(), join, 0, false);
         feed.decoder = decoder;
         feed.frames_read = 0;
@@ -2102,7 +2126,11 @@ impl Worker {
             exclusive: sink.exclusive,
             source,
             device: sink.device,
-            gain_is_unity: self.gain(sink.exclusive) == 1.0,
+            gain_is_unity: self.gain(sink.exclusive) == 1.0
+                && self
+                    .segments
+                    .front()
+                    .is_some_and(|segment| track_gain(segment.track.gain) == 1.0),
             // Mono to both channels counts as unchanged.
             channels_unchanged: source.channels == channels
                 || (source.channels == 1 && channels == 2),
@@ -2165,6 +2193,7 @@ mod tests {
         TrackRequest {
             token,
             path: PathBuf::from("track"),
+            gain: 1.0,
         }
     }
 

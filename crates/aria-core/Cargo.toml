@@ -30,5 +30,6 @@ tracing-subscriber = { workspace = true }
 unic-langid = { workspace = true }
 
 [dev-dependencies]
+lofty = { workspace = true }
 aria-audio = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }

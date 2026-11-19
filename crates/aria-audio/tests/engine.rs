@@ -66,6 +66,7 @@ fn track(token: u64, name: &str) -> TrackRequest {
     TrackRequest {
         token,
         path: fixture(name),
+        gain: 1.0,
     }
 }
 
@@ -441,6 +442,7 @@ fn gapless_join_survives_resampling() {
     let request = |token, path: &PathBuf| TrackRequest {
         token,
         path: path.clone(),
+        gain: 1.0,
     };
 
     rig.start_pair(request(1, &first), request(2, &second));
@@ -525,7 +527,11 @@ fn short_tracks_keep_their_order() {
     let clip = |token: u64| {
         let path = dir.path().join(format!("{token}.wav"));
         write_tone_wav(&path, 44_100, 2, 4_410, 440.0).unwrap();
-        TrackRequest { token, path }
+        TrackRequest {
+            token,
+            path,
+            gain: 1.0,
+        }
     };
     let short = |token| TrackStarted {
         token,
@@ -575,10 +581,12 @@ fn next_track_vanishing_is_reported() {
     rig.send(load(TrackRequest {
         token: 1,
         path: long,
+        gain: 1.0,
     }));
     rig.send(SetNext(Some(TrackRequest {
         token: 2,
         path: gone.clone(),
+        gain: 1.0,
     })));
     rig.hold(1);
     fs::remove_file(&gone).unwrap();
@@ -649,7 +657,11 @@ fn a_file_that_is_not_audio_fails_load() {
     fs::write(&path, "not audio at all").unwrap();
     let rig = Rig::new(STEREO_44K);
 
-    rig.send(load(TrackRequest { token: 1, path }));
+    rig.send(load(TrackRequest {
+        token: 1,
+        path,
+        gain: 1.0,
+    }));
 
     assert_eq!(rig.next_event(), TrackFailed { token: 1 });
 }
@@ -659,7 +671,11 @@ fn a_track_that_breaks_plays_what_it_can_then_fails() {
     let dir = tempfile::tempdir().unwrap();
     let path = damaged_m4a(dir.path(), 50, 0xFF).unwrap();
     let rig = Rig::new(STEREO_44K);
-    rig.send(load(TrackRequest { token: 1, path }));
+    rig.send(load(TrackRequest {
+        token: 1,
+        path,
+        gain: 1.0,
+    }));
     rig.send(SetNext(Some(track(2, "tone.flac"))));
 
     let output = rig.output(0);
@@ -679,7 +695,11 @@ fn a_next_track_that_breaks_after_a_resampled_join_is_reported() {
     let rig = Rig::new(STEREO_48K);
 
     rig.send(load(track(1, "tone.flac")));
-    rig.send(SetNext(Some(TrackRequest { token: 2, path })));
+    rig.send(SetNext(Some(TrackRequest {
+        token: 2,
+        path,
+        gain: 1.0,
+    })));
     let output = rig.output(0);
     let (audio, events) = rig.pull_until(&output, |event| *event == TrackFailed { token: 2 });
 
@@ -702,7 +722,11 @@ fn a_next_track_set_after_a_track_breaks_waits_for_a_command() {
     let dir = tempfile::tempdir().unwrap();
     let path = damaged_m4a(dir.path(), 50, 0xFF).unwrap();
     let rig = Rig::new(STEREO_44K);
-    rig.start(TrackRequest { token: 1, path });
+    rig.start(TrackRequest {
+        token: 1,
+        path,
+        gain: 1.0,
+    });
     let output = rig.output(0);
 
     // The failure is known by now, but the audio before it has not been heard.
@@ -845,7 +869,11 @@ fn a_seek_while_playing_does_not_break_off_once_the_new_audio_starts() {
         Ok(file) => file,
         Err(error) => panic!("no tone file: {error}"),
     };
-    rig.start(TrackRequest { token: 1, path });
+    rig.start(TrackRequest {
+        token: 1,
+        path,
+        gain: 1.0,
+    });
     let output = rig.output(0);
     // While playing, the ring has room when a seek comes.
     output.pull(CHUNK_FRAMES);
@@ -1587,7 +1615,11 @@ fn quarter_tone(dir: &Path, token: u64, rate: u32) -> TrackRequest {
     if let Err(error) = write_tone_wav(&path, rate, 2, u64::from(rate / 4), 440.0) {
         panic!("no tone file: {error}");
     }
-    TrackRequest { token, path }
+    TrackRequest {
+        token,
+        path,
+        gain: 1.0,
+    }
 }
 
 impl Rig {
@@ -1885,6 +1917,34 @@ fn each_condition_that_breaks_bit_perfect_is_reported() {
     assert_eq!(rig.next_state(), state(OutputPath::Converted, 44_100, 16));
     rig.send(SetMuted(false));
     assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+}
+
+#[test]
+fn a_track_plays_at_its_own_gain() {
+    let source = decode_all(&fixture("tone.flac"));
+    let rig = Rig::new(STEREO_44K);
+    rig.start(TrackRequest {
+        gain: 0.5,
+        ..track(1, "tone.flac")
+    });
+    let audio = rig.output(0).pull(SECOND / 4);
+    let fade = 2 * SECOND * FADE_MS as usize / 1_000;
+    let halved: Vec<f32> = source[fade..audio.len()].iter().map(|s| s * 0.5).collect();
+    assert!(
+        audio[fade..] == halved[..],
+        "the track did not play at half"
+    );
+}
+
+#[test]
+fn a_track_gain_other_than_one_is_not_bit_perfect() {
+    let rig = Rig::exclusive(STEREO_44K);
+    rig.start(TrackRequest {
+        gain: 0.5,
+        ..track(1, "tone.flac")
+    });
+    assert!(rig.output(0).opened_as().0);
+    assert_eq!(rig.next_state(), state(OutputPath::Converted, 44_100, 16));
 }
 
 #[test]

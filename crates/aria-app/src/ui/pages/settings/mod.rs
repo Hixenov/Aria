@@ -467,6 +467,7 @@ fn settings_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
 
 #[cfg(test)]
 mod tests {
+    use aria_core::settings::ReplayGainMode;
     use aria_library::Collections;
     use eframe::egui::accesskit::Role;
     use egui_kittest::kittest::Queryable as _;
@@ -479,6 +480,14 @@ mod tests {
         *,
     };
 
+    /// Scrolls the page to the control `label` of `role`, which may be below the fold, and
+    /// clicks it.
+    fn click_on(harness: &mut egui_kittest::Harness<'static, World>, role: Role, label: &str) {
+        harness.get_by_role_and_label(role, label).scroll_to_me();
+        harness.run();
+        harness.get_by_role_and_label(role, label).click();
+    }
+
     fn page() -> egui_kittest::Harness<'static, World> {
         let world = World::new(Collections::default(), LibraryView::default());
         harness(world, |ui, world| world.page(ui, show))
@@ -488,14 +497,32 @@ mod tests {
     fn the_history_switch_updates_settings() {
         let mut harness = page();
         let label = harness.state().english("settings-history");
-        harness
-            .get_by_role_and_label(Role::CheckBox, &label)
-            .click();
+        click_on(&mut harness, Role::CheckBox, &label);
         harness.run();
         let [PageAction::UpdateSettings(settings)] = harness.state().out.as_slice() else {
             panic!("expected one UpdateSettings, got {:?}", harness.state().out);
         };
         assert!(!settings.history_enabled);
+    }
+
+    #[test]
+    fn replay_gain_is_chosen_in_the_playback_card() {
+        let mut harness = page();
+        let label = harness.state().english("settings-replay-gain");
+        harness
+            .get_by_role_and_label(Role::ComboBox, &label)
+            .click();
+        harness.run();
+        let by_album = harness.state().english("settings-replay-gain-album");
+        harness
+            .get_by_role(Role::ListBox)
+            .get_by_role_and_label(Role::Button, &by_album)
+            .click();
+        harness.run();
+        let [PageAction::UpdateSettings(settings)] = harness.state().out.as_slice() else {
+            panic!("expected one UpdateSettings, got {:?}", harness.state().out);
+        };
+        assert_eq!(settings.replay_gain, ReplayGainMode::Album);
     }
 
     #[test]
@@ -521,7 +548,7 @@ mod tests {
     fn clear_history_asks_first() {
         let mut harness = page();
         let clear = harness.state().english("settings-history-clear");
-        harness.get_by_role_and_label(Role::Button, &clear).click();
+        click_on(&mut harness, Role::Button, &clear);
         harness.run();
         assert!(harness.state().out.is_empty(), "cleared without asking");
         assert!(harness.state().modal_open);
@@ -539,7 +566,7 @@ mod tests {
     fn cancelling_clear_history_sends_nothing() {
         let mut harness = page();
         let clear = harness.state().english("settings-history-clear");
-        harness.get_by_role_and_label(Role::Button, &clear).click();
+        click_on(&mut harness, Role::Button, &clear);
         harness.run();
         let cancel = harness.state().english("settings-cancel");
         harness.get_by_role_and_label(Role::Button, &cancel).click();

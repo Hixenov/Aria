@@ -30,7 +30,9 @@ use aria_audio::{
     DeviceId, EngineCommand, EngineEvent, EngineHandle, OutputPath, OutputState, PlaybackClock,
     TrackRequest,
 };
-use aria_library::{LibrarySnapshot, Quality, QueueRecord, SoundId, Track, TrackId, read_tags};
+use aria_library::{
+    LibrarySnapshot, Quality, QueueRecord, SoundId, Track, TrackId, read_replay_gain, read_tags,
+};
 
 use crate::{
     chat::{Chat, MicState},
@@ -41,7 +43,7 @@ use crate::{
     notice::{Notice, NoticeLevel},
     opened::{OpenedTracks, is_audio_file, is_opened, path_key, without_opened},
     player::{PreviousAction, Queue, RepeatMode, UpNext},
-    settings::Settings,
+    settings::{ReplayGainMode, Settings},
     soundboard::{SOUND_FAILED, Soundboard, StoredSound},
 };
 
@@ -175,6 +177,8 @@ pub struct PlaybackService {
     snapshot: Option<Arc<LibrarySnapshot>>,
     /// Files played from outside the library this session.
     opened: OpenedTracks,
+    /// Levelling by ReplayGain, from the next track handed to the engine.
+    replay_gain: ReplayGainMode,
     /// When files were last opened, for [`OPEN_JOIN`].
     last_open: Option<Instant>,
     last_token: u64,
@@ -265,6 +269,7 @@ impl PlaybackService {
             queue: Queue::new(seed),
             snapshot: None,
             opened: OpenedTracks::default(),
+            replay_gain: ReplayGainMode::Off,
             last_open: None,
             last_token: 0,
             current: None,
@@ -551,6 +556,7 @@ impl PlaybackService {
     /// device, even the same one, rebuilds the output.
     pub fn on_settings(&mut self, settings: &Settings) {
         self.history = settings.history_enabled;
+        self.replay_gain = settings.replay_gain;
         self.stored_volume = settings.volume;
         self.muted = settings.muted;
         if settings.output_device != self.device {
@@ -859,10 +865,15 @@ impl PlaybackService {
         result
     }
 
-    /// Takes a new token for `track`, if its row is there.
+    /// Takes a new token for `track`, if its row is there, with the gain ReplayGain asks for,
+    /// read from its file now.
     fn give(&mut self, track: TrackId) -> Option<(Given, TrackRequest)> {
         let row = self.row(track)?;
         let (title, path) = (row.title.clone(), row.path.clone());
+        let gain = match self.replay_gain {
+            ReplayGainMode::Off => 1.0,
+            mode => read_replay_gain(&path).linear(mode == ReplayGainMode::Album),
+        };
         self.last_token += 1;
         let token = self.last_token;
         Some((
@@ -871,7 +882,7 @@ impl PlaybackService {
                 track,
                 title,
             },
-            TrackRequest { token, path },
+            TrackRequest { token, path, gain },
         ))
     }
 
@@ -3220,6 +3231,49 @@ mod tests {
         assert_eq!(last.context, [t(1)], "{last:?}");
         assert!(last.user.iter().all(|id| id.0 > 0), "{last:?}");
         assert_eq!(last.current, None, "{last:?}");
+    }
+
+    /// The loudest sample heard of track 1 of `music` with ReplayGain set to `mode`.
+    fn loudest_with(music: &Music, mode: ReplayGainMode) -> f32 {
+        let mut rig = Rig::with(music);
+        rig.settings(&Settings {
+            replay_gain: mode,
+            ..Settings::default()
+        });
+        rig.play(&[1], 0);
+        let mut loudest = 0.0f32;
+        let deadline = Instant::now() + DEADLINE;
+        while rig.reading().position_ms < 500 {
+            for sample in rig.pull() {
+                loudest = loudest.max(sample.abs());
+            }
+            rig.pump();
+            assert!(Instant::now() < deadline, "timed out waiting for the track");
+        }
+        loudest
+    }
+
+    #[test]
+    fn replay_gain_levels_a_track_by_its_tag_when_asked() {
+        use lofty::config::WriteOptions;
+        use lofty::tag::{ItemKey, Tag, TagExt, TagType};
+        let music = Music::new().tone(3_000);
+        let mut tag = Tag::new(TagType::Id3v2);
+        assert!(tag.insert_text(ItemKey::ReplayGainTrackGain, "-6.02 dB".into()));
+        tag.save_to_path(&music.tracks[0].path, WriteOptions::default())
+            .unwrap();
+
+        let off = loudest_with(&music, ReplayGainMode::Off);
+        let track = loudest_with(&music, ReplayGainMode::Track);
+        // Album mode without an album gain takes the track's.
+        let album = loudest_with(&music, ReplayGainMode::Album);
+        assert!(off > 0.1, "nothing was heard: {off}");
+        for levelled in [track, album] {
+            assert!(
+                (levelled / off - 0.5).abs() < 0.02,
+                "levelled to {levelled}, off at {off}"
+            );
+        }
     }
 
     #[test]

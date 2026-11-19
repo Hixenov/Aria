@@ -178,6 +178,7 @@ impl Rig {
             track: TrackRequest {
                 token,
                 path: path.to_path_buf(),
+                gain: 1.0,
             },
             start_ms: 0,
             play: true,
@@ -1156,6 +1157,7 @@ fn a_track_loaded_onto_an_open_output_is_shared() {
         track: TrackRequest {
             token: 2,
             path: path.clone(),
+            gain: 1.0,
         },
         start_ms: 0,
         play: true,
@@ -1194,6 +1196,7 @@ fn the_end_of_the_queue_leaves_the_chat_silent_and_in_step() {
         track: TrackRequest {
             token: 2,
             path: path.clone(),
+            gain: 1.0,
         },
         start_ms: 0,
         play: false,
@@ -1447,7 +1450,11 @@ fn a_copy_that_waits_for_a_slow_second_device_plays_in_step_at_once() {
     rig.send(SetSoundDevice(Some(second_device())));
     rig.send(share(0.5));
     rig.send(Load {
-        track: TrackRequest { token: 1, path },
+        track: TrackRequest {
+            token: 1,
+            path,
+            gain: 1.0,
+        },
         start_ms: 0,
         play: true,
     });

@@ -264,6 +264,7 @@ dependencies = [
  "fluent-bundle",
  "fluent-syntax",
  "interprocess",
+ "lofty",
  "log",
  "notify",
  "serde",

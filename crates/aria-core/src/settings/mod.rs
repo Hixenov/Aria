@@ -69,6 +69,20 @@ pub enum Theme {
     System,
 }
 
+/// Whether, and how, tracks are levelled by their ReplayGain tags.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReplayGainMode {
+    /// Tracks play as they are.
+    #[default]
+    Off,
+    /// Each track at its own level.
+    Track,
+    /// Each album at its own level, its tracks as loud as each other within it; a track without
+    /// an album gain uses its own.
+    Album,
+}
+
 /// Log verbosity.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -231,6 +245,11 @@ fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::E
     lenient(d, HISTORY_ENABLED_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::replay_gain`].
+fn lenient_replay_gain<'de, D: Deserializer<'de>>(d: D) -> Result<ReplayGainMode, D::Error> {
+    lenient(d, ReplayGainMode::Off)
+}
+
 /// [`lenient`] for [`Settings::watch_folders`].
 fn lenient_watch_folders<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     lenient(d, WATCH_FOLDERS_DEFAULT)
@@ -336,6 +355,9 @@ pub struct Settings {
     /// manual rescan.
     #[serde(deserialize_with = "lenient_watch_folders")]
     pub watch_folders: bool,
+    /// Levelling by ReplayGain tags. Off by default, so that nothing sounds other than it did.
+    #[serde(deserialize_with = "lenient_replay_gain")]
+    pub replay_gain: ReplayGainMode,
     /// Whether the device is held alone, at each track's own format. Only Windows has this.
     #[serde(deserialize_with = "lenient_exclusive_output")]
     pub exclusive_output: bool,
@@ -394,6 +416,7 @@ impl Default for Settings {
             gapless: GAPLESS_DEFAULT,
             history_enabled: HISTORY_ENABLED_DEFAULT,
             watch_folders: WATCH_FOLDERS_DEFAULT,
+            replay_gain: ReplayGainMode::Off,
             exclusive_output: EXCLUSIVE_OUTPUT_DEFAULT,
             soundboard_device: None,
             soundboard_target: SoundTarget::Mine,

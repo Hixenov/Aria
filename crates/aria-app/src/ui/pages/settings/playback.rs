@@ -1,6 +1,10 @@
-//! The Playback card: the output device, gapless playback and exclusive mode.
+//! The Playback card: the output device, gapless playback, levelling and exclusive mode.
 
-use aria_core::{DeviceId, DeviceInfo, i18n::Localizer, settings::Settings};
+use aria_core::{
+    DeviceId, DeviceInfo,
+    i18n::Localizer,
+    settings::{ReplayGainMode, Settings},
+};
 use eframe::egui::{Button, Checkbox, ComboBox, TextStyle, Ui};
 
 use super::{Dialog, PageCtx, buttons_row, caption, divider, group, open_dialog, row};
@@ -27,6 +31,13 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
             let checkbox = Checkbox::without_text(&mut s.gapless);
             ui.add(checkbox).accessible_name(&*gapless);
         });
+        divider(ui);
+        let levelling = tr.tr("settings-replay-gain");
+        let hint = tr.tr("settings-replay-gain-hint");
+        row(ui, &p, &levelling, |ui| {
+            replay_gain_combo(ui, tr, &levelling, &mut s.replay_gain);
+        });
+        caption(ui, &p, &hint, TextStyle::Small);
         divider(ui);
         let exclusive = tr.tr("settings-exclusive");
         let hint = tr.tr(if ctx.exclusive_supported {
@@ -102,6 +113,31 @@ pub(super) fn device_combo(
             if missing {
                 // Already the value: clicking it changes nothing.
                 ui.add(Button::selectable(true, &*unavailable));
+            }
+        })
+        .response
+        .accessible_name(name);
+}
+
+/// Off, by track or by album.
+fn replay_gain_combo(ui: &mut Ui, tr: &Localizer, name: &str, mode: &mut ReplayGainMode) {
+    let text = |mode: ReplayGainMode| {
+        tr.tr(match mode {
+            ReplayGainMode::Off => "settings-replay-gain-off",
+            ReplayGainMode::Track => "settings-replay-gain-track",
+            ReplayGainMode::Album => "settings-replay-gain-album",
+        })
+        .into_owned()
+    };
+    ComboBox::from_id_salt("aria_replay_gain")
+        .selected_text(text(*mode))
+        .show_ui(ui, |ui| {
+            for choice in [
+                ReplayGainMode::Off,
+                ReplayGainMode::Track,
+                ReplayGainMode::Album,
+            ] {
+                ui.selectable_value(mode, choice, text(choice));
             }
         })
         .response
