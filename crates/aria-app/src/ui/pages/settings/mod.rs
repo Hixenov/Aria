@@ -526,6 +526,20 @@ mod tests {
     }
 
     #[test]
+    fn back_up_and_restore_ask_for_a_folder() {
+        for (key, action) in [
+            ("settings-back-up", PageAction::PickBackupFolder),
+            ("settings-restore", PageAction::PickRestoreFolder),
+        ] {
+            let mut harness = page();
+            let label = harness.state().english(key);
+            click_on(&mut harness, Role::Button, &label);
+            harness.run();
+            assert_eq!(harness.state().out, [action], "{key}");
+        }
+    }
+
+    #[test]
     fn the_watch_folders_switch_updates_settings() {
         let mut harness = page();
         let label = harness.state().english("settings-watch-folders");

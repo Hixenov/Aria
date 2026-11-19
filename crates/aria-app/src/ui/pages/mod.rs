@@ -93,6 +93,10 @@ pub enum PageAction {
     AddToQueue(TrackId),
     /// Ask the user for a folder to add to the library.
     PickFolder,
+    /// Ask for the folder to put a backup of the library and the settings in.
+    PickBackupFolder,
+    /// Ask for the folder of a backup to restore.
+    PickRestoreFolder,
     /// Take a folder out of the library. Its files are left alone.
     RemoveFolder(FolderId),
     /// Scan the library's folders again.

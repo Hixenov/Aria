@@ -91,6 +91,17 @@ settings-replay-gain-off = Off
 settings-replay-gain-track = By track
 settings-replay-gain-album = By album
 settings-replay-gain-hint = Plays tracks at an even level, as the ReplayGain tags in their files say, never louder than they can go without clipping. Files without these tags play as they are. It takes effect from the next track, and a levelled track is no longer bit-perfect.
+settings-back-up = Back up…
+settings-restore = Restore…
+settings-backup-hint = A backup holds your folders, the tracks' tags, favorites, playlists, history, sounds and settings, but no music: the files stay where they are. A restore takes place when Aria starts again, and keeps the current library beside it.
+# $name (String) - the backup folder's name, e.g. Aria backup 2026-11-20 14.05
+backup-done = Backed up to the folder { $name }.
+backup-failed = The backup could not be made.
+restore-staged = The backup is ready. Close Aria and start it again to restore it.
+restore-not-a-backup = That folder holds no Aria backup. Choose the folder named "Aria backup" with the date.
+restore-newer = That backup was made by a newer version of Aria, and this one cannot restore it.
+restore-failed = The backup could not be restored.
+restore-done = Restored from the backup. The library you had before is kept beside it, named "library.db.before-restore".
 settings-history = Keep playback history
 settings-history-hint = History stays on this computer.
 settings-library = Library

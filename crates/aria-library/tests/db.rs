@@ -543,3 +543,39 @@ fn a_0_2_1_database_upgrades_with_everything_kept() {
         .unwrap_or_default();
     assert_eq!(mtimes, vec![0, 0]);
 }
+
+#[test]
+fn a_backup_holds_the_library_and_checks_out() {
+    let env = Env::new();
+    let mut library = env.open().library;
+    let folder = env.folder("Albums");
+    ok(std::fs::create_dir_all(&folder));
+    ok(library.add_folder(&folder));
+    let backup = env.dir.path().join("backup").join("library.db");
+    ok(std::fs::create_dir_all(ok(backup
+        .parent()
+        .ok_or("no parent"))));
+
+    // While the library is open, as Aria has it.
+    ok(library.back_up(&backup));
+    ok(Library::check_backup(&backup));
+    let restored = ok(Library::open(&backup, &env.art())).library;
+    let folders = ok(restored.snapshot()).folders;
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0].path, folder);
+
+    // A backup is never written over an existing file.
+    assert!(library.back_up(&backup).is_err());
+}
+
+#[test]
+fn a_file_that_is_not_a_library_fails_the_check() {
+    let env = Env::new();
+    let junk = env.dir.path().join("junk.db");
+    ok(std::fs::write(
+        &junk,
+        b"not a database at all, just some bytes",
+    ));
+    assert!(Library::check_backup(&junk).is_err());
+    assert!(Library::check_backup(&env.dir.path().join("missing.db")).is_err());
+}

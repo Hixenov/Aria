@@ -36,6 +36,10 @@ pub enum Command {
     /// added to the library. Files Aria does not play are skipped with a notice. As a
     /// double-click, "Open with", the command line or a drop asks.
     OpenPaths(Vec<PathBuf>),
+    /// Back the library and the settings up into a new folder inside this one.
+    BackUp(PathBuf),
+    /// Restore the backup in this folder when Aria starts again.
+    Restore(PathBuf),
     /// Set the sleep timer, or turn it off.
     SetSleepTimer(SleepTimer),
     /// Put a track at the front of the user queue.

@@ -32,6 +32,9 @@ pub enum LibraryError {
     /// A sound name is empty or longer than 50 characters after trimming.
     #[error("the sound name must be 1 to 50 characters")]
     InvalidSoundName,
+    /// A backup is not a library database, or a damaged one.
+    #[error("the backup is not a library database, or is damaged")]
+    NotALibrary,
 }
 
 impl From<rusqlite::Error> for LibraryError {

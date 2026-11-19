@@ -49,6 +49,16 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
                 open_dialog(ui, ctx.modal_open, Dialog::ClearArtwork);
             }
         });
+        divider(ui);
+        caption(ui, &p, &tr.tr("settings-backup-hint"), TextStyle::Small);
+        buttons_row(ui, |ui| {
+            if ui.button(tr.tr("settings-back-up")).clicked() {
+                ctx.out.push(PageAction::PickBackupFolder);
+            }
+            if ui.button(tr.tr("settings-restore")).clicked() {
+                ctx.out.push(PageAction::PickRestoreFolder);
+            }
+        });
     });
 }
 

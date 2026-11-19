@@ -150,6 +150,10 @@ pub struct AriaApp {
     picker: FolderPicker,
     /// The dialog for choosing sound files to add to the soundboard.
     sound_picker: SoundPicker,
+    /// The dialog for choosing where a backup goes.
+    backup_picker: FolderPicker,
+    /// The dialog for choosing a backup to restore.
+    restore_picker: FolderPicker,
     /// What the backend last reported of the library and the player. Starts empty, since a
     /// disabled library sends nothing at all.
     library: LibraryView,
@@ -246,6 +250,8 @@ impl AriaApp {
             folders: FolderOpener::default(),
             picker: FolderPicker::default(),
             sound_picker: SoundPicker::default(),
+            backup_picker: FolderPicker::default(),
+            restore_picker: FolderPicker::default(),
             library: LibraryView::default(),
             player: PlayerView::default(),
             opened: Arc::from(Vec::new()),
@@ -597,6 +603,12 @@ impl AriaApp {
         if let Some(folder) = self.picker.picked() {
             self.send(Command::AddFolder(folder));
         }
+        if let Some(folder) = self.backup_picker.picked() {
+            self.send(Command::BackUp(folder));
+        }
+        if let Some(folder) = self.restore_picker.picked() {
+            self.send(Command::Restore(folder));
+        }
     }
 
     /// Adds the sound files the user chose in the dialog, if some were chosen since the last
@@ -736,6 +748,18 @@ impl AriaApp {
             PageAction::PlayNext(id) => self.send(Command::PlayNext(id)),
             PageAction::AddToQueue(id) => self.send(Command::AddToQueue(id)),
             PageAction::PickFolder => self.pick_folder(ctx),
+            PageAction::PickBackupFolder => {
+                if let Err(err) = self.backup_picker.start(ctx) {
+                    tracing::warn!(%err, "could not open the folder dialog");
+                    self.notify(ctx, PICK_FOLDER_FAILED);
+                }
+            }
+            PageAction::PickRestoreFolder => {
+                if let Err(err) = self.restore_picker.start(ctx) {
+                    tracing::warn!(%err, "could not open the folder dialog");
+                    self.notify(ctx, PICK_FOLDER_FAILED);
+                }
+            }
             PageAction::RemoveFolder(id) => self.send(Command::RemoveFolder(id)),
             PageAction::Rescan => self.send(Command::Rescan),
             PageAction::ClearArtwork => self.send(Command::ClearArtwork),

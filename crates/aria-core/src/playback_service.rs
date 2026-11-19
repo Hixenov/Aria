@@ -390,6 +390,8 @@ impl PlaybackService {
             | Command::UpdateSettings(_)
             | Command::ResetSettings
             | Command::AddFolder(_)
+            | Command::BackUp(_)
+            | Command::Restore(_)
             | Command::RemoveFolder(_)
             | Command::Rescan
             | Command::ClearArtwork

@@ -25,7 +25,7 @@ use aria_app::{
     whole_ms,
 };
 use aria_core::{
-    CpalCapture, SystemFactory,
+    CpalCapture, SystemFactory, backup,
     command::Command,
     error::I18nError,
     i18n::{Localizer, os_language},
@@ -98,7 +98,7 @@ fn main() -> anyhow::Result<()> {
     let store = paths
         .as_ref()
         .map(|paths| SettingsStore::new(paths.settings_file()));
-    let (settings, store) = load_settings(store, &mut notices);
+    let (mut settings, mut store) = load_settings(store, &mut notices);
     if let Some(logging) = &logging {
         logging.set_level(settings.log_level);
     }
@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
     // 4. Translations.
     let stage = Instant::now();
     let language = settings.language.unwrap_or_else(os_language);
-    let localizer = match localizer_for(language, Localizer::new) {
+    let mut localizer = match localizer_for(language, Localizer::new) {
         Ok(localizer) => localizer,
         Err(err) => {
             tracing::error!("{err:#}");
@@ -134,6 +134,33 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     };
     log_stage("instance", stage.elapsed());
+
+    // A restore got ready in the last run takes place now, in the copy that holds the folder,
+    // before the library opens. Its settings, if it had them, are read again.
+    if let Some(paths) = &paths {
+        match backup::apply_pending_restore(&paths.data_dir, &paths.config_dir) {
+            Ok(false) => {}
+            Ok(true) => {
+                tracing::info!("restored the library from a backup");
+                (settings, store) = load_settings(
+                    Some(SettingsStore::new(paths.settings_file())),
+                    &mut notices,
+                );
+                if let Some(logging) = &logging {
+                    logging.set_level(settings.log_level);
+                }
+                let restored = settings.language.unwrap_or_else(os_language);
+                if let Err(error) = localizer.set_language(restored) {
+                    tracing::warn!(%error, "the restored language is not available");
+                }
+                notices.push(Notice::new(NoticeLevel::Info, backup::RESTORE_DONE));
+            }
+            Err(error) => {
+                tracing::error!(%error, "the backup could not be put in place");
+                notices.push(Notice::new(NoticeLevel::Error, backup::RESTORE_FAILED));
+            }
+        }
+    }
 
     // 6. Backend. Its waker repaints once the window, and with it the context, exists.
     let stage = Instant::now();

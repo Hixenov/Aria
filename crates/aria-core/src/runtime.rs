@@ -23,10 +23,10 @@ use std::{
     fmt,
     hash::{BuildHasher, RandomState},
     io, mem,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use aria_audio::{
@@ -39,7 +39,7 @@ use tokio::{
 };
 
 use crate::{
-    chat,
+    backup, chat,
     command::Command,
     error::SettingsError,
     event::Event,
@@ -123,6 +123,8 @@ pub struct BackendServices {
 struct LibraryLink {
     handle: LibraryHandle,
     events: UnboundedReceiver<LibraryEvent>,
+    /// The folder of its database, where a restore is got ready.
+    data_dir: Option<PathBuf>,
 }
 
 impl LibraryLink {
@@ -132,8 +134,13 @@ impl LibraryLink {
             // Fails only once the backend has exited, when nobody is listening.
             let _ = events_tx.send(event);
         });
+        let data_dir = paths.db.parent().map(Path::to_path_buf);
         let handle = LibraryService::start(paths, on_event)?;
-        Ok(Self { handle, events })
+        Ok(Self {
+            handle,
+            events,
+            data_dir,
+        })
     }
 }
 
@@ -229,9 +236,9 @@ impl Backend {
         let (commands, command_rx) = unbounded_channel();
         let (event_tx, events) = crossbeam_channel::unbounded();
         let (done_tx, done) = crossbeam_channel::bounded(1);
-        let (library, library_events) = match library {
-            Some(link) => (Some(link.handle), Some(link.events)),
-            None => (None, None),
+        let (library, library_events, data_dir) = match library {
+            Some(link) => (Some(link.handle), Some(link.events), link.data_dir),
+            None => (None, None, None),
         };
         // Without it the library is scanned at start and by hand only.
         let watcher = library.as_ref().and_then(|library| {
@@ -262,6 +269,7 @@ impl Backend {
             settings,
             watcher,
             library_folders: Vec::new(),
+            data_dir,
         };
         let done_guard = DoneGuard::new(done_tx);
         let thread = thread::Builder::new()
@@ -415,6 +423,8 @@ struct Worker {
     settings: Settings,
     /// Watches the library's folders while the settings ask for it.
     watcher: Option<FolderWatcher>,
+    /// The folder of the library's database, where a restore is got ready.
+    data_dir: Option<PathBuf>,
     /// The library's folders, as the last snapshot listed them.
     library_folders: Vec<PathBuf>,
 }
@@ -452,6 +462,8 @@ impl Worker {
                         self.to_library(LibraryRequest::RemoveFolder(id));
                     }
                     Some(Command::Rescan) => self.to_library(LibraryRequest::Rescan),
+                    Some(Command::BackUp(parent)) => self.back_up(&parent),
+                    Some(Command::Restore(folder)) => self.restore(folder),
                     Some(Command::ClearArtwork) => self.to_library(LibraryRequest::ClearArtwork),
                     // A file played from outside the library has no heart and no playlist.
                     Some(
@@ -614,6 +626,64 @@ impl Worker {
             });
             // Fails only once the handle is gone, when nobody is listening.
             let _ = events.send(event(devices));
+            waker();
+        });
+    }
+
+    /// Backs the library and the settings up into a new folder inside `parent`. The settings
+    /// are written here; the library thread copies the database, and says when it is done.
+    fn back_up(&mut self, parent: &Path) {
+        if self.library.is_none() {
+            return self.emit([Event::Notice(library_service::UNAVAILABLE)]);
+        }
+        let failed = || Event::Notice(Notice::new(NoticeLevel::Error, backup::BACKUP_FAILED));
+        let folder = match backup::new_backup_folder(parent, SystemTime::now()) {
+            Ok(folder) => folder,
+            Err(error) => {
+                tracing::warn!(%error, "no folder could be made for the backup");
+                return self.emit([failed()]);
+            }
+        };
+        let written = toml::to_string(&self.settings)
+            .map_err(io::Error::other)
+            .and_then(|text| std::fs::write(folder.join(backup::SETTINGS_FILE), text));
+        if let Err(error) = written {
+            tracing::warn!(%error, "the settings could not be backed up");
+            return self.emit([failed()]);
+        }
+        let name = folder
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.to_library(LibraryRequest::BackUp {
+            to: folder.join(backup::LIBRARY_FILE),
+            name,
+        });
+    }
+
+    /// Checks the backup in `folder` and gets it ready for the next start, on the blocking
+    /// pool, since it copies the whole database.
+    fn restore(&self, folder: PathBuf) {
+        let Some(data_dir) = self.data_dir.clone() else {
+            return self.emit([Event::Notice(library_service::UNAVAILABLE)]);
+        };
+        let (events, waker) = (self.events.clone(), Arc::clone(&self.waker));
+        tokio::task::spawn_blocking(move || {
+            let notice = match backup::stage_restore(&folder, &data_dir) {
+                Ok(()) => Notice::new(NoticeLevel::Info, backup::RESTORE_STAGED),
+                Err(backup::RestoreError::NotABackup) => {
+                    Notice::new(NoticeLevel::Warning, backup::RESTORE_NOT_A_BACKUP)
+                }
+                Err(backup::RestoreError::Newer) => {
+                    Notice::new(NoticeLevel::Warning, backup::RESTORE_NEWER)
+                }
+                Err(backup::RestoreError::Io(error)) => {
+                    tracing::warn!(%error, "the backup could not be copied for the restore");
+                    Notice::new(NoticeLevel::Error, backup::RESTORE_FAILED)
+                }
+            };
+            // Fails only once the handle is gone, when nobody is listening.
+            let _ = events.send(Event::Notice(notice));
             waker();
         });
     }
@@ -1072,7 +1142,11 @@ mod tests {
             after(&event);
         });
         let handle = LibraryService::start(library_paths(dir), on_event).unwrap();
-        LibraryLink { handle, events }
+        LibraryLink {
+            handle,
+            events,
+            data_dir: Some(dir.to_path_buf()),
+        }
     }
 
     fn with_theme(theme: Theme) -> Settings {
@@ -1570,6 +1644,66 @@ mod tests {
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../aria-audio/tests/fixtures/tone.ogg");
         fs::copy(fixture, music.join("new.ogg")).unwrap();
+    }
+
+    fn notice_with(events: &[Event], key: &str) -> Option<Notice> {
+        events.iter().find_map(|event| match event {
+            Event::Notice(notice) if notice.key == key => Some(notice.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_backup_holds_the_library_and_the_settings_and_can_be_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, music) = watching(dir.path(), false);
+        let parent = dir.path().join("backups");
+        fs::create_dir(&parent).unwrap();
+
+        handle.send(Command::BackUp(parent.clone()));
+        let events = drain_until_within(&handle, LIBRARY_MAX, |e| {
+            notice_with(e, backup::BACKUP_DONE).is_some()
+        });
+        let done = notice_with(&events, backup::BACKUP_DONE).unwrap();
+        let folder = fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .next()
+            .expect("the backup folder");
+        assert!(
+            folder
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("Aria backup ")
+        );
+        assert_eq!(
+            done.args[0].1,
+            folder.file_name().unwrap().to_string_lossy()
+        );
+        aria_library::Library::check_backup(&folder.join(backup::LIBRARY_FILE)).unwrap();
+        let settings = fs::read_to_string(folder.join(backup::SETTINGS_FILE)).unwrap();
+        assert!(settings.contains("watch_folders = false"), "{settings}");
+
+        handle.send(Command::Restore(folder));
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            notice_with(e, backup::RESTORE_STAGED).is_some()
+        });
+        assert!(backup::restore_pending(dir.path()));
+        drop(music);
+        assert!(handle.shutdown(MAX));
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_backup_is_not_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, _music) = watching(dir.path(), false);
+        handle.send(Command::Restore(dir.path().join("music")));
+        drain_until_within(&handle, LIBRARY_MAX, |e| {
+            notice_with(e, backup::RESTORE_NOT_A_BACKUP).is_some()
+        });
+        assert!(!backup::restore_pending(dir.path()));
+        assert!(handle.shutdown(MAX));
     }
 
     #[test]

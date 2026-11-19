@@ -39,6 +39,7 @@ use aria_library::{
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use crate::{
+    backup,
     hotkey::Hotkey,
     notice::{Notice, NoticeLevel},
     runtime::{DoneGuard, join_bounded},
@@ -114,6 +115,8 @@ pub enum LibraryRequest {
     RemoveFolder(FolderId),
     /// Scan all folders. During a scan, this queues one more.
     Rescan,
+    /// Write a copy of the database to `to`, which must not exist, for the backup called `name`.
+    BackUp { to: PathBuf, name: String },
     /// Delete the thumbnails. The next scan rebuilds them.
     ClearArtwork,
     /// Replace the saved queue.
@@ -334,7 +337,8 @@ fn serve_disabled(requests: &Receiver<LibraryRequest>, on_event: &OnEvent) {
             | LibraryRequest::RenameSound { .. }
             | LibraryRequest::SetSoundVolume { .. }
             | LibraryRequest::SetSoundHotkey { .. }
-            | LibraryRequest::RemoveSound(_) => on_event(LibraryEvent::Notice(UNAVAILABLE)),
+            | LibraryRequest::RemoveSound(_)
+            | LibraryRequest::BackUp { .. } => on_event(LibraryEvent::Notice(UNAVAILABLE)),
             _ => {}
         }
     }
@@ -515,6 +519,18 @@ impl Service {
             LibraryRequest::ClearHistory => {
                 let result = library.clear_history().map(|()| true);
                 self.finish_collection_change(library, result);
+            }
+            LibraryRequest::BackUp { to, name } => {
+                let notice = match library.back_up(&to) {
+                    Ok(()) => {
+                        Notice::new(NoticeLevel::Info, backup::BACKUP_DONE).with_arg("name", name)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "the library could not be backed up");
+                        Notice::new(NoticeLevel::Error, backup::BACKUP_FAILED)
+                    }
+                };
+                self.emit(LibraryEvent::Notice(notice));
             }
             LibraryRequest::RecordPlay(track) => match library.record_play(track, now_secs()) {
                 // Nobody asked for this, so a failure to read the collections back is only logged.

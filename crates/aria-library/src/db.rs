@@ -220,6 +220,52 @@ impl Library {
         &self.artwork_dir
     }
 
+    /// Writes a consistent copy of the whole database to `to`, which must not exist yet, while
+    /// the library stays open. The copy holds no write-ahead log of its own.
+    pub fn back_up(&self, to: &Path) -> Result<(), LibraryError> {
+        if to.try_exists()? {
+            return Err(LibraryError::Io(std::io::Error::from(
+                std::io::ErrorKind::AlreadyExists,
+            )));
+        }
+        let target = to.to_str().ok_or(LibraryError::Io(std::io::Error::from(
+            std::io::ErrorKind::InvalidInput,
+        )))?;
+        self.conn.execute("VACUUM INTO ?1", [target])?;
+        Ok(())
+    }
+
+    /// Whether the database at `path` can be restored: a library of this version or an older
+    /// one, undamaged. It is read only, and nothing is written to it.
+    pub fn check_backup(path: &Path) -> Result<(), LibraryError> {
+        if !path.is_file() {
+            return Err(LibraryError::NotALibrary);
+        }
+        match probe(path) {
+            Ok(Probe::Healthy) => {}
+            Ok(Probe::Corrupt) => return Err(LibraryError::NotALibrary),
+            Err(LibraryError::Database(_)) => return Err(LibraryError::NotALibrary),
+            Err(error) => return Err(error),
+        }
+        // An empty file passes the probe as a database of version 0; a backup has tables.
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let tracks: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'tracks'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| LibraryError::NotALibrary)?;
+        if tracks == 1 {
+            Ok(())
+        } else {
+            Err(LibraryError::NotALibrary)
+        }
+    }
+
     /// All folders, oldest first.
     pub fn folders(&self) -> Result<Vec<Folder>, LibraryError> {
         let mut stmt = self

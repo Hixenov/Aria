@@ -1,5 +1,6 @@
 //! Core domain logic for Aria.
 
+pub mod backup;
 pub mod chat;
 pub mod command;
 pub mod error;
