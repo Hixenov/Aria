@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -23,6 +24,10 @@ pub const QUIET: Duration = Duration::from_secs(2);
 pub struct FolderWatcher {
     watcher: RecommendedWatcher,
     watched: Vec<PathBuf>,
+    /// The folders watched now, as given and as the system resolves them (on macOS a
+    /// temporary folder is reported under `/private`), which the handler checks every change
+    /// against: a system that goes on reporting a folder let go of is not listened to.
+    roots: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl std::fmt::Debug for FolderWatcher {
@@ -42,9 +47,17 @@ impl FolderWatcher {
     /// Fails if the system's watcher or the thread cannot be started.
     pub fn start(quiet: Duration, on_change: impl Fn() + Send + 'static) -> notify::Result<Self> {
         let (changed, changes) = mpsc::channel::<()>();
+        let roots: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let watched_roots = Arc::clone(&roots);
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             match event {
-                Ok(event) if counts(&event) => {
+                Ok(event)
+                    if counts(&event)
+                        && inside(
+                            &watched_roots.lock().unwrap_or_else(PoisonError::into_inner),
+                            &event.paths,
+                        ) =>
+                {
                     // Fails only once the watcher is being dropped.
                     let _ = changed.send(());
                 }
@@ -71,6 +84,7 @@ impl FolderWatcher {
         Ok(Self {
             watcher,
             watched: Vec::new(),
+            roots,
         })
     }
 
@@ -99,6 +113,13 @@ impl FolderWatcher {
                 Err(error) => tracing::debug!(%error, "a library folder cannot be watched"),
             }
         }
+        let roots = self
+            .watched
+            .iter()
+            .flat_map(|folder| [Some(folder.clone()), std::fs::canonicalize(folder).ok()])
+            .flatten()
+            .collect();
+        *self.roots.lock().unwrap_or_else(PoisonError::into_inner) = roots;
     }
 }
 
@@ -119,6 +140,13 @@ fn counts(event: &notify::Event) -> bool {
     kind && event.paths.iter().any(|path| matters(path))
 }
 
+/// Whether any of `paths` is in one of `roots`.
+fn inside(roots: &[PathBuf], paths: &[PathBuf]) -> bool {
+    paths
+        .iter()
+        .any(|path| roots.iter().any(|root| path.starts_with(root)))
+}
+
 /// Whether a change at `path` may change the library.
 fn matters(path: &Path) -> bool {
     is_audio_file(path) || path.extension().is_none()
@@ -127,7 +155,6 @@ fn matters(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
@@ -216,6 +243,19 @@ mod tests {
         // The one still watched is.
         fs::write(watched.path().join("a.mp3"), b"x").unwrap();
         assert!(wait_for(&count, 1));
+    }
+
+    #[test]
+    fn a_change_counts_only_inside_a_watched_folder() {
+        let roots = [PathBuf::from("/music"), PathBuf::from("/private/var/music")];
+        assert!(inside(&roots, &[PathBuf::from("/music/a.mp3")]));
+        assert!(inside(
+            &roots,
+            &[PathBuf::from("/private/var/music/b/c.flac")]
+        ));
+        assert!(!inside(&roots, &[PathBuf::from("/musical/a.mp3")]));
+        assert!(!inside(&roots, &[PathBuf::from("/elsewhere/a.mp3")]));
+        assert!(!inside(&[], &[PathBuf::from("/music/a.mp3")]));
     }
 
     #[test]

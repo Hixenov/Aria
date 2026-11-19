@@ -50,6 +50,30 @@ fn insert_track(db: &Path, folder: FolderId, name: &str) -> TrackId {
     TrackId(c.last_insert_rowid())
 }
 
+/// A track stored at `path`, as the library stores paths: UTF-16 on Windows, raw bytes on Unix.
+fn insert_track_at(db: &Path, folder: FolderId, path: &Path) -> TrackId {
+    #[cfg(windows)]
+    let bytes: Vec<u8> = {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    };
+    #[cfg(unix)]
+    let bytes: Vec<u8> = {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().to_vec()
+    };
+    let c = ok(Connection::open(db));
+    ok(c.execute(
+        "INSERT INTO tracks (folder_id, path, size, mtime, title, artist, duration_ms, added_at)
+         VALUES (?1, ?2, 1, 1, 'Song', 'Someone', 215000, 1)",
+        (folder.0, bytes),
+    ));
+    TrackId(c.last_insert_rowid())
+}
+
 fn count(db: &Path, sql: &str) -> i64 {
     let c = ok(Connection::open(db));
     ok(c.query_row(sql, [], |r| r.get(0)))
@@ -459,4 +483,60 @@ fn collections_build_time_for_a_large_library() {
     assert_eq!(c.favorites.len(), 5_000);
     assert_eq!(c.playlists.len(), 50);
     assert!(elapsed < std::time::Duration::from_millis(500));
+}
+
+#[test]
+fn an_imported_playlist_keeps_every_entry_and_exports_with_names() {
+    let env = Env::new();
+    let mut lib = env.open();
+    let folder = ok(lib.add_folder(&env.folder("a")));
+    let (one, two) = (
+        env.folder("a").join("one.mp3"),
+        env.folder("a").join("two.mp3"),
+    );
+    let ids = [
+        insert_track_at(&env.db(), folder, &one),
+        insert_track_at(&env.db(), folder, &two),
+    ];
+    let paths = vec![
+        two.clone(),
+        env.dir.path().join("not here.flac"),
+        one.clone(),
+    ];
+    let id = ok(lib.import_playlist("Imported", &paths, 1));
+
+    let playlist = ok(lib.collections())
+        .playlists
+        .into_iter()
+        .find(|p| p.id == id)
+        .unwrap();
+    assert_eq!(playlist.name, "Imported");
+    assert_eq!(
+        playlist
+            .items
+            .iter()
+            .map(|item| item.track)
+            .collect::<Vec<_>>(),
+        [ids[1], ids[0]]
+    );
+    assert_eq!(playlist.unavailable, 1);
+
+    let (name, entries) = ok(lib.playlist_entries(id)).unwrap();
+    assert_eq!(name, "Imported");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    assert_eq!(entries[0].info, Some((215, "Someone - Song".to_owned())));
+    assert!(
+        entries[1].info.is_none(),
+        "a file not in the library has no name"
+    );
+    assert_eq!(
+        ok(lib.playlist_entries(aria_library::PlaylistId(9_999))),
+        None
+    );
 }

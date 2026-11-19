@@ -93,7 +93,9 @@ fn settings_page_with(settings: Settings, deps: AppDeps) -> Harness<'static, Ari
 /// Scrolls to the button labelled `label`, which may be below the fold of a long page, clicks it
 /// and lets the UI settle.
 fn click_button<S>(harness: &mut Harness<'_, S>, label: &str) {
-    harness.get_by_role_and_label(Role::Button, label).scroll_to_me();
+    harness
+        .get_by_role_and_label(Role::Button, label)
+        .scroll_to_me();
     harness.run();
     harness.get_by_role_and_label(Role::Button, label).click();
     harness.run();

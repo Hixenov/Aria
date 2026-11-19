@@ -4,6 +4,7 @@ mod artwork;
 mod collections;
 mod db;
 mod error;
+mod m3u;
 mod migrations;
 mod model;
 mod paths;
@@ -22,6 +23,7 @@ pub use collections::{
 };
 pub use db::{Library, Opened};
 pub use error::LibraryError;
+pub use m3u::{M3uEntry, parse_m3u, write_m3u};
 pub use migrations::SCHEMA_VERSION;
 pub use model::{ArtworkId, Folder, FolderId, Quality, QueueRecord, Track, TrackId};
 pub use replay_gain::{ReplayGain, read_replay_gain};
