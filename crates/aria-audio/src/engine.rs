@@ -641,9 +641,10 @@ struct Worker {
     share_gain: f32,
     /// The copy of the music on the second output, while there is one.
     copy: Option<MusicCopy>,
-    /// What the listener's output took while the copy waited for the second output to open, in
-    /// the listener's format: the copy starts with what of it is not yet heard, so that the chat
-    /// hears a track from its start. At most [`BACKLOG`] of it is kept.
+    /// What the listener's output took while sharing is on and there is no copy, in the
+    /// listener's format: the copy starts with what of it is not yet heard, so that the chat hears
+    /// a track from its start, however late the copy can start. At least [`BACKLOG`] of it is
+    /// kept, and at most twice that.
     copy_backlog: Option<Vec<f32>>,
     /// Something changed that may let the copy start. It is tried on the next pass, and not
     /// again until the next such change, so a device that cannot be opened is not retried on
@@ -1386,12 +1387,14 @@ impl Worker {
         let took = &self.pending[self.pending_from..self.pending_from + written];
         if let Some(copy) = &mut self.copy {
             copy.push(took);
-        } else if let Some(backlog) = &mut self.copy_backlog {
+        } else if self.share_music {
+            let backlog = self.copy_backlog.get_or_insert_with(Vec::new);
             backlog.extend_from_slice(took);
             let format = sink.format;
             let most = BACKLOG.as_millis() as usize * format.sample_rate as usize / 1_000
                 * usize::from(format.channels.max(1));
-            if backlog.len() > most {
+            // Trimmed now and then rather than on every write, which would move it all each time.
+            if backlog.len() > 2 * most {
                 let excess = backlog.len() - most;
                 backlog.drain(..excess);
             }
@@ -1794,7 +1797,7 @@ impl Worker {
         if !self.share_music || !fits {
             self.copy = None;
         }
-        if !self.share_music || format.is_none() {
+        if !self.share_music {
             self.copy_backlog = None;
         }
         // A change is kept until a copy can be tried: with no output or no track, as after a
@@ -1814,7 +1817,6 @@ impl Worker {
             SecondReady::Opening => {
                 // Tried again once it is open, with what the listener takes meanwhile.
                 self.share_dirty = true;
-                self.copy_backlog.get_or_insert_with(Vec::new);
                 return;
             }
             SecondReady::Unavailable => {

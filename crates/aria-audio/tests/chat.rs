@@ -1465,6 +1465,9 @@ fn a_copy_that_waits_for_a_slow_second_device_plays_in_step_at_once() {
         thread::sleep(Duration::from_millis(10));
     }
     let second = rig.second_in_use();
+    // The copy's input shows on the output a moment before the engine fills it with what the
+    // music had queued. Nothing is pulled meanwhile, so the two stay in step.
+    thread::sleep(Duration::from_millis(200));
 
     // What the music had queued is in the copy, not silence in its place.
     let local = mine.pull(SECOND / 4);
