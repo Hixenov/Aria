@@ -113,6 +113,9 @@ playlist-import-empty = That playlist file lists no files.
 # $name (String) - the playlist's name
 playlist-exported = Saved the playlist { $name }.
 playlist-file-failed = The playlist file could not be read or written.
+settings-updates = Updates
+settings-check-updates = Check for updates
+settings-check-updates-hint = Opens the page of the newest release in your browser. Aria itself sends nothing over the network.
 settings-history = Keep playback history
 settings-history-hint = History stays on this computer.
 settings-library = Library

@@ -117,6 +117,9 @@ playlist-import-empty = В этом файле плейлиста нет ни о
 # $name (String) - the playlist's name
 playlist-exported = Плейлист { $name } сохранён.
 playlist-file-failed = Не удалось прочитать или записать файл плейлиста.
+settings-updates = Обновления
+settings-check-updates = Проверить обновления
+settings-check-updates-hint = Открывает в браузере страницу последнего релиза. Сама Aria ничего не отправляет в сеть.
 settings-history = Вести историю прослушиваний
 settings-history-hint = История хранится только на этом компьютере.
 settings-library = Библиотека

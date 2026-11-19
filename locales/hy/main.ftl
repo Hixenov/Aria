@@ -115,6 +115,9 @@ playlist-import-empty = Այս երգացանկի ֆայլում ոչ մի ֆա�
 # $name (String) - the playlist's name
 playlist-exported = { $name } երգացանկը պահվեց։
 playlist-file-failed = Չհաջողվեց կարդալ կամ գրել երգացանկի ֆայլը։
+settings-updates = Թարմացումներ
+settings-check-updates = Ստուգել թարմացումները
+settings-check-updates-hint = Բացում է վերջին թողարկման էջը ձեր դիտարկիչում։ Aria-ն ինքը ցանցով ոչինչ չի ուղարկում։
 settings-history = Պահել նվագարկման պատմությունը
 settings-history-hint = Պատմությունը մնում է միայն այս համակարգչում։
 settings-library = Գրադարան

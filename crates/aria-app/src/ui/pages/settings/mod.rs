@@ -30,6 +30,9 @@ use crate::{
 
 /// Aria's version, from its manifest.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Where the newest release is. "Check for updates" opens it in the browser; Aria itself
+/// makes no request.
+const RELEASES_URL: &str = "https://github.com/Hixenov/Aria/releases/latest";
 /// Aria's license, from its manifest: the SPDX expression `MIT OR Apache-2.0`.
 const LICENSE: &str = env!("CARGO_PKG_LICENSE");
 
@@ -195,6 +198,18 @@ fn about(ui: &mut Ui, tr: &Localizer, p: &Palette) {
             });
             divider(ui);
         }
+        let updates = tr.tr("settings-updates");
+        row(ui, p, &updates, |ui| {
+            if ui
+                .button(tr.tr("settings-check-updates"))
+                .on_hover_text(tr.tr("settings-check-updates-hint"))
+                .clicked()
+            {
+                ui.ctx()
+                    .open_url(eframe::egui::OpenUrl::new_tab(RELEASES_URL));
+            }
+        });
+        divider(ui);
         ui.add_space(SPACE[2]);
         caption(ui, p, &tr.tr("settings-third-party"), TextStyle::Body);
     });
@@ -523,6 +538,26 @@ mod tests {
             panic!("expected one UpdateSettings, got {:?}", harness.state().out);
         };
         assert_eq!(settings.replay_gain, ReplayGainMode::Album);
+    }
+
+    #[test]
+    fn check_for_updates_opens_the_releases_page_in_the_browser() {
+        let mut harness = page();
+        let label = harness.state().english("settings-check-updates");
+        click_on(&mut harness, Role::Button, &label);
+        // The frame that takes the click asks for the browser; a later one asks nothing.
+        harness.step();
+        let opened: Vec<String> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                eframe::egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opened, [RELEASES_URL]);
     }
 
     #[test]
