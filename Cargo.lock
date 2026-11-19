@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "aria-app"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "aria-core",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "aria-audio"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "aria-audio",
  "cpal",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "aria-core"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "aria-audio",
  "aria-library",
@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "aria-library"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "aria-audio",
  "image",

@@ -5,6 +5,33 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-20 (volume levelling and a sleep timer)
+
+Checked with 1122 automated tests on Windows and in CI on Linux and macOS (on an Intel Mac). Nothing in it has been heard: no one has listened to levelled tracks or to the sleep timer's fade. See `docs/testing/0.2.8-manual-check.md`.
+
+### Added
+
+- **Volume levelling (ReplayGain).** Settings, Playback, "Volume levelling (ReplayGain)": Off (the default), By track or By album. Tracks then play at the level their ReplayGain tags give (in ID3v2, Vorbis comments, APE and MP4 tags), never louder than their peak allows without clipping, and lifted by 20 dB at most. "By album" keeps the level differences inside an album, and uses a track's own gain where there is no album gain. Files without these tags play as they are.
+  - The tags are read from the file when the track is handed to the player; nothing is stored, so no rescan is needed and the database does not change.
+  - The change takes effect from the next track.
+  - A levelled track is no longer bit-perfect in exclusive mode (the indicator says "Converted"); with levelling off nothing changes.
+  - The music copied to the chat is levelled too.
+- **A sleep timer.** A moon in the player bar opens its menu: 15, 30, 45 minutes, 1 hour, 1 hour 30 minutes, or "After this track". While it runs the moon is lit and shows the minutes left.
+  - After a time, the music fades out over its last eight seconds and pauses, and a notice says so. Play carries on at the full level.
+  - "After this track" lets the track playing end, and loads the next one paused.
+  - "Turn off" in the same menu stops it, also during the fade, and the music comes back to its level.
+  - The timer is not kept when Aria closes. Sounds from the soundboard are not faded.
+
+### Changed
+
+- Version 0.2.8. One new setting, `replay_gain`; no database change.
+- The engine takes a gain with each track (`TrackRequest::gain`), applied before the resampler, so a gapless join keeps each side's own gain, and a new `FadeOut` command.
+
+### Not done
+
+- Crossfading between tracks, planned for 0.2.8 as an option, was left out: it cannot be had together with gapless joins and exclusive output in the engine as it is built. It moves to Phase 5, with the other playback features.
+- Opus files' own R128 loudness tags are not read; their ReplayGain tags, if they have any, are.
+
 ## [0.2.7] - 2026-11-19 (getting music into Aria)
 
 Checked with 1109 automated tests on Windows and in CI on Linux and macOS (on an Intel Mac). Nothing in it has been tried by hand: no double-click, no "Open with", no drop, and no watched folder in a running window. See `docs/testing/0.2.7-manual-check.md`.

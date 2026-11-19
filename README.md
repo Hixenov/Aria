@@ -15,7 +15,11 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: version 0.2.7 (release; not yet checked by hand)
+## Status: version 0.2.8 (release; not yet checked by hand)
+
+Version 0.2.8 adds volume levelling by ReplayGain tags (off by default; by track or by album, in Settings, Playback) and a sleep timer in the player bar (15 minutes to an hour and a half, or after this track; the music fades out and pauses). It is checked with automated tests only; nobody has listened to it. See the [changelog](CHANGELOG.md) and [docs/testing/0.2.8-manual-check.md](docs/testing/0.2.8-manual-check.md).
+
+### Version 0.2.7 (release; not yet checked by hand)
 
 Version 0.2.7 is about getting music into Aria. Open files with Aria (a double-click, "Open with", `aria.exe <files>`, or a drop on the window) and they play; a file outside your library plays without being added, for this session only. Folders dropped or opened are added to the library. The installer adds Aria to "Open with" for the audio files it plays, without taking the default program. And the library's folders are watched, so music copied into them shows up by itself. It is checked with automated tests only. See the [changelog](CHANGELOG.md) and [docs/testing/0.2.7-manual-check.md](docs/testing/0.2.7-manual-check.md).
 
