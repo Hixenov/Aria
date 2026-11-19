@@ -5,9 +5,9 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.2.7] - unreleased (getting music into Aria)
+## [0.2.7] - 2026-11-19 (getting music into Aria)
 
-Checked with automated tests on Windows. Nothing in it has been tried by hand: no double-click, no "Open with", no drop, and no watched folder in a running window. See `docs/testing/0.2.7-manual-check.md`.
+Checked with 1109 automated tests on Windows and in CI on Linux and macOS (on an Intel Mac). Nothing in it has been tried by hand: no double-click, no "Open with", no drop, and no watched folder in a running window. See `docs/testing/0.2.7-manual-check.md`.
 
 ### Added
 
