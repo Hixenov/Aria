@@ -74,6 +74,9 @@ pub enum EngineCommand {
     SetVolume(f32),
     /// Silence the music on every output, exclusive ones too, or let it play again.
     SetMuted(bool),
+    /// Lower the music to silence over this long, as a sleep timer runs out. It stays silent
+    /// until the next Pause or Play, which bring it back to its level. Sounds are not faded.
+    FadeOut(Duration),
     SetDevice(Option<DeviceId>),
     SetGapless(bool),
     /// Ask for outputs that hold the device alone, at each track's own format. While an output is
@@ -591,6 +594,8 @@ struct Worker {
     device: Option<DeviceId>,
     volume: f32,
     muted: bool,
+    /// A fade out under way: when it began and how long it takes.
+    fade: Option<(Instant, Duration)>,
     gapless: bool,
     /// Whether exclusive outputs are asked for.
     exclusive: bool,
@@ -677,6 +682,7 @@ impl Worker {
             device: None,
             volume: 1.0,
             muted: false,
+            fade: None,
             gapless: true,
             exclusive: false,
             playing: false,
@@ -807,6 +813,9 @@ impl Worker {
             for command in coalesce(batch) {
                 self.handle(command);
             }
+            if self.fade.is_some() {
+                self.apply_gain();
+            }
             self.check_output();
             self.close_idle_output();
             self.finish_second_output();
@@ -853,6 +862,10 @@ impl Worker {
                 self.muted = muted;
                 self.apply_gain();
             }
+            EngineCommand::FadeOut(over) => {
+                self.fade = Some((Instant::now(), over));
+                self.apply_gain();
+            }
             EngineCommand::SetDevice(device) => {
                 self.share_dirty = true;
                 self.mic_dirty = true;
@@ -896,7 +909,7 @@ impl Worker {
     /// The music gain on an output. Muted, nothing; an exclusive one plays at exactly 1.0; a
     /// shared one at the volume.
     fn gain(&self, exclusive: bool) -> f32 {
-        if self.muted {
+        let level = if self.muted {
             0.0
         } else if exclusive {
             1.0
@@ -904,7 +917,20 @@ impl Worker {
             self.volume.clamp(0.0, 1.0)
         } else {
             0.0
+        };
+        level * self.fade_factor()
+    }
+
+    /// How far a fade out has left the music: 1.0 without one, down to 0.0 at its end.
+    fn fade_factor(&self) -> f32 {
+        let Some((started, over)) = self.fade else {
+            return 1.0;
+        };
+        if over.is_zero() {
+            return 0.0;
         }
+        let done = started.elapsed().as_secs_f32() / over.as_secs_f32();
+        (1.0 - done).clamp(0.0, 1.0)
     }
 
     /// Sets the open output's music gain after the volume or mute changed.
@@ -951,6 +977,10 @@ impl Worker {
 
     fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
+        // A fade ends with the pause it led to; Play starts at the level again.
+        if self.fade.take().is_some() {
+            self.apply_gain();
+        }
         if let Some(sink) = &self.sink {
             sink.input.set_paused(!playing);
         }

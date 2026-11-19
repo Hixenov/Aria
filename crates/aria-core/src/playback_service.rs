@@ -36,7 +36,7 @@ use aria_library::{
 
 use crate::{
     chat::{Chat, MicState},
-    command::Command,
+    command::{Command, SleepTimer},
     event::Event,
     hotkey::Hotkey,
     library_service::LibraryRequest,
@@ -80,6 +80,10 @@ const NO_DEVICE: Notice = Notice::new(NoticeLevel::Error, "playback-no-device");
 /// Windows starts Aria once for each of several files opened together, and each launch sends its
 /// file on its own.
 pub const OPEN_JOIN: Duration = Duration::from_millis(1_500);
+/// How long the music fades out before a sleep timer pauses it.
+pub const SLEEP_FADE: Duration = Duration::from_secs(8);
+/// The sleep timer paused the music.
+pub const SLEEP_DONE: &str = "sleep-timer-done";
 /// Some of the files opened are not music Aria plays, or could not be read. Takes `count`.
 pub const OPEN_SKIPPED: &str = "open-skipped";
 
@@ -138,6 +142,19 @@ pub struct PlayerView {
     pub microphone: MicState,
     /// The open microphone's name, when it has one.
     pub microphone_name: Option<String>,
+    /// The sleep timer.
+    pub sleep: SleepState,
+}
+
+/// The sleep timer, as the player shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SleepState {
+    #[default]
+    Off,
+    /// The music pauses at this moment, fading out over the seconds before it.
+    Ends(Instant),
+    /// The music pauses when the track playing ends.
+    EndOfTrack,
 }
 
 /// A track handed to the engine, under the token that names it there.
@@ -181,6 +198,10 @@ pub struct PlaybackService {
     replay_gain: ReplayGainMode,
     /// When files were last opened, for [`OPEN_JOIN`].
     last_open: Option<Instant>,
+    /// The sleep timer.
+    sleep: SleepState,
+    /// Whether the engine has been asked to fade out for the sleep timer.
+    sleep_fading: bool,
     last_token: u64,
     /// What the engine holds as the track being heard. `None` means nothing is loaded.
     current: Option<Given>,
@@ -271,6 +292,8 @@ impl PlaybackService {
             opened: OpenedTracks::default(),
             replay_gain: ReplayGainMode::Off,
             last_open: None,
+            sleep: SleepState::Off,
+            sleep_fading: false,
             last_token: 0,
             current: None,
             ended: false,
@@ -352,6 +375,7 @@ impl PlaybackService {
                 self.queue_changed();
             }
             Command::TogglePlay => self.toggle_play(),
+            Command::SetSleepTimer(timer) => self.set_sleep(timer),
             Command::Next => self.next(),
             Command::Previous => self.previous(),
             Command::Seek(position_ms) => self.seek(position_ms),
@@ -619,6 +643,7 @@ impl PlaybackService {
     }
 
     fn tick_at(&mut self, now: Instant) {
+        self.run_sleep(now);
         let reading = self.clock.read();
         if self
             .current
@@ -695,6 +720,7 @@ impl PlaybackService {
             volume_locked: self.volume_locked(),
             microphone: self.chat.state(),
             microphone_name: self.chat.name().map(str::to_owned),
+            sleep: self.sleep,
         };
         self.events.push(Event::Player(view));
     }
@@ -924,7 +950,13 @@ impl PlaybackService {
         if self.current.is_none() || self.ended {
             return;
         }
-        let next = self.past_dead_repeat(|queue| queue.peek_after_current());
+        // With the timer at the end of this track, the engine is told of nothing after it, so
+        // that it stops there.
+        let next = if self.sleep == SleepState::EndOfTrack {
+            None
+        } else {
+            self.past_dead_repeat(|queue| queue.peek_after_current())
+        };
         if next == self.announced.as_ref().map(|given| given.track) {
             return;
         }
@@ -1000,6 +1032,12 @@ impl PlaybackService {
     /// The current track has ended and no start will say what comes next, so the queue does.
     fn move_on(&mut self) {
         self.lists_dirty = true;
+        if self.sleep == SleepState::EndOfTrack {
+            // The timer's track is over: what follows waits, paused.
+            self.sleep = SleepState::Off;
+            self.playing = false;
+            self.notify(Notice::new(NoticeLevel::Info, SLEEP_DONE));
+        }
         match self.past_dead_repeat(Queue::advance_finished) {
             Some(track) => self.load(track, 0, self.playing),
             None => self.stop_at_end(),
@@ -1142,6 +1180,41 @@ impl PlaybackService {
             self.queue_changed();
         } else {
             self.play_context(ids, 0);
+        }
+    }
+
+    /// Sets the sleep timer. One turned off while the music fades brings it back to its level.
+    fn set_sleep(&mut self, timer: SleepTimer) {
+        if mem::take(&mut self.sleep_fading) && self.playing {
+            self.engine.send(EngineCommand::Play);
+        }
+        self.sleep = match timer {
+            SleepTimer::Off => SleepState::Off,
+            SleepTimer::After(after) => SleepState::Ends(Instant::now() + after),
+            SleepTimer::EndOfTrack => SleepState::EndOfTrack,
+        };
+        self.sync_next();
+        self.publish();
+    }
+
+    /// Fades out when the timer is close, and pauses when it has run out. Paused already, it
+    /// only ends.
+    fn run_sleep(&mut self, now: Instant) {
+        let SleepState::Ends(at) = self.sleep else {
+            return;
+        };
+        if now >= at {
+            self.sleep = SleepState::Off;
+            self.sleep_fading = false;
+            if self.playing {
+                self.playing = false;
+                self.engine.send(EngineCommand::Pause);
+                self.notify(Notice::new(NoticeLevel::Info, SLEEP_DONE));
+            }
+            self.publish();
+        } else if self.playing && !self.sleep_fading && at - now <= SLEEP_FADE {
+            self.sleep_fading = true;
+            self.engine.send(EngineCommand::FadeOut(at - now));
         }
     }
 
@@ -3274,6 +3347,75 @@ mod tests {
                 "levelled to {levelled}, off at {off}"
             );
         }
+    }
+
+    /// Plays, pumps and ticks until `done` holds.
+    fn run_ticking(rig: &mut Rig, what: &str, done: impl Fn(&Rig) -> bool) {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            rig.pull();
+            rig.pump();
+            rig.tick();
+            if done(rig) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            thread::sleep(Duration::from_micros(200));
+        }
+    }
+
+    #[test]
+    fn a_sleep_timer_pauses_playback_when_it_runs_out() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        rig.send(Command::SetSleepTimer(SleepTimer::After(
+            Duration::from_millis(300),
+        )));
+        assert!(matches!(rig.view().sleep, SleepState::Ends(_)));
+        run_ticking(&mut rig, "the timer to run out", stopped);
+        assert_eq!(rig.view().sleep, SleepState::Off);
+        assert!(
+            rig.notices.iter().any(|notice| notice.key == SLEEP_DONE),
+            "{:?}",
+            rig.notices
+        );
+        // Play again carries on, as after any pause.
+        rig.send(Command::TogglePlay);
+        assert!(rig.view().playing);
+    }
+
+    #[test]
+    fn a_sleep_timer_turned_off_lets_the_music_play_on() {
+        let music = Music::new().tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1], 0);
+        rig.send(Command::SetSleepTimer(SleepTimer::After(
+            Duration::from_millis(300),
+        )));
+        rig.send(Command::SetSleepTimer(SleepTimer::Off));
+        assert_eq!(rig.view().sleep, SleepState::Off);
+        let until = Instant::now() + Duration::from_millis(600);
+        while Instant::now() < until {
+            rig.pull();
+            rig.pump();
+            rig.tick();
+        }
+        assert!(rig.view().playing, "the music stopped");
+    }
+
+    #[test]
+    fn the_end_of_track_timer_stops_after_the_track_playing() {
+        let music = Music::new().tone(300).tone(3_000);
+        let mut rig = Rig::with(&music);
+        rig.play(&[1, 2], 0);
+        rig.send(Command::SetSleepTimer(SleepTimer::EndOfTrack));
+        assert_eq!(rig.view().sleep, SleepState::EndOfTrack);
+        run_ticking(&mut rig, "the end of the first track", |rig| {
+            rig.view().current == Some(t(2))
+        });
+        assert!(!rig.view().playing, "the next track started");
+        assert_eq!(rig.view().sleep, SleepState::Off);
     }
 
     #[test]

@@ -41,6 +41,17 @@ player-unmute = Unmute
 player-seek = Seek
 player-opened-no-heart = Opened from outside your library, so it has no heart. Add its folder in Settings, Library to keep it.
 drop-hint = Drop to play. Folders are added to your library.
+player-sleep = Sleep timer
+player-sleep-15 = 15 minutes
+player-sleep-30 = 30 minutes
+player-sleep-45 = 45 minutes
+player-sleep-60 = 1 hour
+player-sleep-90 = 1 hour 30 minutes
+player-sleep-end-of-track = After this track
+player-sleep-off = Turn off
+# $minutes (Number) - whole minutes until the sleep timer pauses the music, rounded up
+player-sleep-left = { $minutes } min left
+sleep-timer-done = The sleep timer paused the music.
 player-unknown-title = Unknown title
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Coming in Phase { $phase }

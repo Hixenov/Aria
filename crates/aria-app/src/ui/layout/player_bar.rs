@@ -10,8 +10,9 @@ use std::time::Duration;
 use aria_core::{
     ClockReading, OutputPath,
     chat::MicState,
+    command::SleepTimer,
     i18n::{FluentArgs, Localizer},
-    playback_service::{PlayerView, TrackFormat},
+    playback_service::{PlayerView, SleepState, TrackFormat},
     player::queue::RepeatMode,
     settings::Settings,
 };
@@ -103,7 +104,12 @@ pub enum PlayerAction {
     },
     /// Turn the microphone on or off.
     ToggleMicrophone,
+    /// Set the sleep timer, or turn it off.
+    SetSleepTimer(SleepTimer),
 }
+
+/// The sleep timer's lengths, in minutes, as its menu offers them.
+const SLEEP_MINUTES: [u64; 5] = [15, 30, 45, 60, 90];
 
 /// The track on the bar.
 #[derive(Clone, Debug, PartialEq)]
@@ -584,6 +590,8 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let control = IconButton::new(icons::QUOTES, &lyrics, p).size(button, icon);
     pending(ui, control, &lyrics, LYRICS_PHASE, tr, p);
 
+    sleep_timer(ui, bar, out);
+
     let queue = tr.tr("player-queue");
     let control = IconButton::new(icons::QUEUE, &queue, p)
         .size(button, icon)
@@ -708,6 +716,56 @@ fn pending(
         ui.label(RichText::new(name).color(p.text));
         ui.label(RichText::new(&*hint).color(p.text_muted));
     });
+}
+
+/// The sleep timer: a moon that opens its menu, lit while it runs, with what is left beside it.
+fn sleep_timer(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
+    let (tr, p) = (bar.tr, bar.palette);
+    let [button, icon] = BUTTON;
+    let left = match bar.view.sleep {
+        SleepState::Off => None,
+        SleepState::EndOfTrack => Some(tr.tr("player-sleep-end-of-track").into_owned()),
+        SleepState::Ends(at) => {
+            let secs = at
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs();
+            let mut args = FluentArgs::new();
+            args.set("minutes", secs.div_ceil(60));
+            Some(tr.tr_args("player-sleep-left", &args).into_owned())
+        }
+    };
+    let name = tr.tr("player-sleep");
+    let control = IconButton::new(icons::MOON, &name, p)
+        .size(button, icon)
+        .selected(left.is_some());
+    let response = ui.add(control);
+    if let Some(left) = &left {
+        let text = RichText::new(left).small().color(p.text_muted);
+        ui.add(Label::new(text).selectable(false));
+    }
+    let chosen = eframe::egui::Popup::menu(&response).show(|ui| {
+        let mut chosen = None;
+        for minutes in SLEEP_MINUTES {
+            if ui
+                .button(tr.tr(&format!("player-sleep-{minutes}")))
+                .clicked()
+            {
+                chosen = Some(SleepTimer::After(std::time::Duration::from_secs(
+                    minutes * 60,
+                )));
+            }
+        }
+        if ui.button(tr.tr("player-sleep-end-of-track")).clicked() {
+            chosen = Some(SleepTimer::EndOfTrack);
+        }
+        if left.is_some() && ui.button(tr.tr("player-sleep-off")).clicked() {
+            chosen = Some(SleepTimer::Off);
+        }
+        chosen
+    });
+    if let Some(timer) = chosen.and_then(|shown| shown.inner) {
+        out.push(PlayerAction::SetSleepTimer(timer));
+    }
 }
 
 #[cfg(test)]

@@ -21,9 +21,10 @@ use aria_app::{
 use aria_core::{
     ClockReading, OutputPath, OutputState, PlaybackClock,
     chat::MicState,
+    command::SleepTimer,
     event::Event,
     i18n::{FluentArgs, Localizer},
-    playback_service::{PlayerView, TrackFormat},
+    playback_service::{PlayerView, SleepState, TrackFormat},
     player::queue::{RepeatMode, UpNext},
     settings::{Language, Settings},
 };
@@ -87,6 +88,7 @@ fn view(current: Option<i64>, playing: bool, duration_ms: u64) -> PlayerView {
         volume_locked: false,
         microphone: MicState::Off,
         microphone_name: None,
+        sleep: SleepState::Off,
     }
 }
 
@@ -206,6 +208,44 @@ fn shows_title_and_artist() {
         harness
             .query_by_label(&en("empty-nothing-playing"))
             .is_none()
+    );
+}
+
+#[test]
+fn the_sleep_timer_is_set_from_its_menu_and_shows_what_is_left() {
+    let mut harness = bar_harness(view(Some(1), true, 200_000), 0);
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, &en("player-sleep"))
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, &en("player-sleep-30"))
+        .click();
+    harness.run();
+    assert!(
+        harness
+            .state()
+            .actions
+            .contains(&PlayerAction::SetSleepTimer(SleepTimer::After(
+                std::time::Duration::from_secs(30 * 60)
+            ))),
+        "{:?}",
+        harness.state().actions
+    );
+
+    // Running, the button names the minutes left.
+    let mut running = view(Some(1), true, 200_000);
+    running.sleep =
+        SleepState::Ends(std::time::Instant::now() + std::time::Duration::from_secs(600));
+    let mut harness = bar_harness(running, 0);
+    harness.run();
+    let mut args = FluentArgs::new();
+    args.set("minutes", 10);
+    let left = localizer().tr_args("player-sleep-left", &args).into_owned();
+    assert!(
+        harness.query_by_label_contains(&left).is_some(),
+        "no {left}"
     );
 }
 

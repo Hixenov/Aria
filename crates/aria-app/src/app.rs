@@ -462,6 +462,9 @@ impl AriaApp {
             PlayerAction::Seek(position_ms) => return self.send(Command::Seek(position_ms)),
             PlayerAction::ToggleQueue => return self.toggle_right_panel(ctx),
             PlayerAction::ToggleMicrophone => return self.send(Command::ToggleMicrophone),
+            PlayerAction::SetSleepTimer(timer) => {
+                return self.send(Command::SetSleepTimer(timer));
+            }
             PlayerAction::SetFavorite { track, favorite } => {
                 return self.send(Command::SetFavorite { track, favorite });
             }

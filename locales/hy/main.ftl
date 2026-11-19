@@ -43,6 +43,17 @@ player-unmute = Միացնել ձայնը
 player-seek = Հետ կամ առաջ տալ
 player-opened-no-heart = Բացվել է ձեր գրադարանից դուրս, ուստի սիրտ չունի։ Ավելացրեք դրա պանակը Կարգավորումներում՝ Գրադարան բաժնում, որպեսզի պահեք այն։
 drop-hint = Բաց թողեք՝ նվագելու համար։ Պանակները կավելացվեն գրադարանին։
+player-sleep = Քնի ժամաչափ
+player-sleep-15 = 15 րոպե
+player-sleep-30 = 30 րոպե
+player-sleep-45 = 45 րոպե
+player-sleep-60 = 1 ժամ
+player-sleep-90 = 1 ժամ 30 րոպե
+player-sleep-end-of-track = Այս երգից հետո
+player-sleep-off = Անջատել
+# $minutes (Number) - whole minutes until the sleep timer pauses the music, rounded up
+player-sleep-left = մնաց { $minutes } րոպե
+sleep-timer-done = Քնի ժամաչափը դադարեցրեց երաժշտությունը։
 player-unknown-title = Անհայտ վերնագիր
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Կհայտնվի { $phase }-րդ փուլում

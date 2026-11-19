@@ -236,6 +236,16 @@ mod tests {
         "player-unmute",
         "player-seek",
         "player-opened-no-heart",
+        "player-sleep",
+        "player-sleep-15",
+        "player-sleep-30",
+        "player-sleep-45",
+        "player-sleep-60",
+        "player-sleep-90",
+        "player-sleep-end-of-track",
+        "player-sleep-off",
+        "player-sleep-left",
+        "sleep-timer-done",
         "drop-hint",
         "player-unknown-title",
         "queue-now-playing",
@@ -584,6 +594,7 @@ mod tests {
         args.set("title", "777");
         args.set("name", "777");
         args.set("max", 777);
+        args.set("minutes", 777);
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));

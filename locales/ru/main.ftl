@@ -41,6 +41,20 @@ player-unmute = Включить звук
 player-seek = Перемотка
 player-opened-no-heart = Открыт не из вашей библиотеки, поэтому без сердечка. Добавьте его папку в Настройках, раздел «Библиотека», чтобы сохранить трек.
 drop-hint = Отпустите, чтобы воспроизвести. Папки добавятся в библиотеку.
+player-sleep = Таймер сна
+player-sleep-15 = 15 минут
+player-sleep-30 = 30 минут
+player-sleep-45 = 45 минут
+player-sleep-60 = 1 час
+player-sleep-90 = 1 час 30 минут
+player-sleep-end-of-track = После этого трека
+player-sleep-off = Выключить
+# $minutes (Number) - whole minutes until the sleep timer pauses the music, rounded up
+player-sleep-left = { $minutes ->
+    [one] осталась { $minutes } мин
+   *[other] осталось { $minutes } мин
+}
+sleep-timer-done = Таймер сна поставил музыку на паузу.
 player-unknown-title = Неизвестное название
 # $phase (Number) - the roadmap phase that delivers the control, e.g. 2
 player-coming-in = Появится на этапе { $phase }

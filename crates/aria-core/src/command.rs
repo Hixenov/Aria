@@ -36,6 +36,8 @@ pub enum Command {
     /// added to the library. Files Aria does not play are skipped with a notice. As a
     /// double-click, "Open with", the command line or a drop asks.
     OpenPaths(Vec<PathBuf>),
+    /// Set the sleep timer, or turn it off.
+    SetSleepTimer(SleepTimer),
     /// Put a track at the front of the user queue.
     PlayNext(TrackId),
     /// Put a track at the end of the user queue.
@@ -152,4 +154,15 @@ pub enum Command {
     ToggleMicrophone,
     /// Save the queue and any pending settings, then stop the backend.
     Shutdown,
+}
+
+/// When the sleep timer stops the music.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepTimer {
+    /// No timer.
+    Off,
+    /// After this long: the music fades out over its last seconds, and pauses.
+    After(std::time::Duration),
+    /// When the track playing ends: the next one is loaded, paused.
+    EndOfTrack,
 }

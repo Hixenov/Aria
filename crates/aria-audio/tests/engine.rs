@@ -22,8 +22,8 @@ use aria_audio::{
 use tempfile::TempDir;
 
 use EngineCommand::{
-    Load, Pause, Play, PlaySound, Seek, SetDevice, SetExclusive, SetGapless, SetMuted, SetNext,
-    SetSoundDevice, SetVolume, Stop, StopSounds,
+    FadeOut, Load, Pause, Play, PlaySound, Seek, SetDevice, SetExclusive, SetGapless, SetMuted,
+    SetNext, SetSoundDevice, SetVolume, Stop, StopSounds,
 };
 use EngineEvent::{
     DeviceFellBack, ExclusiveUnavailable, NoDevice, Output, SoundDeviceFailed, SoundEnded,
@@ -1917,6 +1917,46 @@ fn each_condition_that_breaks_bit_perfect_is_reported() {
     assert_eq!(rig.next_state(), state(OutputPath::Converted, 44_100, 16));
     rig.send(SetMuted(false));
     assert_eq!(rig.next_state(), CD_BIT_PERFECT);
+}
+
+#[test]
+fn a_fade_out_lowers_the_music_to_silence_and_play_brings_it_back() {
+    let rig = Rig::new(STEREO_44K);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("long.wav");
+    write_tone_wav(&path, 44_100, 2, 5 * 44_100, 440.0).unwrap();
+    rig.start(TrackRequest {
+        token: 1,
+        path,
+        gain: 1.0,
+    });
+    let output = rig.output(0);
+    let loudest = |samples: &[f32]| samples.iter().fold(0.0f32, |most, s| most.max(s.abs()));
+    let before = loudest(&output.pull(SECOND / 10));
+    assert!(before > 0.1, "nothing was heard: {before}");
+
+    rig.send(FadeOut(Duration::from_millis(300)));
+    // Pulled in real time, the level falls, and is silence once the fade is over.
+    let mut levels = Vec::new();
+    for _ in 0..8 {
+        thread::sleep(Duration::from_millis(60));
+        levels.push(loudest(&output.pull(SECOND * 6 / 100)));
+    }
+    assert!(
+        levels[1] < before && levels[2] < levels[0],
+        "the level did not fall: {levels:?}"
+    );
+    assert_eq!(*levels.last().unwrap(), 0.0, "{levels:?}");
+
+    // A pause and a play start over at the full level.
+    rig.send(Pause);
+    rig.resume();
+    let mut after = 0.0f32;
+    for _ in 0..20 {
+        thread::sleep(Duration::from_millis(20));
+        after = after.max(loudest(&output.pull(SECOND / 50)));
+    }
+    assert!(after > before * 0.9, "the level stayed down: {after}");
 }
 
 #[test]
