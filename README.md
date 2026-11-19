@@ -146,15 +146,15 @@ The macOS and Linux files of a release are built by `.github/workflows/release.y
 
 ## Performance
 
-Release build on one machine (Intel Core i3-1315U, Windows 11), with a library of 4,000 generated files:
+Release build of 0.2.9 in development (`cb2e647`), portable mode, on one machine (Intel Core i3-1315U, Windows 11), with a generated library of 4,000 short WAV files (40 artists, 200 albums), measured 2026-11-20:
 
 | What | Result |
 |------|--------|
-| First frame, later launches | 179-243 ms |
-| Scan of the 4,000 files, first launch | finished 0.6 s after the first frame |
-| Rescan of the unchanged 4,000 files | finished 0.3 s after the first frame |
-| Working set when idle | 127-129 MB |
-| CPU when idle | 0.08-0.47 % of one core |
+| First frame, first launch (database created, folder added) | 196 ms |
+| First frame, later launches (3 launches) | 83-107 ms |
+| Scan of the 4,000 files, first launch | done 0.5 s after the first frame |
+| Working set after the scan / when idle | 103-115 MB (private 55 MB) |
+| CPU when idle (window open, nothing playing), 20-second windows | 0-0.31 % of one core |
 | Library snapshot of a synthetic 50,000-track database | 93 ms |
 | Favorites, playlists and recent plays for 50,000 tracks | 12-14 ms |
 
