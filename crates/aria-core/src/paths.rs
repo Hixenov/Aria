@@ -11,6 +11,10 @@ use std::{
 /// Environment variable that overrides the config directory.
 const CONFIG_DIR_ENV: &str = "ARIA_CONFIG_DIR";
 
+/// A folder of this name beside the program makes Aria portable: everything it stores goes in
+/// there, and nothing in the user's own folders.
+pub const PORTABLE_DIR: &str = "AriaData";
+
 /// Resolved per-user directories used by Aria.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
@@ -26,9 +30,29 @@ pub struct AppPaths {
 
 impl AppPaths {
     /// Resolves paths, honouring the `ARIA_CONFIG_DIR` environment variable. An empty
-    /// value counts as unset.
+    /// value counts as unset. With an [`PORTABLE_DIR`] folder beside the program, everything is
+    /// in there.
     pub fn resolve() -> Result<Self, PathError> {
-        Self::resolve_with(config_override(std::env::var_os(CONFIG_DIR_ENV)))
+        let config = config_override(std::env::var_os(CONFIG_DIR_ENV));
+        let beside = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        match beside.as_deref().and_then(portable_root) {
+            Some(root) => Ok(Self::portable(&root, config)),
+            None => Self::resolve_with(config),
+        }
+    }
+
+    /// The paths of a portable Aria, all inside `root`; `config_override` replaces only
+    /// `config_dir`.
+    pub fn portable(root: &Path, config_override: Option<PathBuf>) -> Self {
+        let data_dir = root.join("data");
+        Self {
+            config_dir: config_override.unwrap_or_else(|| root.join("config")),
+            cache_dir: root.join("cache"),
+            log_dir: data_dir.join("logs"),
+            data_dir,
+        }
     }
 
     /// Resolves paths; `config_override` replaces only `config_dir`.
@@ -60,6 +84,12 @@ impl AppPaths {
         }
         Ok(())
     }
+}
+
+/// The portable folder beside the program in `exe_dir`, if there is one.
+pub fn portable_root(exe_dir: &Path) -> Option<PathBuf> {
+    let root = exe_dir.join(PORTABLE_DIR);
+    root.is_dir().then_some(root)
 }
 
 /// The config directory named by the value of `ARIA_CONFIG_DIR`, if it names one.
@@ -94,6 +124,34 @@ mod tests {
             config_override(Some("portable".into())),
             Some(PathBuf::from("portable"))
         );
+    }
+
+    #[test]
+    fn a_portable_folder_beside_the_program_holds_everything() {
+        let t = tempfile::tempdir().unwrap();
+        // Without the folder, Aria is not portable.
+        assert_eq!(portable_root(t.path()), None);
+        std::fs::create_dir(t.path().join(PORTABLE_DIR)).unwrap();
+        let root = portable_root(t.path()).expect("the folder makes Aria portable");
+        assert_eq!(root, t.path().join(PORTABLE_DIR));
+
+        let p = AppPaths::portable(&root, None);
+        for dir in [&p.config_dir, &p.data_dir, &p.cache_dir, &p.log_dir] {
+            assert!(dir.starts_with(&root), "{} is outside", dir.display());
+        }
+        assert_eq!(p.settings_file(), root.join("config").join("settings.toml"));
+        assert!(p.log_dir.starts_with(&p.data_dir));
+        // ARIA_CONFIG_DIR still moves the settings.
+        let moved = AppPaths::portable(&root, Some("/elsewhere".into()));
+        assert_eq!(moved.config_dir, PathBuf::from("/elsewhere"));
+        assert!(moved.data_dir.starts_with(&root));
+    }
+
+    #[test]
+    fn a_file_named_like_the_portable_folder_is_not_one() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join(PORTABLE_DIR), b"").unwrap();
+        assert_eq!(portable_root(t.path()), None);
     }
 
     #[test]
