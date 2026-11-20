@@ -5,12 +5,18 @@
 pub mod auth;
 pub mod callback;
 pub mod error;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake;
+pub mod http;
 pub mod secret;
+pub mod token;
 
 pub use auth::{Pkce, authorize_url};
 pub use callback::Callback;
 pub use error::SpotifyError;
+pub use http::Http;
 pub use secret::Secret;
+pub use token::{Tokens, exchange_code, refresh};
 
 /// Aria's Spotify app (Web API only). Built in: PKCE needs no client secret.
 pub const CLIENT_ID: &str = "250bd9732a644668911a74bdd329e66e";
