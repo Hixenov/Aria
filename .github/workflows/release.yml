@@ -92,7 +92,7 @@ jobs:
       - name: Install Linux dev packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev libasound2-dev
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev libasound2-dev libdbus-1-dev pkg-config
       - name: Test
         run: cargo test --release --workspace --locked
       - name: Build

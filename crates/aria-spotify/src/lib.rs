@@ -11,6 +11,7 @@ pub mod fake;
 pub mod http;
 pub mod model;
 pub mod secret;
+pub mod store;
 pub mod token;
 
 pub use auth::{Pkce, authorize_url};
@@ -23,6 +24,7 @@ pub use model::{
     SpDevice, SpPlaylist, SpTrack,
 };
 pub use secret::Secret;
+pub use store::{KeyringStore, MemoryStore, TokenStore, system_store};
 pub use token::{Tokens, exchange_code, refresh};
 
 /// Aria's Spotify app (Web API only). Built in: PKCE needs no client secret.
