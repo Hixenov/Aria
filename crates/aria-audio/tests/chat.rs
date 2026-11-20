@@ -206,6 +206,9 @@ impl Rig {
         wait_until("the engine to use the second output", || {
             second.inputs_added() > 0
         });
+        // An input shows on the output a moment before the engine has filled it (the copy with
+        // what the music had queued). Nothing is pulled meanwhile, so the outputs stay in step.
+        thread::sleep(Duration::from_millis(200));
         second
     }
 
@@ -455,7 +458,7 @@ fn local_mute_and_volume_do_not_touch_the_copy() {
     rig.send(share(0.5));
     rig.start(1, &path);
     let mine = rig.output_on(None);
-    let second = rig.output_on(Some(&second_device()));
+    let second = rig.second_in_use();
 
     let local = mine.pull(SECOND / 4);
     let copy = second.pull(SECOND / 4);
@@ -507,7 +510,7 @@ fn the_copy_is_resampled_to_the_second_output() {
     rig.send(share(1.0));
     rig.start(1, &path);
     let mine = rig.output_on(None);
-    let second = rig.output_on(Some(&second_device()));
+    let second = rig.second_in_use();
     assert_eq!(second.opened_as().1.sample_rate, 48_000);
 
     // Both outputs run side by side until half a second of the copy has been heard. How the
@@ -592,7 +595,7 @@ fn exclusive_stays_bit_perfect_while_sharing() {
     rig.send(share(0.5));
     rig.start(1, &path);
     let mine = rig.output_on(None);
-    let second = rig.output_on(Some(&second_device()));
+    let second = rig.second_in_use();
 
     let state = loop {
         if let Output(state) = rig.next_event() {
@@ -1165,7 +1168,7 @@ fn a_track_loaded_onto_an_open_output_is_shared() {
     wait_until("playback", || rig.read().token == 2 && rig.read().playing);
     rig.output_on(None).pull(SECOND / 10);
     rig.settle();
-    let second = rig.output_on(Some(&second_device()));
+    let second = rig.second_in_use();
     rig.output_on(None).pull(SECOND / 4);
     rig.settle();
 
@@ -1232,13 +1235,16 @@ fn sharing_turned_on_mid_track_leaves_the_local_output_unchanged() {
         rig.send(SetSoundDevice(Some(second_device())));
         rig.start(1, &path);
         let mine = rig.output_on(None);
+        // Time enough between the pulls for the engine to fill the ring again, on a busy
+        // machine too: a ring that ran short would leave a gap that is no change of sharing's.
+        let refill = || thread::sleep(Duration::from_millis(200));
         let mut audio = mine.pull(SECOND / 4);
         if share_it {
             rig.send(share(1.0));
-            rig.settle();
         }
+        refill();
         audio.extend(mine.pull(SECOND / 2));
-        rig.settle();
+        refill();
         audio.extend(mine.pull(SECOND / 2));
         // Then both run on until a quarter of a second of the copy has been heard, however busy
         // the machine is.
@@ -1465,9 +1471,6 @@ fn a_copy_that_waits_for_a_slow_second_device_plays_in_step_at_once() {
         thread::sleep(Duration::from_millis(10));
     }
     let second = rig.second_in_use();
-    // The copy's input shows on the output a moment before the engine fills it with what the
-    // music had queued. Nothing is pulled meanwhile, so the two stay in step.
-    thread::sleep(Duration::from_millis(200));
 
     // What the music had queued is in the copy, not silence in its place.
     let local = mine.pull(SECOND / 4);
