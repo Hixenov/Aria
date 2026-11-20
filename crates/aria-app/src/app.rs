@@ -591,6 +591,8 @@ impl AriaApp {
             }
             Event::OutputDevices(devices) => self.devices = devices,
             Event::InputDevices(devices) => self.input_devices = devices,
+            // The Spotify UI state arrives with the Settings card and the pages.
+            Event::ActivePlayer(_) | Event::Spotify(_) => {}
         }
     }
 
@@ -1279,6 +1281,7 @@ mod tests {
         let waker: Waker = Arc::new(move || flag.store(true, Ordering::SeqCst));
         // Read-only: nothing is written, and a reset is still answered.
         let services = BackendServices {
+            spotify: None,
             library: None,
             output: Box::new(FakeFactory::new(OutputFormat {
                 sample_rate: 48_000,
@@ -2504,6 +2507,7 @@ mod tests {
         let flag = Arc::clone(&woke);
         let waker: Waker = Arc::new(move || flag.store(true, Ordering::SeqCst));
         let services = BackendServices {
+            spotify: None,
             library: None,
             output: Box::new(FakeFactory::new(OutputFormat {
                 sample_rate: 48_000,

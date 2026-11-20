@@ -165,7 +165,7 @@ impl std::fmt::Debug for Cover {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SpotifyEvent {
     Account(SpotifyAccount),
     Library(Arc<SpotifyLibrary>),

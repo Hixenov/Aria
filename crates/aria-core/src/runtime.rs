@@ -42,12 +42,16 @@ use crate::{
     backup, chat,
     command::Command,
     error::SettingsError,
-    event::Event,
+    event::{ActivePlayer, Event},
     library_service::{self, LibraryEvent, LibraryHandle, LibraryRequest, LibraryService},
     notice::{Notice, NoticeLevel},
     opened,
     playback_service::PlaybackService,
     settings::{Settings, store::SettingsStore},
+    spotify_service::{
+        Cadence, SpotifyAccount, SpotifyDeps, SpotifyEvent, SpotifyHandle, SpotifyRequest,
+        SpotifyService,
+    },
     watch::{self, FolderWatcher},
 };
 
@@ -117,6 +121,26 @@ pub struct BackendServices {
     pub capture: Box<dyn CaptureFactory>,
     /// The settings in effect at startup, which playback starts from.
     pub settings: Settings,
+    /// Spotify; `None` leaves it out (tests).
+    pub spotify: Option<SpotifyDeps>,
+}
+
+/// A running Spotify service, as the backend holds it.
+struct SpotifyLink {
+    handle: SpotifyHandle,
+    events: UnboundedReceiver<SpotifyEvent>,
+}
+
+impl SpotifyLink {
+    fn start(deps: SpotifyDeps) -> io::Result<Self> {
+        let (events_tx, events) = unbounded_channel();
+        let on_event = Box::new(move |event| {
+            // Fails only once the backend has exited, when nobody is listening.
+            let _ = events_tx.send(event);
+        });
+        let handle = SpotifyService::start(deps, on_event)?;
+        Ok(Self { handle, events })
+    }
 }
 
 /// A running library service, as the backend holds it.
@@ -216,15 +240,29 @@ impl Backend {
             output,
             capture,
             settings,
+            spotify,
         } = services;
         let playback = PlaybackLink::start(output, capture, &settings)?;
         let library = library.map(LibraryLink::start).transpose()?;
-        Self::spawn(sink, library, playback, waker, cfg)
+        let spotify = spotify.map(SpotifyLink::start).transpose()?;
+        Self::spawn_with(sink, library, spotify, playback, waker, cfg)
     }
 
+    #[cfg(test)]
     fn spawn(
         sink: Option<Box<dyn SettingsSink>>,
         library: Option<LibraryLink>,
+        playback: PlaybackLink,
+        waker: Waker,
+        cfg: BackendConfig,
+    ) -> io::Result<BackendHandle> {
+        Self::spawn_with(sink, library, None, playback, waker, cfg)
+    }
+
+    fn spawn_with(
+        sink: Option<Box<dyn SettingsSink>>,
+        library: Option<LibraryLink>,
+        spotify: Option<SpotifyLink>,
         playback: PlaybackLink,
         waker: Waker,
         cfg: BackendConfig,
@@ -239,6 +277,10 @@ impl Backend {
         let (library, library_events, data_dir) = match library {
             Some(link) => (Some(link.handle), Some(link.events), link.data_dir),
             None => (None, None, None),
+        };
+        let (spotify, spotify_events) = match spotify {
+            Some(link) => (Some(link.handle), Some(link.events)),
+            None => (None, None),
         };
         // Without it the library is scanned at start and by hand only.
         let watcher = library.as_ref().and_then(|library| {
@@ -270,6 +312,12 @@ impl Backend {
             watcher,
             library_folders: Vec::new(),
             data_dir,
+            spotify,
+            active: ActivePlayer::Local,
+            window_shown: true,
+            cadence: None,
+            local_playing: false,
+            spotify_playing: false,
         };
         let done_guard = DoneGuard::new(done_tx);
         let thread = thread::Builder::new()
@@ -279,7 +327,12 @@ impl Backend {
                 // after the runtime has stopped, even while a panic unwinds.
                 let _done = done_guard;
                 let runtime = runtime;
-                runtime.block_on(worker.run(command_rx, library_events, engine_events));
+                runtime.block_on(worker.run(
+                    command_rx,
+                    library_events,
+                    engine_events,
+                    spotify_events,
+                ));
                 runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
             })?;
         Ok(BackendHandle {
@@ -427,6 +480,18 @@ struct Worker {
     data_dir: Option<PathBuf>,
     /// The library's folders, as the last snapshot listed them.
     library_folders: Vec<PathBuf>,
+    /// `None` without Spotify, or after its thread died.
+    spotify: Option<SpotifyHandle>,
+    /// The player the bar shows: the one last started.
+    active: ActivePlayer,
+    /// The window is neither minimized nor hidden.
+    window_shown: bool,
+    /// The polling cadence last sent to Spotify.
+    cadence: Option<Cadence>,
+    /// Aria's own player is playing, as its last view said.
+    local_playing: bool,
+    /// Spotify is playing, as its last playback state said.
+    spotify_playing: bool,
 }
 
 impl Worker {
@@ -435,11 +500,17 @@ impl Worker {
         mut commands: UnboundedReceiver<Command>,
         mut library_events: Option<UnboundedReceiver<LibraryEvent>>,
         engine_events: UnboundedReceiver<EngineEvent>,
+        mut spotify_events: Option<UnboundedReceiver<SpotifyEvent>>,
     ) {
         let mut engine_events = Some(engine_events);
         let mut tick = tokio::time::interval(PLAYBACK_TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         self.flush_playback();
+        if let Some(spotify) = &self.spotify {
+            spotify.send(SpotifyRequest::Device(self.settings.spotify_device.clone()));
+            self.emit([Event::ActivePlayer(self.active)]);
+            self.sync_cadence();
+        }
         loop {
             tokio::select! {
                 cmd = commands.recv() => match cmd {
@@ -546,6 +617,33 @@ impl Worker {
                     Some(Command::ListInputDevices) => {
                         self.list(Arc::clone(&self.input_devices), Event::InputDevices);
                     }
+                    Some(Command::Spotify(request)) => self.spotify_request(request),
+                    Some(Command::WindowShown(shown)) => {
+                        self.window_shown = shown;
+                        self.sync_cadence();
+                    }
+                    // Starting a local track takes the bar back from Spotify, and pauses it.
+                    Some(command @ (Command::PlayContext { .. } | Command::OpenPaths(_))) => {
+                        if self.spotify_playing {
+                            self.to_spotify(SpotifyRequest::Pause);
+                        }
+                        self.show(ActivePlayer::Local);
+                        self.playback.handle(command);
+                        self.flush_playback();
+                    }
+                    // The transport acts on the player the bar shows.
+                    Some(Command::TogglePlay) if self.routes_to_spotify() => {
+                        self.to_spotify(SpotifyRequest::TogglePlay);
+                    }
+                    Some(Command::Next) if self.routes_to_spotify() => {
+                        self.to_spotify(SpotifyRequest::Next);
+                    }
+                    Some(Command::Previous) if self.routes_to_spotify() => {
+                        self.to_spotify(SpotifyRequest::Previous);
+                    }
+                    Some(Command::Seek(ms)) if self.routes_to_spotify() => {
+                        self.to_spotify(SpotifyRequest::Seek(ms));
+                    }
                     // `None` means the handle was dropped: treat it as Shutdown.
                     Some(Command::Shutdown) | None => break,
                     Some(command) => {
@@ -576,6 +674,17 @@ impl Worker {
                         self.flush_playback();
                     }
                 },
+                event = next_event(&mut spotify_events) => match event {
+                    Some(event) => self.spotify_event(event),
+                    // Only the thread's end closes this channel.
+                    None => {
+                        tracing::error!("the Spotify thread stopped unexpectedly");
+                        spotify_events = None;
+                        self.spotify = None;
+                        self.spotify_playing = false;
+                        self.show(ActivePlayer::Local);
+                    }
+                },
                 _ = tick.tick() => {
                     self.playback.tick();
                     self.flush_playback();
@@ -602,11 +711,113 @@ impl Worker {
         // tasks only say the same again.
         let engine = self.playback.into_engine();
         let engine = tokio::task::spawn_blocking(move || engine.shutdown(ENGINE_SHUTDOWN_TIMEOUT));
+        let spotify = self.spotify.take().map(|spotify| {
+            tokio::task::spawn_blocking(move || spotify.join(LIBRARY_SHUTDOWN_TIMEOUT))
+        });
         if let Some(library) = library {
             let stop = move || library.shutdown(LIBRARY_SHUTDOWN_TIMEOUT);
             let _ = tokio::task::spawn_blocking(stop).await;
         }
         let _ = engine.await;
+        if let Some(spotify) = spotify {
+            let _ = spotify.await;
+        }
+    }
+
+    fn routes_to_spotify(&self) -> bool {
+        self.active == ActivePlayer::Spotify && self.spotify.is_some()
+    }
+
+    /// Forwards `request` to Spotify without waiting. Without Spotify it goes nowhere.
+    fn to_spotify(&self, request: SpotifyRequest) {
+        if let Some(spotify) = &self.spotify {
+            spotify.send(request);
+        }
+    }
+
+    /// Shows `active` in the bar, and tells the UI if that changed.
+    fn show(&mut self, active: ActivePlayer) {
+        if self.active != active {
+            self.active = active;
+            self.emit([Event::ActivePlayer(active)]);
+            self.sync_cadence();
+        }
+    }
+
+    /// Polling stops while the window is hidden, is quick while the bar shows Spotify and slow
+    /// otherwise.
+    fn sync_cadence(&mut self) {
+        let cadence = if !self.window_shown {
+            Cadence::Off
+        } else if self.active == ActivePlayer::Spotify {
+            Cadence::Fast
+        } else {
+            Cadence::Slow
+        };
+        if self.spotify.is_some() && self.cadence != Some(cadence) {
+            self.cadence = Some(cadence);
+            self.to_spotify(SpotifyRequest::Cadence(cadence));
+        }
+    }
+
+    fn spotify_request(&mut self, request: SpotifyRequest) {
+        if self.spotify.is_none() {
+            return;
+        }
+        match request {
+            // The backend's own.
+            SpotifyRequest::Cadence(_) | SpotifyRequest::Shutdown => {}
+            SpotifyRequest::Play(play) => {
+                if self.local_playing {
+                    self.playback.handle(Command::TogglePlay);
+                    self.flush_playback();
+                }
+                self.show(ActivePlayer::Spotify);
+                self.to_spotify(SpotifyRequest::Play(play));
+            }
+            SpotifyRequest::Device(id) => {
+                self.to_spotify(SpotifyRequest::Device(id.clone()));
+                self.set_spotify_device(id);
+            }
+            SpotifyRequest::SignOut => {
+                self.to_spotify(SpotifyRequest::SignOut);
+                self.set_spotify_device(None);
+                self.spotify_playing = false;
+                self.show(ActivePlayer::Local);
+            }
+            other => self.to_spotify(other),
+        }
+    }
+
+    /// Keeps the chosen Spotify device in the settings, and tells the UI.
+    fn set_spotify_device(&mut self, id: Option<String>) {
+        let settings = Settings {
+            spotify_device: id,
+            ..self.settings.clone()
+        }
+        .sanitized();
+        if settings.spotify_device != self.settings.spotify_device {
+            self.emit([Event::SettingsReplaced(settings.clone())]);
+            self.apply(settings);
+        }
+    }
+
+    fn spotify_event(&mut self, event: SpotifyEvent) {
+        match &event {
+            SpotifyEvent::Playback(playback) => {
+                self.spotify_playing = playback.as_ref().is_some_and(|p| p.state.playing);
+                // Started on a phone or a speaker: the bar follows it.
+                if self.spotify_playing && !self.local_playing {
+                    self.show(ActivePlayer::Spotify);
+                }
+            }
+            SpotifyEvent::Account(SpotifyAccount::SignedOut { .. }) => {
+                self.spotify_playing = false;
+                self.show(ActivePlayer::Local);
+            }
+            _ => {}
+        }
+        self.emit([Event::Spotify(event)]);
     }
 
     /// Passes on what the playback service has collected. An empty batch wakes nobody.
@@ -615,6 +826,12 @@ impl Worker {
             self.to_library(request);
         }
         let events = self.playback.take_events();
+        if let Some(view) = events.iter().rev().find_map(|event| match event {
+            Event::Player(view) => Some(view),
+            _ => None,
+        }) {
+            self.local_playing = view.playing;
+        }
         if !events.is_empty() {
             self.emit(events);
         }
@@ -1098,6 +1315,7 @@ mod tests {
             channels: 2,
         };
         BackendServices {
+            spotify: None,
             library,
             output: Box::new(FakeFactory::new(format)),
             capture: Box::new(no_microphone()),
@@ -1241,6 +1459,7 @@ mod tests {
         let headphones = DeviceId("headphones".into());
         let factory = FakeFactory::new(format);
         let services = BackendServices {
+            spotify: None,
             library: Some(library_paths(dir.path())),
             output: Box::new(factory.clone()),
             capture: Box::new(no_microphone()),
@@ -1300,6 +1519,7 @@ mod tests {
 
         let factory = FakeFactory::new(format);
         let services = BackendServices {
+            spotify: None,
             library: Some(library_paths(dir.path())),
             output: Box::new(factory.clone()),
             capture: Box::new(no_microphone()),
@@ -1325,6 +1545,7 @@ mod tests {
         };
         factory.set_devices(vec![speakers.clone()]);
         let services = BackendServices {
+            spotify: None,
             library: None,
             output: Box::new(factory),
             capture: Box::new(no_microphone()),
@@ -1414,6 +1635,7 @@ mod tests {
             channels: 2,
         });
         let services = BackendServices {
+            spotify: None,
             output: Box::new(factory.clone()),
             ..services(Some(library_paths(dir.path())))
         };
@@ -1615,6 +1837,7 @@ mod tests {
     /// No library, and a second device.
     fn no_library_with_cable() -> BackendServices {
         BackendServices {
+            spotify: None,
             settings: with_cable(),
             ..no_library()
         }
@@ -1625,6 +1848,7 @@ mod tests {
         let music = dir.join("music");
         fs::create_dir(&music).unwrap();
         let services = BackendServices {
+            spotify: None,
             settings: Settings {
                 watch_folders: watch,
                 ..Settings::default()
@@ -1810,6 +2034,7 @@ music/two.flac
             ..with_cable()
         };
         let services = BackendServices {
+            spotify: None,
             output: Box::new(factory.clone()),
             settings: sharing(1.0),
             ..services(Some(library_paths(dir.path())))
@@ -1932,6 +2157,7 @@ music/two.flac
     fn toggle_microphone_turns_it_off_without_a_second_device_too() {
         // Left on from before the second device was removed.
         let services = BackendServices {
+            spotify: None,
             settings: Settings {
                 mic_enabled: true,
                 ..Settings::default()
@@ -2269,6 +2495,7 @@ music/two.flac
         let (sink, saved) = recording_sink(0);
         let (waker, _) = counting_waker();
         let services = BackendServices {
+            spotify: None,
             library: None,
             output: Box::new(FakeFactory::new(OutputFormat {
                 sample_rate: 48_000,
@@ -2518,5 +2745,258 @@ music/two.flac
         let light = with_theme(Theme::Light);
         SettingsSink::save(&mut store, &light).unwrap();
         assert_eq!(store.load().settings, light);
+    }
+
+    // Spotify: which player the bar shows, and where its commands go.
+
+    mod spotify {
+        use super::*;
+        use crate::spotify_service::{SpotifyAccount, SpotifyEvent};
+        use aria_spotify::MemoryStore;
+        use aria_spotify::PlayRequest;
+        use aria_spotify::fake::{FakeSpotify, Reply};
+
+        /// A fake Spotify with a signed-in account whose player answers `player`.
+        fn fake(player: Reply) -> FakeSpotify {
+            let fake = FakeSpotify::start();
+            fake.reply("POST", "/api/token", Reply::fixture(200, "token"));
+            fake.reply("GET", "/v1/me", Reply::fixture(200, "me"));
+            fake.reply(
+                "GET",
+                "/v1/me/tracks",
+                Reply::fixture(200, "saved-tracks-3"),
+            );
+            fake.reply("GET", "/v1/me/albums", Reply::fixture(200, "saved-albums"));
+            fake.reply(
+                "GET",
+                "/v1/me/following",
+                Reply::fixture(200, "followed-artists-2"),
+            );
+            fake.reply("GET", "/v1/me/playlists", Reply::fixture(200, "playlists"));
+            fake.reply(
+                "GET",
+                "/v1/me/player/devices",
+                Reply::fixture(200, "devices"),
+            );
+            fake.reply("GET", "/v1/me/player", player);
+            for path in ["play", "pause", "seek"] {
+                fake.reply("PUT", &format!("/v1/me/player/{path}"), Reply::empty(204));
+            }
+            fake.reply("POST", "/v1/me/player/next", Reply::empty(204));
+            fake
+        }
+
+        fn backend(fake: &FakeSpotify, settings: Settings) -> BackendHandle {
+            let mut services = services(None);
+            services.settings = settings;
+            services.spotify = Some(SpotifyDeps {
+                endpoints: fake.endpoints(),
+                store: Box::new(MemoryStore::holding("stored")),
+                open_browser: Box::new(|_| Ok(())),
+                redirect_port: 0,
+                sign_in_timeout: Duration::from_secs(5),
+                search_quiet: Duration::from_millis(50),
+                fast: Duration::from_millis(100),
+                slow: Duration::from_secs(1),
+                after_command: Duration::from_millis(20),
+            });
+            let (waker, _) = counting_waker();
+            let handle = Backend::start(None, services, waker, SLOW).unwrap();
+            drain_until_within(&handle, LIBRARY_MAX, |e| {
+                e.iter().any(|e| {
+                    matches!(
+                        e,
+                        Event::Spotify(SpotifyEvent::Account(SpotifyAccount::SignedIn { .. }))
+                    )
+                })
+            });
+            handle
+        }
+
+        fn count(fake: &FakeSpotify, method: &str, path: &str) -> usize {
+            fake.requests()
+                .iter()
+                .filter(|s| s.method == method && s.path == path)
+                .count()
+        }
+
+        fn album() -> Command {
+            Command::Spotify(SpotifyRequest::Play(PlayRequest::Context {
+                uri: "spotify:album:albumA".to_owned(),
+                offset_uri: None,
+            }))
+        }
+
+        fn tone() -> PathBuf {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../aria-audio/tests/fixtures/tone.ogg")
+        }
+
+        fn shows(player: ActivePlayer) -> impl Fn(&[Event]) -> bool {
+            move |e| e.contains(&Event::ActivePlayer(player))
+        }
+
+        #[test]
+        fn spotify_play_pauses_local_and_shows_spotify() {
+            let fake = fake(Reply::empty(204));
+            let handle = backend(&fake, Settings::default());
+            handle.send(Command::OpenPaths(vec![tone()]));
+            drain_until_within(&handle, LIBRARY_MAX, |e| {
+                last_view(e).is_some_and(|view| view.playing)
+            });
+            handle.send(album());
+            let events = drain_until(&handle, |e| {
+                shows(ActivePlayer::Spotify)(e) && last_view(e).is_some_and(|view| !view.playing)
+            });
+            assert!(!events.contains(&Event::ActivePlayer(ActivePlayer::Local)));
+            assert!(wait_until(
+                || count(&fake, "PUT", "/v1/me/player/play") == 1,
+                MAX
+            ));
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn playback_started_elsewhere_takes_the_bar() {
+            let fake = fake(Reply::fixture(200, "player"));
+            let handle = backend(&fake, Settings::default());
+            drain_until(&handle, shows(ActivePlayer::Spotify));
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn local_play_pauses_spotify_and_shows_local() {
+            let fake = fake(Reply::fixture(200, "player"));
+            let handle = backend(&fake, Settings::default());
+            drain_until(&handle, shows(ActivePlayer::Spotify));
+            handle.send(Command::OpenPaths(vec![tone()]));
+            drain_until_within(&handle, LIBRARY_MAX, shows(ActivePlayer::Local));
+            assert!(wait_until(
+                || count(&fake, "PUT", "/v1/me/player/pause") == 1,
+                MAX
+            ));
+            assert_eq!(
+                count(&fake, "PUT", "/v1/me/player/play"),
+                0,
+                "never a toggle"
+            );
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn transport_goes_to_the_player_shown() {
+            let fake = fake(Reply::empty(204));
+            let handle = backend(&fake, Settings::default());
+            handle.send(Command::Next);
+            thread::sleep(Duration::from_millis(200));
+            assert_eq!(
+                count(&fake, "POST", "/v1/me/player/next"),
+                0,
+                "local by default"
+            );
+
+            handle.send(album());
+            drain_until(&handle, shows(ActivePlayer::Spotify));
+            handle.send(Command::Next);
+            handle.send(Command::Seek(5000));
+            handle.send(Command::TogglePlay);
+            assert!(wait_until(
+                || count(&fake, "POST", "/v1/me/player/next") == 1,
+                MAX
+            ));
+            assert!(wait_until(
+                || count(&fake, "PUT", "/v1/me/player/seek") == 1,
+                MAX
+            ));
+            let seek = fake
+                .requests()
+                .into_iter()
+                .find(|s| s.path == "/v1/me/player/seek")
+                .unwrap();
+            assert_eq!(seek.param("position_ms"), Some("5000"));
+            // Nothing is playing on Spotify, so the toggle resumes.
+            assert!(wait_until(
+                || count(&fake, "PUT", "/v1/me/player/play") == 2,
+                MAX
+            ));
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn a_hidden_window_stops_polling() {
+            let fake = fake(Reply::fixture(200, "player"));
+            let handle = backend(&fake, Settings::default());
+            drain_until(&handle, shows(ActivePlayer::Spotify));
+            handle.send(Command::WindowShown(false));
+            thread::sleep(Duration::from_millis(150));
+            let before = count(&fake, "GET", "/v1/me/player");
+            thread::sleep(Duration::from_millis(500));
+            assert_eq!(count(&fake, "GET", "/v1/me/player"), before);
+            handle.send(Command::WindowShown(true));
+            assert!(wait_until(
+                || count(&fake, "GET", "/v1/me/player") > before,
+                MAX
+            ));
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn choosing_a_device_is_saved_in_the_settings() {
+            let fake = fake(Reply::empty(204));
+            let handle = backend(&fake, Settings::default());
+            handle.send(Command::Spotify(SpotifyRequest::Device(Some(
+                "device-desk".to_owned(),
+            ))));
+            drain_until(&handle, |e| {
+                e.iter().any(|e| {
+                    matches!(e, Event::SettingsReplaced(s)
+                        if s.spotify_device.as_deref() == Some("device-desk"))
+                })
+            });
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn signing_out_clears_the_device() {
+            let fake = fake(Reply::empty(204));
+            let settings = Settings {
+                spotify_device: Some("device-desk".to_owned()),
+                ..Settings::default()
+            };
+            let handle = backend(&fake, settings);
+            handle.send(Command::Spotify(SpotifyRequest::SignOut));
+            let events = drain_until(&handle, |e| {
+                e.iter()
+                    .any(|e| matches!(e, Event::SettingsReplaced(s) if s.spotify_device.is_none()))
+                    && e.iter().any(|e| {
+                        matches!(
+                            e,
+                            Event::Spotify(SpotifyEvent::Account(SpotifyAccount::SignedOut { .. }))
+                        )
+                    })
+            });
+            assert!(!events.contains(&Event::ActivePlayer(ActivePlayer::Spotify)));
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn without_spotify_deps_nothing_changes() {
+            let (waker, _) = counting_waker();
+            let handle = Backend::start(None, no_library(), waker, SLOW).unwrap();
+            handle.send(album());
+            handle.send(Command::Spotify(SpotifyRequest::SignOut));
+            handle.send(Command::WindowShown(false));
+            handle.send(Command::TogglePlay);
+            handle.send(Command::ListDevices);
+            let events = drain_until(&handle, |e| {
+                e.iter().any(|e| matches!(e, Event::OutputDevices(_)))
+            });
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, Event::Spotify(_) | Event::ActivePlayer(_))),
+                "{events:?}"
+            );
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
     }
 }

@@ -394,6 +394,9 @@ pub struct Settings {
     /// The hotkey that turns the microphone on and off, if any.
     #[serde(deserialize_with = "lenient_hotkey")]
     pub mic_toggle_hotkey: Option<Hotkey>,
+    /// The Spotify device Aria plays on, by Spotify's device id; `None` is the active one.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub spotify_device: Option<String>,
 }
 
 impl Default for Settings {
@@ -428,6 +431,7 @@ impl Default for Settings {
             mic_device: None,
             mic_volume: MIC_VOLUME_DEFAULT,
             mic_toggle_hotkey: None,
+            spotify_device: None,
         }
     }
 }
@@ -448,9 +452,15 @@ impl Settings {
         };
         self.share_music_volume = level(self.share_music_volume, 1.0, SHARE_MUSIC_VOLUME_DEFAULT);
         self.mic_volume = level(self.mic_volume, MIC_VOLUME_MAX, MIC_VOLUME_DEFAULT);
+        self.spotify_device = self
+            .spotify_device
+            .filter(|id| !id.trim().is_empty() && id.chars().count() <= SPOTIFY_DEVICE_MAX);
         self
     }
 }
+
+/// The longest Spotify device id kept; Spotify's ids are 40 characters.
+const SPOTIFY_DEVICE_MAX: usize = 128;
 
 /// `value` within `0.0..=max`, or `fallback` if it is not a number.
 fn level(value: f32, max: f32, fallback: f32) -> f32 {
@@ -464,6 +474,27 @@ fn level(value: f32, max: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spotify_device_is_sanitized() {
+        let with = |id: &str| {
+            Settings {
+                spotify_device: Some(id.to_owned()),
+                ..Settings::default()
+            }
+            .sanitized()
+            .spotify_device
+        };
+        assert_eq!(with("abc123"), Some("abc123".to_owned()));
+        assert_eq!(with(""), None);
+        assert_eq!(with("   "), None);
+        assert_eq!(with(&"x".repeat(129)), None);
+        assert_eq!(with(&"x".repeat(128)), Some("x".repeat(128)));
+        let read: Settings = toml::from_str("spotify_device = 5").unwrap();
+        assert_eq!(read.spotify_device, None);
+        let read: Settings = toml::from_str("spotify_device = \"dev\"").unwrap();
+        assert_eq!(read.spotify_device.as_deref(), Some("dev"));
+    }
 
     #[test]
     fn old_settings_load_with_sharing_and_microphone_off() {

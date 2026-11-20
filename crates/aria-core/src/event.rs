@@ -7,7 +7,18 @@ use aria_library::{Collections, LibrarySnapshot, ScanProgress, Track};
 
 use crate::{
     notice::Notice, playback_service::PlayerView, settings::Settings, soundboard::SoundboardState,
+    spotify_service::SpotifyEvent,
 };
+
+/// Which player the player bar shows and controls: the one last started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivePlayer {
+    /// Aria's own player.
+    #[default]
+    Local,
+    /// Spotify, on one of its devices.
+    Spotify,
+}
 
 /// Something the backend reports to the UI thread.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,4 +55,9 @@ pub enum Event {
     /// [`Command::ListInputDevices`](crate::command::Command::ListInputDevices). Empty if they
     /// could not be listed.
     InputDevices(Vec<DeviceInfo>),
+    /// The player bar now shows this player. Sent when it changes, and once at start when
+    /// Spotify is there.
+    ActivePlayer(ActivePlayer),
+    /// What the Spotify service reports.
+    Spotify(SpotifyEvent),
 }

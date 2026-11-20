@@ -176,6 +176,8 @@ fn main() -> anyhow::Result<()> {
         // Opens the microphone only while the user has it on and a second device is set.
         capture: Box::new(CpalCapture),
         settings: settings.clone().sanitized(),
+        // Makes no request until the user connects Spotify in Settings.
+        spotify: Some(aria_core::spotify_service::SpotifyDeps::system()),
     };
     let backend = match Backend::start(
         sink,

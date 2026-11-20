@@ -378,6 +378,7 @@ fn persisting_settings_page(file: &Path) -> Harness<'static, AriaApp> {
     let waker: Waker = Arc::new(|| {});
     let store = SettingsStore::new(file.to_path_buf());
     let services = BackendServices {
+        spotify: None,
         library: None,
         output: Box::new(FakeFactory::new(OutputFormat {
             sample_rate: 48_000,
