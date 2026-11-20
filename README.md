@@ -15,7 +15,7 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: version 0.2.8
+## Status: version 0.2.9
 
 What Aria does now:
 
@@ -27,6 +27,7 @@ What Aria does now:
 - **Soundboard.** Up to 100 sounds with their own volume and global hotkeys, played on your device, on a second device, or both (below).
 - **Music and microphone to a voice chat**, through a virtual audio cable (below).
 - **One copy at a time**: starting Aria again brings the open window forward.
+- **Your data.** A portable mode (a folder `AriaData` beside `aria.exe` holds everything), backup and restore of the library and the settings (Settings, Library), and M3U playlists to import and export (the Playlists page).
 - English, Russian and Armenian.
 
 Formats: MP3, FLAC, WAV, AIFF, AAC and ALAC in `.m4a`, Ogg Vorbis and Opus. What changed in each version is in the [changelog](CHANGELOG.md), and the checks for a person are in [docs/testing](docs/testing).
@@ -133,7 +134,7 @@ git config --global --add safe.directory /path/to/aria
 
 ```
 cargo build --release --locked -p aria-app
-ISCC.exe /DAppVersion=0.2.8 packaging\windows\aria.iss
+ISCC.exe /DAppVersion=0.2.9 packaging\windows\aria.iss
 ```
 
 It writes `target\installer\Aria-0.2.8-setup.exe`. The installer is per-user (no administrator rights), installs into `%LOCALAPPDATA%\Programs\Aria`, and adds a Start-menu shortcut, "Open with" entries and an uninstaller. Uninstalling removes the program only; settings, the library database and logs stay (see [docs/PRIVACY.md](docs/PRIVACY.md)).
@@ -142,7 +143,7 @@ The macOS and Linux files of a release are built by `.github/workflows/release.y
 
 ## Configuration and data
 
-`ARIA_CONFIG_DIR` overrides the config directory only. See [docs/PRIVACY.md](docs/PRIVACY.md) for the exact paths of everything Aria stores.
+`ARIA_CONFIG_DIR` overrides the config directory only. For a portable Aria, make a folder named `AriaData` beside `aria.exe`: everything Aria stores then goes in there. See [docs/PRIVACY.md](docs/PRIVACY.md) for the exact paths of everything Aria stores.
 
 ## Performance
 
@@ -164,13 +165,13 @@ These numbers come from one machine and are not a benchmark.
 
 - A favorite is shown as the outline heart in the accent colour, not a filled heart, because only the regular icon weight is bundled.
 - A file that is renamed or moved is a new track: it leaves favorites and playlists, and its playlist entries stay hidden until a file appears at the old path again.
-- One track at a time goes into a playlist; a new playlist does not become the selected one automatically. No M3U import or export, no full history page, no play counts.
+- One track at a time goes into a playlist; a new playlist does not become the selected one automatically. No full history page, no play counts.
 - Gapless trimming depends on data in the file. Formats without it may keep a small gap.
 - Aria cannot edit tags.
 - The audio thread runs at normal priority, so heavy system load can cause glitches.
 - CAF files and ADPCM WAV files are skipped by the library scan.
 - Crossfading between tracks is not there yet (Phase 5).
-- `ARIA_CONFIG_DIR` overrides only the config directory. Logs, the library database, the artwork cache and the window state still go to the OS defaults.
+- A backup holds no covers; the next scan reads them again.
 - Armenian headings render at regular weight, because there is no Armenian semibold font. egui's colour-picker popup and the panel splitter's accessibility label are English only.
 - In the narrowest layout (a 900 px window with the widest sidebar and the queue open), the Russian theme switch does not fit on one line.
 - Release builds on Windows open no console window. Diagnostics go to the log files and `panic.log` (see [docs/PRIVACY.md](docs/PRIVACY.md)), and a failure to start is also shown in a message box.

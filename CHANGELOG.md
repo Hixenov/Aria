@@ -5,6 +5,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-11-20 (your data: portable mode, backups, M3U playlists)
+
+Checked with 1142 automated tests on Windows and in CI on Linux and macOS. Nothing in it has been tried by hand; see `docs/testing/0.2.9-manual-check.md`.
+
+### Added
+
+- **Portable mode.** With a folder named `AriaData` beside `aria.exe`, Aria keeps everything in it: its settings in `config`, the library, logs and the rest in `data`, the artwork in `cache`. Nothing goes into your user folders, so Aria can run from a USB stick. A portable copy has its own library and is its own "one copy at a time". `ARIA_CONFIG_DIR` still moves the settings.
+- **Backup and restore.** Settings, Library, "Back up…" makes a folder "Aria backup <date and time>" (in UTC) in the folder you choose, with a consistent copy of the library database, made while Aria runs, and `settings.toml`. It holds your folders, the tracks' tags, favorites, playlists, history, sounds, the queue and the settings, but no music and no covers. "Restore…" checks the chosen backup (a library of this version or an older one, undamaged), and restores it when Aria starts again: the files it replaces are kept beside them, with `.before-restore` added to their names.
+- **M3U playlists.** The Playlists page has "Import…", which makes a playlist of an `.m3u` or `.m3u8` file, named after it (full and relative paths and `file://` addresses are read; web addresses are skipped), and "Export…", which saves the selected playlist as an `.m3u8` with full paths and each track's length and name. Imported entries whose files are not in the library are kept, and show once their folder is added.
+- **Check for updates.** Settings, About has the button. It opens the page of the newest release in your browser; Aria itself makes no request.
+
+### Fixed
+
+- The folder watch on macOS could go on noticing changes in a folder it had been told to let go of. It now checks every change against the folders it watches.
+- Tests of the music copy read the second output before the engine had filled the copy's new input, and failed now and then on a fast machine; they now wait for it.
+
+### Changed
+
+- Version 0.2.9. No database or settings change.
+- README's speed figures are measured again, on the release build in portable mode, with 4,000 generated files: the first frame in 83 to 107 ms on later launches, the first scan done 0.5 s after the first frame, about 104 MB when idle, and 0 to 0.3 % of one core when idle.
+
 ## [0.2.8] - 2026-11-20 (volume levelling and a sleep timer)
 
 Checked with 1122 automated tests on Windows and in CI on Linux and macOS (on an Intel Mac). Nothing in it has been heard: no one has listened to levelled tracks or to the sleep timer's fade. See `docs/testing/0.2.8-manual-check.md`.

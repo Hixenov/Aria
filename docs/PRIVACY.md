@@ -96,6 +96,13 @@ directory only; the library database, logs and cache still go to the folders abo
 
 While "Watch folders for changes" is on (Settings, Library; on by default), Aria asks the operating system to tell it of changes in the library's folders. It learns only the paths of the files that change, and acts on them only by scanning the library again, as Rescan does. Nothing about them is stored beyond what a scan stores.
 
+## Portable mode, backups and playlist files (since 0.2.9)
+
+- **Portable mode.** With a folder named `AriaData` beside `aria.exe`, everything listed above is stored in it instead of in your user folders: `AriaData\config` (the settings), `AriaData\data` (the library, the logs, the lock) and `AriaData\cache` (the artwork). The window state may still be kept where eframe keeps it.
+- **Backups.** A backup is written only when you ask for one, into the folder you choose: `library.db` (everything the library holds, listed above) and `settings.toml`. It stays where you put it, and Aria never reads it unless you restore it. A restore copies it into `restore` in the data folder until the next start, and keeps the files it replaces as `library.db.before-restore` and `settings.toml.before-restore`, which Aria never deletes.
+- **Playlist files.** "Export…" writes the playlist's file paths, and each track's length, artist and title, to the `.m3u8` file you choose. "Import…" reads the file you choose; nothing else is read from it.
+- **Check for updates.** The button opens the releases page in your web browser. Aria itself still makes no network request.
+
 ## The microphone (since 0.2.3)
 
 Before 0.2.3 Aria never opened a microphone. Since 0.2.3 it can, and only like this:
