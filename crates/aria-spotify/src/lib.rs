@@ -3,10 +3,12 @@
 //! controls Spotify's own devices through the public Web API.
 
 pub mod auth;
+pub mod callback;
 pub mod error;
 pub mod secret;
 
 pub use auth::{Pkce, authorize_url};
+pub use callback::Callback;
 pub use error::SpotifyError;
 pub use secret::Secret;
 
