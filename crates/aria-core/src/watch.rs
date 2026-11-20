@@ -231,18 +231,21 @@ mod tests {
         let (count, mut watcher) = counting();
         watcher.watch(&[watched.path().to_path_buf(), gone.path().to_path_buf()]);
         watcher.watch(&[watched.path().to_path_buf()]);
-        thread::sleep(SETTLE);
+        // macOS can still deliver the watched folder's own creation late, more so in a
+        // release build: count from what has arrived once things have settled.
+        thread::sleep(SETTLE * 2);
+        let before = count.load(Ordering::SeqCst);
 
         fs::write(gone.path().join("a.mp3"), b"x").unwrap();
         thread::sleep(SHORT_QUIET * 4);
         assert_eq!(
             count.load(Ordering::SeqCst),
-            0,
+            before,
             "a folder let go of was noticed"
         );
         // The one still watched is.
         fs::write(watched.path().join("a.mp3"), b"x").unwrap();
-        assert!(wait_for(&count, 1));
+        assert!(wait_for(&count, before + 1));
     }
 
     #[test]
