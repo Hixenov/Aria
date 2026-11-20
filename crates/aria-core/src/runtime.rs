@@ -2794,6 +2794,17 @@ music/two.flac
         }
 
         fn backend(fake: &FakeSpotify, settings: Settings) -> BackendHandle {
+            backend_until(fake, settings, |_| true)
+        }
+
+        /// A backend signed in to `fake`, once the events since its start also satisfy `also`.
+        /// Waiting for both in one drain keeps an event that came with the sign-in, such as the
+        /// first poll's, which a later drain would never see.
+        fn backend_until(
+            fake: &FakeSpotify,
+            settings: Settings,
+            also: impl Fn(&[Event]) -> bool,
+        ) -> BackendHandle {
             let mut services = services(None);
             services.settings = settings;
             services.spotify = Some(SpotifyDeps {
@@ -2810,12 +2821,13 @@ music/two.flac
             let (waker, _) = counting_waker();
             let handle = Backend::start(None, services, waker, SLOW).unwrap();
             drain_until_within(&handle, LIBRARY_MAX, |e| {
-                e.iter().any(|e| {
-                    matches!(
-                        e,
-                        Event::Spotify(SpotifyEvent::Account(SpotifyAccount::SignedIn { .. }))
-                    )
-                })
+                also(e)
+                    && e.iter().any(|e| {
+                        matches!(
+                            e,
+                            Event::Spotify(SpotifyEvent::Account(SpotifyAccount::SignedIn { .. }))
+                        )
+                    })
             });
             handle
         }
@@ -2865,16 +2877,14 @@ music/two.flac
         #[test]
         fn playback_started_elsewhere_takes_the_bar() {
             let fake = fake(Reply::fixture(200, "player"));
-            let handle = backend(&fake, Settings::default());
-            drain_until(&handle, shows(ActivePlayer::Spotify));
+            let handle = backend_until(&fake, Settings::default(), shows(ActivePlayer::Spotify));
             assert!(handle.shutdown(LIBRARY_MAX));
         }
 
         #[test]
         fn local_play_pauses_spotify_and_shows_local() {
             let fake = fake(Reply::fixture(200, "player"));
-            let handle = backend(&fake, Settings::default());
-            drain_until(&handle, shows(ActivePlayer::Spotify));
+            let handle = backend_until(&fake, Settings::default(), shows(ActivePlayer::Spotify));
             handle.send(Command::OpenPaths(vec![tone()]));
             drain_until_within(&handle, LIBRARY_MAX, shows(ActivePlayer::Local));
             assert!(wait_until(
@@ -2931,8 +2941,7 @@ music/two.flac
         #[test]
         fn resuming_local_pauses_spotify() {
             let fake = fake(Reply::fixture(200, "player"));
-            let handle = backend(&fake, Settings::default());
-            drain_until(&handle, shows(ActivePlayer::Spotify));
+            let handle = backend_until(&fake, Settings::default(), shows(ActivePlayer::Spotify));
             handle.send(Command::OpenPaths(vec![tone()]));
             drain_until_within(&handle, LIBRARY_MAX, |e| {
                 shows(ActivePlayer::Local)(e) && last_view(e).is_some_and(|view| view.playing)
@@ -2954,8 +2963,7 @@ music/two.flac
         #[test]
         fn a_hidden_window_stops_polling() {
             let fake = fake(Reply::fixture(200, "player"));
-            let handle = backend(&fake, Settings::default());
-            drain_until(&handle, shows(ActivePlayer::Spotify));
+            let handle = backend_until(&fake, Settings::default(), shows(ActivePlayer::Spotify));
             handle.send(Command::WindowShown(false));
             thread::sleep(Duration::from_millis(150));
             let before = count(&fake, "GET", "/v1/me/player");
