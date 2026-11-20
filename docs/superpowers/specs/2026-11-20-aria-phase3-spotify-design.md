@@ -9,15 +9,23 @@ itself (see the roadmap: no in-app streaming, no private protocols).
 
 Decided with the user on 2026-11-20:
 
-- The account has **Premium**, so remote control is built and is the point of it. A free
-  account gets everything but playback, with the controls greyed out and the reason given.
+- The account has **Premium**, so remote control is built and is the point of it. Spotify no
+  longer tells Development-mode apps whether an account is Premium (`product` is gone from
+  `GET /me`), so Aria does not guess: a free account can browse, and the first playback command
+  Spotify refuses with `PREMIUM_REQUIRED` turns into a notice saying playback needs Premium.
 - The **Client ID is built into Aria** (`250bd9732a644668911a74bdd329e66e`, the user's Spotify
-  developer app, Web API only). While that app is in Spotify's Development mode, only the few
-  accounts on its allow-list (developer.spotify.com, Users and Access) can sign in; the docs and
+  developer app, Web API only). While that app is in Spotify's Development mode, only the five
+  accounts on its allow-list (developer.spotify.com, Users and Access) can sign in, and only while
+  the app's owner keeps Premium; the docs and
   the sign-in error say so.
-- Spotify has been taking endpoints away from Development-mode apps. Before the plan is written,
-  every endpoint below is checked against Spotify's current Web API reference; one that is not
-  available is dropped from 0.3.0 and the page says less, never worked around.
+- Spotify took endpoints away from Development-mode apps made after 11 February 2026, which
+  this one is. Checked on 2026-11-20 against Spotify's February, March, May and July 2026
+  changelogs: everything below is still available, with these limits: search returns at most 10
+  per type, an artist's top tracks are gone (playing an artist uses the artist as the context
+  instead), batch lookups are gone, playlist items can only be read for playlists you own or
+  collaborate on (Aria plays a playlist as a context and never reads its items), and
+  `popularity`, `followers` and `label` are no longer in the results. Anything else that turns
+  out missing is dropped, never worked around.
 - **Scope of 0.3.0: the core.** Sign in and out; saved tracks, saved albums, followed artists and
   your playlists; search; play on a device you choose; play/pause, next, previous, seek, volume,
   shuffle and repeat; what is playing, in the player bar. Liking tracks and editing Spotify
@@ -29,8 +37,10 @@ Decided with the user on 2026-11-20:
 - Never logs tokens or puts them in crash reports. The refresh token is kept in the system's
   protected store (Windows Credential Manager, macOS Keychain, the Secret Service on Linux);
   the access token lives in memory only.
-- No telemetry. Aria talks to Spotify only after you sign in, and only to `accounts.spotify.com`
-  and `api.spotify.com`; before that, and after signing out, it makes no request at all.
+- No telemetry. Aria talks to Spotify only after you sign in: to `accounts.spotify.com` and
+  `api.spotify.com`, and for covers to the image addresses Spotify's answers give (Spotify's own
+  image servers, such as `i.scdn.co`). Before that, and after signing out, it makes no request at
+  all.
 - No private endpoints, no device spoofing, no audio: the public Web API only.
 
 ## Pieces
@@ -45,9 +55,12 @@ What talks to Spotify, with nothing of the UI in it:
   listener on `127.0.0.1:43819` (std `TcpListener`, the registered redirect URI) takes the one
   `GET /callback`, checks `state`, answers with a small page ("You can close this tab"), and
   stops; it gives up after 5 minutes. The code is exchanged at `/api/token` with the verifier.
-  Refresh: before the access token expires, or on a 401, once.
+  Refresh: before the access token expires (it lasts an hour), or on a 401, once. A refresh
+  answer without a new refresh token keeps the old one; `invalid_grant` (Spotify's refresh
+  tokens end six months after sign-in) means signing in again.
 - **`client`**: the Web API calls, as typed requests and results (serde). Pages of 50, followed
-  with `next`. A 429 waits for `Retry-After`, then tries once more; a 401 refreshes once; any
+  with `next`. A 429 waits for `Retry-After` (or, with `QUOTA_EXCEEDED`, says the app's daily
+  limit is reached and stops asking until the next poll after that wait), then tries once more; a 401 refreshes once; any
   other failure is an error the UI can name (no network, signed out, not Premium, no device,
   Spotify's own error).
 - **`store`**: the refresh token in the system store (`keyring` crate), under the service name
@@ -56,7 +69,7 @@ What talks to Spotify, with nothing of the UI in it:
 - **HTTP**: `ureq` 3 with rustls, blocking, run on the backend's blocking pool. Its licences are
   checked with cargo-deny before it is added.
 
-Scopes: `user-read-private` (Premium or not), `user-library-read`, `user-follow-read`,
+Scopes: `user-read-private` (the display name), `user-library-read`, `user-follow-read`,
 `playlist-read-private`, `playlist-read-collaborative`, `user-read-playback-state`,
 `user-modify-playback-state`, `user-read-currently-playing`.
 
@@ -64,12 +77,12 @@ Scopes: `user-read-private` (Premium or not), `user-library-read`, `user-follow-
 
 On the backend, like the library service:
 
-- State: signed out / signing in / signed in (with the display name and whether it is Premium).
+- State: signed out / signing in / signed in (with the display name).
   Sent to the UI as `Event::Spotify(Arc<SpotifyState>)`.
 - The library: saved tracks, saved albums, followed artists and playlists, fetched after sign-in
   and on Refresh, kept in memory only (`Arc<SpotifyLibrary>`), never written to `library.db`.
-- Search: as you type, after 300 ms of quiet, tracks, albums, artists and playlists, as many of
-  each as Spotify allows in one request (up to 20).
+- Search: as you type, after 300 ms of quiet, tracks, albums, artists and playlists, 10 of each
+  (Spotify's limit) in one request.
 - Devices and playback: `GET /me/player` every 2 seconds while the player bar shows a Spotify
   item, every 15 seconds otherwise, and not at all while signed out or while the window is
   minimized or hidden in the tray. Commands go to the device chosen, or to the active one.
@@ -88,11 +101,12 @@ The four pages that say "Available in Phase 3" today:
 - **Search**: one field, results in four groups. Click to play; a track plays within its album.
 - **Your Library**: Liked Songs (your saved tracks) and your playlists. Click to play.
 - **Albums** and **Artists**: your saved albums and followed artists. Click to play the album, or
-  the artist's top tracks.
+  the artist (Spotify picks the tracks).
 - Signed out, each says so and has a "Connect Spotify" button.
-- Covers: fetched from Spotify's image URLs, kept in memory for the session (no cache on disk).
+- Covers: fetched from the image URLs Spotify gives, only over HTTPS, the smallest one at least
+  64 pixels wide, kept in memory for the session (no cache on disk).
 
-Settings gets a **Spotify** card: Connect / Disconnect, the account name and Premium or not, the
+Settings gets a **Spotify** card: Connect / Disconnect, the account name, the
 device to play on (Spotify's list, with "the active one"), and a line on the Development-mode
 allow-list. Disconnect deletes the stored token and forgets the library.
 
