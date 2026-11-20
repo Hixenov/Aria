@@ -1294,9 +1294,9 @@ mod tests {
         let mut h = Harness::signed_in();
         h.fake
             .reply("GET", "/v1/search", Reply::fixture(200, "search"));
+        // Typed faster than the quiet time; no sleep, which a slow runner can overshoot.
         for query in ["d", "da", "daft"] {
             h.send(SpotifyRequest::Search(query.to_owned()));
-            thread::sleep(Duration::from_millis(10));
         }
         let event = h.expect(|e| matches!(e, SpotifyEvent::Search(_)));
         let SpotifyEvent::Search(search) = event else {
