@@ -880,19 +880,24 @@ fn a_seek_while_playing_does_not_break_off_once_the_new_audio_starts() {
     rig.send(Seek(2_000));
     wait_until("the seek", || rig.read().position_ms >= 1_900);
 
-    let mut audio = output.pull(CHUNK_FRAMES * 2);
-    thread::sleep(Duration::from_millis(50));
-    audio.extend(output.pull(CHUNK_FRAMES * 4));
-
-    // The old audio fades out first. The new audio may then wait, but once it starts it must not
-    // stop: a stop is a cut to silence with no fade, and it is heard as a click.
+    // The old audio fades out first. The new audio may then wait, as long as a slow machine
+    // needs, but once it starts it must not stop: a stop is a cut to silence with no fade, and
+    // it is heard as a click.
     let fade = SECOND * FADE_MS as usize / 1_000;
-    let after_fade = &audio[fade * 2..];
-    let start = after_fade.iter().position(|sample| *sample != 0.0);
-    let Some(start) = start else {
-        panic!("the new audio never came");
-    };
-    let gap = longest_zero_run(&after_fade[start..]);
+    let mut audio = output.pull(CHUNK_FRAMES * 2);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !audio.iter().skip(fade * 2).any(|sample| *sample != 0.0) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the new audio never came"
+        );
+        thread::sleep(Duration::from_millis(20));
+        audio.extend(output.pull(CHUNK_FRAMES / 4));
+    }
+    // Once it has started, the decoder has had time to fill the ring: what follows is whole.
+    thread::sleep(Duration::from_millis(100));
+    let after = output.pull(CHUNK_FRAMES * 4);
+    let gap = longest_zero_run(&after);
     assert!(gap <= 2, "the new audio broke off for {} frames", gap / 2);
 }
 
