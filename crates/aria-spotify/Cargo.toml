@@ -1,0 +1,26 @@
+[package]
+name = "aria-spotify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The fake Spotify Web API server, for tests in this crate and in aria-core.
+test-support = []
+
+[dependencies]
+base64 = { workspace = true }
+form_urlencoded = { workspace = true }
+getrandom = { workspace = true }
+keyring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ureq = { workspace = true }

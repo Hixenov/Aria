@@ -39,6 +39,9 @@ allow = [
     # Added for notify (watching the library's folders): a public-domain dedication with no
     # conditions.
     "CC0-1.0",
+    # Added for ureq's rustls (Spotify, Phase 3): webpki-roots carries Mozilla's root
+    # certificates under this permissive data licence.
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]

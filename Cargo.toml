@@ -50,6 +50,7 @@ open = "5.4.5"
 rfd = { version = "0.17.2", default-features = false }
 aria-audio = { path = "crates/aria-audio" }
 aria-library = { path = "crates/aria-library" }
+aria-spotify = { path = "crates/aria-spotify" }
 symphonia = { version = "0.6.1", default-features = false, features = ["aac", "aiff", "alac", "caf", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav", "opt-simd"] }
 symphonia-adapter-libopus = "0.3.0"
 cpal = "0.18.2"
@@ -67,3 +68,12 @@ global-hotkey = "0.10"
 interprocess = "2.4.7"
 # Builds Aria's icon into aria.exe on Windows, at build time only.
 embed-resource = "3.0.12"
+# Phase 3 (Spotify). A blocking HTTP client with rustls and the system's certificate store.
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "platform-verifier", "json"] }
+serde_json = "1.0.154"
+# The Spotify refresh token goes to the system's protected store: Credential Manager, Keychain,
+# the Secret Service.
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+getrandom = "0.3.4"
+base64 = "0.22.1"
+form_urlencoded = "1.2.2"
