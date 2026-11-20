@@ -81,6 +81,7 @@ impl Seen {
 #[derive(Default)]
 struct State {
     replies: HashMap<(String, String), VecDeque<Reply>>,
+    offline: bool,
     seen: Vec<Seen>,
 }
 
@@ -108,7 +109,13 @@ impl FakeSpotify {
             thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
                     match listener.accept() {
-                        Ok((stream, _)) => serve(stream, port, &state),
+                        Ok((stream, _)) => {
+                            let offline =
+                                state.lock().unwrap_or_else(PoisonError::into_inner).offline;
+                            if !offline {
+                                serve(stream, port, &state);
+                            }
+                        }
                         Err(_) => thread::sleep(Duration::from_millis(2)),
                     }
                 }
@@ -142,6 +149,12 @@ impl FakeSpotify {
             .entry((method.to_owned(), path.to_owned()))
             .or_default()
             .push_back(reply);
+    }
+
+    /// While offline, every connection is closed without an answer, as when the network is
+    /// gone. Nothing is recorded.
+    pub fn set_offline(&self, offline: bool) {
+        self.lock().offline = offline;
     }
 
     /// Forgets every scripted answer (what was seen stays).

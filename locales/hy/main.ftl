@@ -373,3 +373,20 @@ settings-cable-guide-2 = Այնուհետև վերագործարկեք Aria-ն �
 settings-cable-guide-3 = Ընտրեք մալուխն այստեղ որպես երկրորդ սարք։ Զրույցի ծրագրում որպես խոսափող ընտրեք դրա ձայնագրման կողմը (VB-CABLE-ի դեպքում՝ «CABLE Output»)։
 settings-cable-hint-vb = Զրույցի ծրագրում որպես խոսափող ընտրեք «CABLE Output»։
 settings-cable-hint-other = Զրույցի ծրագրում որպես խոսափող ընտրեք այս մալուխի ձայնագրման սարքը։
+
+## Spotify notices
+spotify-session-ended = Spotify-ի նիստն ավարտվել է։ Կրկին միացեք Կարգավորումներում։
+spotify-port-busy = Aria-ն չի կարող ընդունել մուտքը. այս համակարգչի 43819 պորտը զբաղված է։
+spotify-sign-in-denied = Spotify մուտքը չեղարկվեց։
+spotify-sign-in-timed-out = Spotify մուտքը չափազանց երկար տևեց։ Փորձեք կրկին։
+spotify-browser-failed = Aria-ն չկարողացավ բացել դիտարկիչը Spotify մուտքի համար։
+spotify-offline = Aria-ն չի կարողանում կապվել Spotify-ի հետ։ Ստուգեք կապը։
+# $seconds (Number) - how long Spotify asked Aria to wait
+spotify-rate-limited = Spotify-ը խնդրեց Aria-ին սպասել { $seconds } վ՝ նախքան կրկին դիմելը։
+spotify-premium-required = Spotify սարքերում նվագարկելու համար անհրաժեշտ է Spotify Premium։
+spotify-no-device = Spotify-ի ակտիվ սարք չկա։ Նախ բացեք Spotify-ը որևէ սարքում։
+spotify-not-allow-listed = Այս Spotify հաշիվը դեռ Aria-ի թույլատրված ցանկում չէ։ Խնդրեք հավելվածի սեփականատիրոջը ավելացնել այն Spotify-ի մշակողի վահանակում։
+# $message (String) - Spotify's own error message, in English
+spotify-error = Spotify-ի պատասխանը. { $message }
+spotify-keyring-failed = Aria-ն չկարողացավ պահպանել Spotify մուտքը. հաջորդ անգամ պետք է կրկին միանաք։
+spotify-signed-in-page = Դուք միացված եք Aria-ին։ Կարող եք փակել այս ներդիրը։

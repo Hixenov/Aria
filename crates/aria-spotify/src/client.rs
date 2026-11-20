@@ -182,31 +182,7 @@ impl Client {
 
     /// A cover image, fetched without the token. `https://` only, at most 2 MiB.
     pub fn image(&mut self, url: &str) -> Result<Vec<u8>, SpotifyError> {
-        let own = format!("{}/", self.endpoints.accounts);
-        if !url.starts_with("https://") && !url.starts_with(&own) {
-            return Err(SpotifyError::BadAnswer(
-                "an image not over https".to_owned(),
-            ));
-        }
-        let mut response = self
-            .http
-            .agent()
-            .get(url)
-            .call()
-            .map_err(|e| http::transport(&e))?;
-        let status = response.status().as_u16();
-        if status != 200 {
-            return Err(SpotifyError::Api {
-                status,
-                message: "image".to_owned(),
-            });
-        }
-        response
-            .body_mut()
-            .with_config()
-            .limit(MAX_IMAGE)
-            .read_to_vec()
-            .map_err(|e| http::transport(&e))
+        fetch_image(&self.http, &self.endpoints, url)
     }
 
     // --- plumbing ---
@@ -340,6 +316,35 @@ impl Client {
         };
         http::read(result)
     }
+}
+
+/// A cover image, fetched without any token. `https://` only (or the fake's own address in
+/// tests), at most 2 MiB.
+pub fn fetch_image(http: &Http, endpoints: &Endpoints, url: &str) -> Result<Vec<u8>, SpotifyError> {
+    let own = format!("{}/", endpoints.accounts);
+    if !url.starts_with("https://") && !url.starts_with(&own) {
+        return Err(SpotifyError::BadAnswer(
+            "an image not over https".to_owned(),
+        ));
+    }
+    let mut response = http
+        .agent()
+        .get(url)
+        .call()
+        .map_err(|e| http::transport(&e))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(SpotifyError::Api {
+            status,
+            message: "image".to_owned(),
+        });
+    }
+    response
+        .body_mut()
+        .with_config()
+        .limit(MAX_IMAGE)
+        .read_to_vec()
+        .map_err(|e| http::transport(&e))
 }
 
 fn parse<T: DeserializeOwned>(body: &str) -> Result<T, SpotifyError> {

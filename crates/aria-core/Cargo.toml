@@ -12,13 +12,16 @@ workspace = true
 [dependencies]
 aria-audio = { workspace = true }
 aria-library = { workspace = true }
+aria-spotify = { workspace = true }
 crossbeam-channel = { workspace = true }
 directories = { workspace = true }
 fluent-bundle = { workspace = true }
 fluent-syntax = { workspace = true }
+image = { workspace = true }
 interprocess = { workspace = true }
 log = { workspace = true }
 notify = { workspace = true }
+open = { workspace = true }
 serde = { workspace = true }
 sys-locale = { workspace = true }
 thiserror = { workspace = true }
@@ -32,4 +35,5 @@ unic-langid = { workspace = true }
 [dev-dependencies]
 lofty = { workspace = true }
 aria-audio = { workspace = true, features = ["test-support"] }
+aria-spotify = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }

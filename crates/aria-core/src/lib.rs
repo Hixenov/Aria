@@ -19,6 +19,7 @@ pub mod redact;
 pub mod runtime;
 pub mod settings;
 pub mod soundboard;
+pub mod spotify_service;
 pub mod watch;
 
 // What `aria-app` needs from the crates below it, which it reaches only through this one.
@@ -31,4 +32,8 @@ pub use aria_library::{
     Collections, Folder, FolderId, LibrarySnapshot, PLAYLIST_NAME_MAX, Playlist, PlaylistId,
     PlaylistItem, SOUND_NAME_MAX, SOUNDS_MAX, ScanProgress, SoundId, TrackId, playlist_name,
     sound_name,
+};
+pub use aria_spotify::{
+    NowItem, PlayRequest, PlaybackState, RepeatState, SearchResults, SpAlbum, SpArtist, SpDevice,
+    SpPlaylist, SpTrack,
 };

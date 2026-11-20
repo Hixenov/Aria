@@ -374,3 +374,20 @@ settings-cable-guide-2 = Then restart Aria, or open Settings again.
 settings-cable-guide-3 = Choose the cable here as the second device. In the chat program, choose its recording side (for VB-CABLE, "CABLE Output") as the microphone.
 settings-cable-hint-vb = In the chat program, choose "CABLE Output" as the microphone.
 settings-cable-hint-other = In the chat program, choose the cable's recording device as the microphone.
+
+## Spotify notices
+spotify-session-ended = Your Spotify session has ended. Connect again in Settings.
+spotify-port-busy = Aria can't receive the sign-in: port 43819 on this computer is in use.
+spotify-sign-in-denied = Spotify sign-in was cancelled.
+spotify-sign-in-timed-out = Spotify sign-in took too long. Try again.
+spotify-browser-failed = Aria couldn't open your browser for the Spotify sign-in.
+spotify-offline = Aria can't reach Spotify. Check your connection.
+# $seconds (Number) - how long Spotify asked Aria to wait
+spotify-rate-limited = Spotify asked Aria to wait { $seconds } s before asking again.
+spotify-premium-required = Playing on Spotify devices needs Spotify Premium.
+spotify-no-device = No Spotify device is active. Open Spotify on a device first.
+spotify-not-allow-listed = This Spotify account isn't on Aria's allow-list yet. Ask the app's owner to add it in the Spotify developer dashboard.
+# $message (String) - Spotify's own error message, in English
+spotify-error = Spotify said: { $message }
+spotify-keyring-failed = Aria couldn't save the Spotify sign-in; you'll connect again next time.
+spotify-signed-in-page = You're connected to Aria. You can close this tab.

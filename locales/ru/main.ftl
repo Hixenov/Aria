@@ -385,3 +385,20 @@ settings-cable-guide-2 = Затем перезапустите Aria или сн�
 settings-cable-guide-3 = Выберите кабель здесь вторым устройством. В программе чата выберите микрофоном его сторону записи (у VB-CABLE это «CABLE Output»).
 settings-cable-hint-vb = В программе чата выберите микрофоном «CABLE Output».
 settings-cable-hint-other = В программе чата выберите микрофоном устройство записи этого кабеля.
+
+## Spotify notices
+spotify-session-ended = Сеанс Spotify завершён. Подключитесь снова в настройках.
+spotify-port-busy = Aria не может принять вход: порт 43819 на этом компьютере занят.
+spotify-sign-in-denied = Вход в Spotify отменён.
+spotify-sign-in-timed-out = Вход в Spotify занял слишком много времени. Попробуйте ещё раз.
+spotify-browser-failed = Aria не смогла открыть браузер для входа в Spotify.
+spotify-offline = Aria не может связаться со Spotify. Проверьте подключение.
+# $seconds (Number) - how long Spotify asked Aria to wait
+spotify-rate-limited = Spotify попросил Aria подождать { $seconds } с, прежде чем снова обращаться.
+spotify-premium-required = Для воспроизведения на устройствах Spotify нужен Spotify Premium.
+spotify-no-device = Нет активного устройства Spotify. Сначала откройте Spotify на каком-нибудь устройстве.
+spotify-not-allow-listed = Этого аккаунта Spotify ещё нет в списке доступа Aria. Попросите владельца приложения добавить его в панели разработчика Spotify.
+# $message (String) - Spotify's own error message, in English
+spotify-error = Ответ Spotify: { $message }
+spotify-keyring-failed = Aria не смогла сохранить вход в Spotify; в следующий раз нужно будет подключиться снова.
+spotify-signed-in-page = Вы подключены к Aria. Эту вкладку можно закрыть.

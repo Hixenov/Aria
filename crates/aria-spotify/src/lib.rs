@@ -16,7 +16,7 @@ pub mod token;
 
 pub use auth::{Pkce, authorize_url};
 pub use callback::Callback;
-pub use client::Client;
+pub use client::{Client, fetch_image};
 pub use error::SpotifyError;
 pub use http::Http;
 pub use model::{

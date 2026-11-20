@@ -490,6 +490,19 @@ mod tests {
         "quality-hi-res",
         "local-col-quality",
         "local-lossless-only",
+        "spotify-session-ended",
+        "spotify-port-busy",
+        "spotify-sign-in-denied",
+        "spotify-sign-in-timed-out",
+        "spotify-browser-failed",
+        "spotify-offline",
+        "spotify-rate-limited",
+        "spotify-premium-required",
+        "spotify-no-device",
+        "spotify-not-allow-listed",
+        "spotify-error",
+        "spotify-keyring-failed",
+        "spotify-signed-in-page",
     ];
 
     // The six tests below are the Task 4 brief's, verbatim except for the
@@ -614,6 +627,10 @@ mod tests {
         args.set("name", "777");
         args.set("max", 777);
         args.set("minutes", 777);
+        args.set("seconds", 777);
+        args.set("message", "777");
+        args.set("device", "777");
+        args.set("owner", "777");
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));
