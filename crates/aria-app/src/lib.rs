@@ -9,6 +9,7 @@ mod hotkeys;
 pub mod icon;
 pub mod nav;
 mod shortcuts;
+pub mod spotify;
 pub mod ui;
 
 pub use hotkeys::SystemHotkeys;

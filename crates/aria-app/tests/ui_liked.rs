@@ -101,6 +101,8 @@ fn harness(favorites: &[i64]) -> Harness<'static, Page> {
                     devices: &[],
                     input_devices: &[],
                     artwork: None,
+                    spotify: &Default::default(),
+                    covers: &mut Default::default(),
                 };
                 pages::show(Route::Liked, ui, &mut ctx);
             },

@@ -1,5 +1,8 @@
 //! Application state and the per-frame shell: player bar, sidebar, right panel and page.
 
+use aria_core::spotify_service::{SpotifyAccount, SpotifyEvent, SpotifyRequest};
+
+use crate::spotify::{RemoteCovers, SpotifyUi};
 use std::{
     io, mem,
     path::PathBuf,
@@ -218,6 +221,12 @@ pub struct AriaApp {
     sent: std::cell::RefCell<Vec<Command>>,
     /// When `main` began, until the first frame logs how long it took to arrive.
     startup: Option<Instant>,
+    /// Spotify, as the backend last reported it.
+    spotify: SpotifyUi,
+    /// Spotify's covers.
+    covers: RemoteCovers,
+    /// Whether the window was shown at the last frame, as last told to the backend.
+    window_shown: Option<bool>,
 }
 
 impl AriaApp {
@@ -284,6 +293,9 @@ impl AriaApp {
             page_dialog_open: false,
             outstanding_resets: 0,
             startup: None,
+            spotify: SpotifyUi::default(),
+            covers: RemoteCovers::default(),
+            window_shown: None,
         }
     }
 
@@ -305,6 +317,11 @@ impl AriaApp {
         &self.settings
     }
 
+    /// Spotify as the backend last reported it.
+    pub fn spotify(&self) -> &SpotifyUi {
+        &self.spotify
+    }
+
     /// The soundboard as the backend last reported it.
     pub fn soundboard(&self) -> &SoundboardState {
         &self.soundboard
@@ -324,6 +341,7 @@ impl AriaApp {
         let ctx = ui.ctx().clone();
         // Events first, so settings the backend replaced are styled in this very frame.
         self.drain_events(&ctx);
+        self.tell_window_shown(&ctx);
         self.prepare_style(ui);
         for notice in mem::take(&mut self.pending_notices) {
             self.notify(&ctx, notice);
@@ -348,6 +366,17 @@ impl AriaApp {
         self.run_hotkeys(&ctx);
         self.toasts.show(&ctx, &self.localizer, &palette);
         self.show_drop_hint(&ctx, &palette);
+    }
+
+    /// Tells the backend when the window is minimized or shown again, so Spotify is not polled
+    /// while nobody can see it. The first frame tells it the window is shown.
+    fn tell_window_shown(&mut self, ctx: &egui::Context) {
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        let shown = !minimized;
+        if self.window_shown != Some(shown) {
+            self.window_shown = Some(shown);
+            self.send(Command::WindowShown(shown));
+        }
     }
 
     /// Opens what was dropped on the window this frame, in the order dropped: files play, and
@@ -591,8 +620,15 @@ impl AriaApp {
             }
             Event::OutputDevices(devices) => self.devices = devices,
             Event::InputDevices(devices) => self.input_devices = devices,
-            // The Spotify UI state arrives with the Settings card and the pages.
-            Event::ActivePlayer(_) | Event::Spotify(_) => {}
+            Event::ActivePlayer(active) => self.spotify.active = active,
+            Event::Spotify(SpotifyEvent::Notice(notice)) => self.notify(ctx, notice),
+            Event::Spotify(SpotifyEvent::Cover(cover)) => self.covers.insert(ctx, &cover),
+            Event::Spotify(event) => {
+                if let SpotifyEvent::Account(SpotifyAccount::SignedOut { .. }) = &event {
+                    self.covers.clear();
+                }
+                self.spotify.apply(event);
+            }
         }
     }
 
@@ -723,6 +759,8 @@ impl AriaApp {
             devices: &self.devices,
             input_devices: &self.input_devices,
             artwork: self.artwork.as_mut(),
+            spotify: &self.spotify,
+            covers: &mut self.covers,
         };
         let route = self.history.current();
         let frame = Frame::new()
@@ -753,6 +791,12 @@ impl AriaApp {
     fn handle_page_action(&mut self, ctx: &egui::Context, action: PageAction) {
         match action {
             PageAction::UpdateSettings(settings) => self.update_settings(ctx, settings),
+            PageAction::Spotify(SpotifyRequest::SignIn { .. }) => {
+                let text = self.localizer.tr("spotify-signed-in-page");
+                let done_page = crate::spotify::signed_in_page(&text);
+                self.send(Command::Spotify(SpotifyRequest::SignIn { done_page }));
+            }
+            PageAction::Spotify(request) => self.send(Command::Spotify(request)),
             PageAction::ResetSettings => {
                 self.apply_settings(ctx, Settings::default());
                 self.outstanding_resets = self.outstanding_resets.saturating_add(1);
@@ -1513,6 +1557,91 @@ mod tests {
         assert!(app.style_dirty);
     }
 
+    fn plain_app() -> AriaApp {
+        let localizer = Localizer::new(Language::En).unwrap();
+        AriaApp::new(Settings::default(), localizer, AppDeps::none(), vec![])
+    }
+
+    #[test]
+    fn spotify_events_reach_the_ui_state() {
+        use aria_core::event::ActivePlayer;
+        let ctx = egui::Context::default();
+        let mut app = plain_app();
+        app.handle_event(
+            &ctx,
+            Event::Spotify(SpotifyEvent::Account(SpotifyAccount::SignedIn {
+                name: "Ann".to_owned(),
+            })),
+        );
+        app.handle_event(&ctx, Event::ActivePlayer(ActivePlayer::Spotify));
+        assert!(app.spotify().signed_in());
+        assert_eq!(app.spotify().active, ActivePlayer::Spotify);
+        app.handle_event(
+            &ctx,
+            Event::Spotify(SpotifyEvent::Cover(std::sync::Arc::new(
+                aria_core::spotify_service::Cover {
+                    url: "https://i.scdn.co/a".to_owned(),
+                    width: 1,
+                    height: 1,
+                    rgba: vec![0; 4],
+                },
+            ))),
+        );
+        assert_eq!(app.covers.len(), 1);
+        app.handle_event(
+            &ctx,
+            Event::Spotify(SpotifyEvent::Account(SpotifyAccount::SignedOut {
+                keyring: true,
+            })),
+        );
+        assert!(app.covers.is_empty(), "covers go with the sign-out");
+    }
+
+    #[test]
+    fn minimizing_tells_the_backend() {
+        let mut harness =
+            Harness::builder().build_ui_state(|ui, app: &mut AriaApp| app.show(ui), plain_app());
+        harness.run();
+        let shown = |harness: &Harness<'_, AriaApp>| -> Vec<bool> {
+            harness
+                .state()
+                .sent
+                .borrow()
+                .iter()
+                .filter_map(|c| match c {
+                    Command::WindowShown(shown) => Some(*shown),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(shown(&harness), [true], "the first frame says shown, once");
+        harness
+            .input_mut()
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .minimized = Some(true);
+        harness.step();
+        assert_eq!(shown(&harness), [true, false]);
+    }
+
+    #[test]
+    fn sign_in_carries_the_page_text() {
+        let ctx = egui::Context::default();
+        let mut app = plain_app();
+        app.handle_page_action(
+            &ctx,
+            PageAction::Spotify(SpotifyRequest::SignIn {
+                done_page: String::new(),
+            }),
+        );
+        let sent = app.sent.borrow();
+        let [Command::Spotify(SpotifyRequest::SignIn { done_page })] = sent.as_slice() else {
+            panic!("{sent:?}");
+        };
+        assert!(done_page.contains("You can close this tab"), "{done_page}");
+    }
+
     fn toggles_sent(harness: &Harness<'_, AriaApp>) -> usize {
         harness
             .state()
@@ -2119,8 +2248,14 @@ mod tests {
         harness.run();
         assert!(harness.state().name_dialog.is_none());
         assert!(!harness.state().modal_open());
+        // The first frame tells the backend the window is shown; nothing else goes.
         assert!(
-            harness.state().sent.borrow().is_empty(),
+            harness
+                .state()
+                .sent
+                .borrow()
+                .iter()
+                .all(|c| matches!(c, Command::WindowShown(true))),
             "Escape sent something"
         );
     }

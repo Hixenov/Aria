@@ -11,6 +11,7 @@ use eframe::egui::{Theme, Ui};
 use egui_kittest::Harness;
 
 use super::{LibraryView, PageAction, PageCtx};
+use crate::spotify::{RemoteCovers, SpotifyUi};
 use crate::ui::theme::{Palette, fonts};
 
 /// Everything a page reads, and what it asked for.
@@ -25,6 +26,8 @@ pub struct World {
     pub devices: Vec<DeviceInfo>,
     pub input_devices: Vec<DeviceInfo>,
     pub settings: Settings,
+    pub spotify: SpotifyUi,
+    pub covers: RemoteCovers,
     tr: Localizer,
 }
 
@@ -39,6 +42,8 @@ impl World {
             devices: Vec::new(),
             input_devices: Vec::new(),
             settings: Settings::default(),
+            spotify: SpotifyUi::default(),
+            covers: RemoteCovers::default(),
             tr: Localizer::new(Language::En).expect("the English locale loads"),
         }
     }
@@ -60,6 +65,8 @@ impl World {
             devices: &self.devices,
             input_devices: &self.input_devices,
             artwork: None,
+            spotify: &self.spotify,
+            covers: &mut self.covers,
         };
         draw(ui, &mut ctx)
     }

@@ -402,3 +402,19 @@ spotify-not-allow-listed = Этого аккаунта Spotify ещё нет в 
 spotify-error = Ответ Spotify: { $message }
 spotify-keyring-failed = Aria не смогла сохранить вход в Spotify; в следующий раз нужно будет подключиться снова.
 spotify-signed-in-page = Вы подключены к Aria. Эту вкладку можно закрыть.
+
+## Settings: Spotify
+settings-spotify = Spotify
+settings-spotify-connect = Подключить Spotify
+settings-spotify-waiting = Ожидание браузера…
+settings-spotify-cancel = Отмена
+# $name (String) - the Spotify account's display name
+settings-spotify-connected = Подключено: { $name }
+settings-spotify-device = Воспроизводить на
+settings-spotify-active-device = Активное устройство
+settings-spotify-refresh = Обновить медиатеку
+settings-spotify-disconnect = Отключить
+settings-spotify-disconnect-confirm = Отключить Spotify? Aria забудет вход и вашу медиатеку Spotify.
+settings-spotify-allow-list = Пока приложение Aria для Spotify в режиме разработки, подключиться могут только аккаунты, которые добавил его владелец (до 5).
+settings-spotify-no-keyring = В этой системе нет хранилища ключей, поэтому подключаться придётся при каждом запуске Aria.
+settings-spotify-premium = Для воспроизведения на ваших устройствах нужен Spotify Premium.

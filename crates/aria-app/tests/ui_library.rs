@@ -114,6 +114,8 @@ fn harness(snapshot: LibrarySnapshot) -> Harness<'static, Page> {
                     devices: &[],
                     input_devices: &[],
                     artwork: None,
+                    spotify: &Default::default(),
+                    covers: &mut Default::default(),
                 };
                 pages::show(Route::LocalMusic, ui, &mut ctx);
             },

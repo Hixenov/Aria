@@ -503,6 +503,19 @@ mod tests {
         "spotify-error",
         "spotify-keyring-failed",
         "spotify-signed-in-page",
+        "settings-spotify",
+        "settings-spotify-connect",
+        "settings-spotify-waiting",
+        "settings-spotify-cancel",
+        "settings-spotify-connected",
+        "settings-spotify-device",
+        "settings-spotify-active-device",
+        "settings-spotify-refresh",
+        "settings-spotify-disconnect",
+        "settings-spotify-disconnect-confirm",
+        "settings-spotify-allow-list",
+        "settings-spotify-no-keyring",
+        "settings-spotify-premium",
     ];
 
     // The six tests below are the Task 4 brief's, verbatim except for the

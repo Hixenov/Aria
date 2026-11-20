@@ -103,6 +103,8 @@ fn page(route: Route, settings: Settings, sounds: Vec<SoundView>) -> Harness<'st
                     devices: &page.devices,
                     input_devices: &[],
                     artwork: None,
+                    spotify: &Default::default(),
+                    covers: &mut Default::default(),
                 };
                 pages::show(page.route, ui, &mut ctx);
             },

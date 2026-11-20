@@ -391,3 +391,19 @@ spotify-not-allow-listed = This Spotify account isn't on Aria's allow-list yet. 
 spotify-error = Spotify said: { $message }
 spotify-keyring-failed = Aria couldn't save the Spotify sign-in; you'll connect again next time.
 spotify-signed-in-page = You're connected to Aria. You can close this tab.
+
+## Settings: Spotify
+settings-spotify = Spotify
+settings-spotify-connect = Connect Spotify
+settings-spotify-waiting = Waiting for the browser…
+settings-spotify-cancel = Cancel
+# $name (String) - the Spotify account's display name
+settings-spotify-connected = Connected as { $name }
+settings-spotify-device = Play on
+settings-spotify-active-device = The active device
+settings-spotify-refresh = Refresh library
+settings-spotify-disconnect = Disconnect
+settings-spotify-disconnect-confirm = Disconnect Spotify? Aria forgets the sign-in and your Spotify library.
+settings-spotify-allow-list = While Aria's Spotify app is in development mode, only accounts its owner has added can connect (up to 5).
+settings-spotify-no-keyring = This system has no keyring, so you'll connect again each time Aria starts.
+settings-spotify-premium = Playing on your devices needs Spotify Premium.

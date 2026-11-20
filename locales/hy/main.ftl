@@ -390,3 +390,19 @@ spotify-not-allow-listed = Այս Spotify հաշիվը դեռ Aria-ի թույլ
 spotify-error = Spotify-ի պատասխանը. { $message }
 spotify-keyring-failed = Aria-ն չկարողացավ պահպանել Spotify մուտքը. հաջորդ անգամ պետք է կրկին միանաք։
 spotify-signed-in-page = Դուք միացված եք Aria-ին։ Կարող եք փակել այս ներդիրը։
+
+## Settings: Spotify
+settings-spotify = Spotify
+settings-spotify-connect = Միացնել Spotify-ը
+settings-spotify-waiting = Սպասում ենք դիտարկիչին…
+settings-spotify-cancel = Չեղարկել
+# $name (String) - the Spotify account's display name
+settings-spotify-connected = Միացված է որպես { $name }
+settings-spotify-device = Նվագարկել
+settings-spotify-active-device = Ակտիվ սարքը
+settings-spotify-refresh = Թարմացնել գրադարանը
+settings-spotify-disconnect = Անջատել
+settings-spotify-disconnect-confirm = Անջատե՞լ Spotify-ը։ Aria-ն կմոռանա մուտքը և ձեր Spotify գրադարանը։
+settings-spotify-allow-list = Քանի դեռ Aria-ի Spotify հավելվածը մշակման ռեժիմում է, կարող են միանալ միայն այն հաշիվները, որոնք ավելացրել է սեփականատերը (մինչև 5)։
+settings-spotify-no-keyring = Այս համակարգում բանալիների պահոց չկա, ուստի պետք է միանաք Aria-ի յուրաքանչյուր գործարկման ժամանակ։
+settings-spotify-premium = Ձեր սարքերում նվագարկելու համար անհրաժեշտ է Spotify Premium։

@@ -4,6 +4,7 @@
 mod library;
 mod playback;
 mod soundboard;
+mod spotify;
 
 use aria_core::{
     i18n::Localizer,
@@ -66,6 +67,8 @@ enum Dialog {
     ClearArtwork,
     /// Forget every recorded play.
     ClearHistory,
+    /// Sign out of Spotify.
+    SpotifyDisconnect,
 }
 
 /// Opens the confirmation dialog for `dialog`.
@@ -108,6 +111,7 @@ pub fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
             playback::show(ui, ctx, &mut settings);
             soundboard::show(ui, ctx, &mut settings);
             library::show(ui, ctx, &mut settings);
+            spotify::show(ui, ctx);
             advanced(ui, ctx, &mut settings.log_level);
             about(ui, ctx.tr, &ctx.palette);
         });
@@ -428,6 +432,10 @@ fn dialog_text(dialog: Dialog) -> (&'static str, &'static str) {
             "settings-history-clear-confirm",
             "settings-history-clear-body",
         ),
+        Dialog::SpotifyDisconnect => (
+            "settings-spotify-disconnect",
+            "settings-spotify-disconnect-confirm",
+        ),
     }
 }
 
@@ -476,6 +484,9 @@ fn settings_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
             Dialog::RemoveFolder(id) => PageAction::RemoveFolder(id),
             Dialog::ClearArtwork => PageAction::ClearArtwork,
             Dialog::ClearHistory => PageAction::ClearHistory,
+            Dialog::SpotifyDisconnect => {
+                PageAction::Spotify(aria_core::spotify_service::SpotifyRequest::SignOut)
+            }
         });
     }
 }

@@ -19,6 +19,7 @@ use aria_core::{
     i18n::{FluentArgs, Localizer},
     settings::Settings,
     soundboard::SoundboardState,
+    spotify_service::SpotifyRequest,
 };
 use aria_library::{Collections, FolderId, PlaylistId, SoundId, TrackId};
 use eframe::egui::Ui;
@@ -28,6 +29,7 @@ pub use self::local_music::{LibraryView, Scope, SortKey, Tab, TrackView};
 use crate::{
     artwork::ArtworkTextures,
     nav::Route,
+    spotify::{RemoteCovers, SpotifyUi},
     ui::{
         theme::Palette,
         widgets::{empty_state, section_header},
@@ -67,6 +69,10 @@ pub struct PageCtx<'a> {
     /// Cover textures, when the thumbnails' folder is known. Without it, covers show as
     /// placeholders.
     pub artwork: Option<&'a mut ArtworkTextures>,
+    /// Spotify, as the backend last reported it.
+    pub spotify: &'a SpotifyUi,
+    /// Spotify's covers.
+    pub covers: &'a mut RemoteCovers,
 }
 
 /// A request from a page to the app.
@@ -74,6 +80,8 @@ pub struct PageCtx<'a> {
 pub enum PageAction {
     /// Apply and save these settings.
     UpdateSettings(Settings),
+    /// A request for Spotify. For a sign-in the app fills in the page the browser shows.
+    Spotify(SpotifyRequest),
     /// Restore the default settings.
     ResetSettings,
     /// Open the settings folder in the file manager.

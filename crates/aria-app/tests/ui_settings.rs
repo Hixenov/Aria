@@ -103,6 +103,11 @@ fn click_button<S>(harness: &mut Harness<'_, S>, label: &str) {
 
 /// Opens the combo box labelled `combo` and picks its option `option`.
 fn choose(harness: &mut Harness<'_, AriaApp>, combo: &str, option: &str) {
+    // The combo may be below the fold of the long page.
+    harness
+        .get_by_role_and_label(Role::ComboBox, combo)
+        .scroll_to_me();
+    harness.run();
     harness.get_by_role_and_label(Role::ComboBox, combo).click();
     harness.run();
     harness
@@ -777,6 +782,8 @@ fn settings_only(
                     devices: &page.devices,
                     input_devices: &[],
                     artwork: None,
+                    spotify: &Default::default(),
+                    covers: &mut Default::default(),
                 };
                 pages::show(Route::Settings, ui, &mut ctx);
             },
