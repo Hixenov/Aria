@@ -1,0 +1,28 @@
+{
+ "device": {
+  "id": "device-phone",
+  "is_active": true,
+  "is_private_session": false,
+  "is_restricted": false,
+  "name": "My Phone",
+  "type": "Smartphone",
+  "volume_percent": 60,
+  "supports_volume": true
+ },
+ "repeat_state": "off",
+ "shuffle_state": false,
+ "progress_ms": 1000,
+ "is_playing": true,
+ "currently_playing_type": "episode",
+ "item": {
+  "type": "episode",
+  "id": "ep1",
+  "uri": "spotify:episode:ep1",
+  "name": "A Podcast Episode",
+  "duration_ms": 3600000,
+  "images": [],
+  "show": {
+   "name": "The Show"
+  }
+ }
+}

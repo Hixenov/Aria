@@ -1,0 +1,39 @@
+{
+ "device": {
+  "id": "device-phone",
+  "is_active": true,
+  "is_private_session": false,
+  "is_restricted": false,
+  "name": "My Phone",
+  "type": "Smartphone",
+  "volume_percent": 60,
+  "supports_volume": true
+ },
+ "repeat_state": "track",
+ "shuffle_state": false,
+ "progress_ms": 5000,
+ "is_playing": false,
+ "currently_playing_type": "track",
+ "item": {
+  "type": "track",
+  "id": null,
+  "uri": "spotify:local:Someone:Home+Tapes:Tape+One:180",
+  "name": "Tape One",
+  "duration_ms": 180000,
+  "is_local": true,
+  "artists": [
+   {
+    "id": null,
+    "uri": "spotify:local:Someone",
+    "name": "Someone"
+   }
+  ],
+  "album": {
+   "id": null,
+   "uri": null,
+   "name": "Home Tapes",
+   "artists": [],
+   "images": []
+  }
+ }
+}

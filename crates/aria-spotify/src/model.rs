@@ -1,0 +1,472 @@
+//! What Aria shows of Spotify, and the shape of Spotify's JSON it is read from.
+//!
+//! The `Raw*` types follow Spotify's Web API reference as of 2026-11 (Development mode: no
+//! `popularity`, `followers` or `label`). Unknown fields are ignored and missing lists are
+//! empty, so an answer with fewer fields still reads.
+
+use serde::Deserialize;
+
+/// The signed-in account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Account {
+    pub id: String,
+    pub name: String,
+}
+
+/// A track. `uri` is `None` for a local file (it cannot be played through the Web API).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpTrack {
+    pub uri: Option<String>,
+    pub name: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    pub album_uri: Option<String>,
+    pub duration_ms: u64,
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpAlbum {
+    pub uri: String,
+    pub name: String,
+    pub artists: Vec<String>,
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpArtist {
+    pub uri: String,
+    pub name: String,
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpPlaylist {
+    pub uri: String,
+    pub name: String,
+    pub owner: String,
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchResults {
+    pub tracks: Vec<SpTrack>,
+    pub albums: Vec<SpAlbum>,
+    pub artists: Vec<SpArtist>,
+    pub playlists: Vec<SpPlaylist>,
+}
+
+impl SearchResults {
+    pub fn is_empty(&self) -> bool {
+        self.tracks.is_empty()
+            && self.albums.is_empty()
+            && self.artists.is_empty()
+            && self.playlists.is_empty()
+    }
+}
+
+/// One of the account's Spotify devices (a phone, a speaker, the Spotify app).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpDevice {
+    pub id: Option<String>,
+    pub name: String,
+    pub kind: String,
+    pub active: bool,
+    pub restricted: bool,
+    pub volume: Option<u8>,
+    pub supports_volume: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RepeatState {
+    #[default]
+    Off,
+    Context,
+    Track,
+}
+
+impl RepeatState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepeatState::Off => "off",
+            RepeatState::Context => "context",
+            RepeatState::Track => "track",
+        }
+    }
+}
+
+/// What Spotify is playing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NowItem {
+    Track(SpTrack),
+    /// An episode, or anything else that is not a track: shown by its name only.
+    Other {
+        name: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaybackState {
+    pub device: Option<SpDevice>,
+    pub item: Option<NowItem>,
+    pub progress_ms: u64,
+    pub playing: bool,
+    pub shuffle: bool,
+    pub repeat: RepeatState,
+}
+
+/// What to start playing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlayRequest {
+    /// An album, artist or playlist; `offset_uri` starts at that track of it.
+    Context {
+        uri: String,
+        offset_uri: Option<String>,
+    },
+    /// A list of tracks, starting at `start`.
+    Tracks { uris: Vec<String>, start: usize },
+    /// Go on with what was playing.
+    Resume,
+}
+
+/// An image Spotify lists for an album, artist or playlist.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Image {
+    pub url: String,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+/// The smallest image at least 64 pixels wide, else the widest; `https://` only.
+pub fn pick_image(images: &[Image]) -> Option<String> {
+    let secure = || images.iter().filter(|i| i.url.starts_with("https://"));
+    let width = |i: &&Image| i.width.unwrap_or(0);
+    secure()
+        .filter(|i| width(i) >= 64)
+        .min_by_key(width)
+        .or_else(|| secure().max_by_key(width))
+        .map(|i| i.url.clone())
+}
+
+// --- Spotify's JSON ---
+
+#[derive(Deserialize)]
+pub(crate) struct RawMe {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+impl From<RawMe> for Account {
+    fn from(raw: RawMe) -> Account {
+        let name = raw
+            .display_name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| raw.id.clone());
+        Account { id: raw.id, name }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawArtistRef {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawAlbum {
+    #[serde(default)]
+    pub uri: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub artists: Vec<RawArtistRef>,
+    #[serde(default)]
+    pub images: Option<Vec<Image>>,
+}
+
+fn names(artists: Vec<RawArtistRef>) -> Vec<String> {
+    artists.into_iter().map(|a| a.name).collect()
+}
+
+fn image_of(images: Option<Vec<Image>>) -> Option<String> {
+    images.as_deref().and_then(pick_image)
+}
+
+impl RawAlbum {
+    pub fn into_album(self) -> Option<SpAlbum> {
+        Some(SpAlbum {
+            uri: self.uri?,
+            name: self.name,
+            artists: names(self.artists),
+            image: image_of(self.images),
+        })
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawTrack {
+    #[serde(default)]
+    pub uri: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub artists: Vec<RawArtistRef>,
+    #[serde(default)]
+    pub album: Option<RawAlbum>,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub is_local: bool,
+}
+
+impl From<RawTrack> for SpTrack {
+    fn from(raw: RawTrack) -> SpTrack {
+        let (album, album_uri, image) = match raw.album {
+            Some(a) => (a.name, a.uri, image_of(a.images)),
+            None => (String::new(), None, None),
+        };
+        let local = raw.is_local;
+        SpTrack {
+            uri: raw.uri.filter(|_| !local),
+            name: raw.name,
+            artists: names(raw.artists),
+            album,
+            album_uri: album_uri.filter(|_| !local),
+            duration_ms: raw.duration_ms,
+            image,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawArtist {
+    pub uri: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub images: Option<Vec<Image>>,
+}
+
+impl From<RawArtist> for SpArtist {
+    fn from(raw: RawArtist) -> SpArtist {
+        SpArtist {
+            uri: raw.uri,
+            name: raw.name,
+            image: image_of(raw.images),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawOwner {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+/// A simplified playlist. Its item count (`tracks`, renamed `items` in 2026) is not used.
+#[derive(Deserialize)]
+pub(crate) struct RawPlaylist {
+    pub uri: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub owner: Option<RawOwner>,
+    #[serde(default)]
+    pub images: Option<Vec<Image>>,
+}
+
+impl From<RawPlaylist> for SpPlaylist {
+    fn from(raw: RawPlaylist) -> SpPlaylist {
+        let owner = raw
+            .owner
+            .map(|o| o.display_name.filter(|n| !n.is_empty()).unwrap_or(o.id))
+            .unwrap_or_default();
+        SpPlaylist {
+            uri: raw.uri,
+            name: raw.name,
+            owner,
+            image: image_of(raw.images),
+        }
+    }
+}
+
+/// A page of a list. Entries can be `null`; they are skipped.
+#[derive(Deserialize)]
+pub(crate) struct Page<T> {
+    #[serde(default = "Vec::new")]
+    pub items: Vec<Option<T>>,
+    #[serde(default)]
+    pub next: Option<String>,
+}
+
+impl<T> Default for Page<T> {
+    fn default() -> Page<T> {
+        Page {
+            items: Vec::new(),
+            next: None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SavedTrack {
+    pub track: Option<RawTrack>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SavedAlbum {
+    pub album: Option<RawAlbum>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Following {
+    pub artists: Page<RawArtist>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawSearch {
+    #[serde(default)]
+    pub tracks: Page<RawTrack>,
+    #[serde(default)]
+    pub albums: Page<RawAlbum>,
+    #[serde(default)]
+    pub artists: Page<RawArtist>,
+    #[serde(default)]
+    pub playlists: Page<RawPlaylist>,
+}
+
+impl From<RawSearch> for SearchResults {
+    fn from(raw: RawSearch) -> SearchResults {
+        SearchResults {
+            tracks: raw
+                .tracks
+                .items
+                .into_iter()
+                .flatten()
+                .map(SpTrack::from)
+                .collect(),
+            albums: raw
+                .albums
+                .items
+                .into_iter()
+                .flatten()
+                .filter_map(RawAlbum::into_album)
+                .collect(),
+            artists: raw
+                .artists
+                .items
+                .into_iter()
+                .flatten()
+                .map(SpArtist::from)
+                .collect(),
+            playlists: raw
+                .playlists
+                .items
+                .into_iter()
+                .flatten()
+                .map(SpPlaylist::from)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawDevice {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub is_active: bool,
+    #[serde(default)]
+    pub is_restricted: bool,
+    #[serde(default)]
+    pub volume_percent: Option<u8>,
+    #[serde(default)]
+    pub supports_volume: bool,
+}
+
+impl From<RawDevice> for SpDevice {
+    fn from(raw: RawDevice) -> SpDevice {
+        SpDevice {
+            id: raw.id,
+            name: raw.name,
+            kind: raw.kind,
+            active: raw.is_active,
+            restricted: raw.is_restricted,
+            volume: raw.volume_percent,
+            supports_volume: raw.supports_volume,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Devices {
+    #[serde(default)]
+    pub devices: Vec<RawDevice>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawPlayer {
+    #[serde(default)]
+    pub device: Option<RawDevice>,
+    #[serde(default)]
+    pub progress_ms: Option<u64>,
+    #[serde(default)]
+    pub is_playing: bool,
+    #[serde(default)]
+    pub shuffle_state: bool,
+    #[serde(default)]
+    pub repeat_state: RepeatState,
+    #[serde(default)]
+    pub item: Option<serde_json::Value>,
+}
+
+impl From<RawPlayer> for PlaybackState {
+    fn from(raw: RawPlayer) -> PlaybackState {
+        let item = raw.item.map(|value| {
+            let is_track = value.get("type").and_then(|t| t.as_str()) == Some("track");
+            let name = value
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            if is_track {
+                match serde_json::from_value::<RawTrack>(value) {
+                    Ok(track) => NowItem::Track(track.into()),
+                    Err(_) => NowItem::Other { name },
+                }
+            } else {
+                NowItem::Other { name }
+            }
+        });
+        PlaybackState {
+            device: raw.device.map(SpDevice::from),
+            item,
+            progress_ms: raw.progress_ms.unwrap_or(0),
+            playing: raw.is_playing,
+            shuffle: raw.shuffle_state,
+            repeat: raw.repeat_state,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ErrorBody {
+    pub error: ErrorDetail,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ErrorDetail {
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}

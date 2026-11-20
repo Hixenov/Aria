@@ -1,0 +1,33 @@
+{
+ "devices": [
+  {
+   "id": "device-phone",
+   "is_active": true,
+   "is_private_session": false,
+   "is_restricted": false,
+   "name": "My Phone",
+   "type": "Smartphone",
+   "volume_percent": 60,
+   "supports_volume": true
+  },
+  {
+   "id": "device-desk",
+   "is_active": false,
+   "is_private_session": false,
+   "is_restricted": false,
+   "name": "Desk Speaker",
+   "type": "Speaker",
+   "volume_percent": null,
+   "supports_volume": false
+  },
+  {
+   "id": null,
+   "is_active": false,
+   "is_restricted": true,
+   "name": "Car",
+   "type": "Automobile",
+   "volume_percent": null,
+   "supports_volume": false
+  }
+ ]
+}

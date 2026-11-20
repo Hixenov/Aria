@@ -1,0 +1,7 @@
+{
+ "error": {
+  "status": 429,
+  "message": "API rate limit exceeded",
+  "reason": "QUOTA_EXCEEDED"
+ }
+}

@@ -1,0 +1,55 @@
+{
+ "limit": 50,
+ "offset": 0,
+ "total": 2,
+ "next": null,
+ "items": [
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "album": {
+    "id": "albumA",
+    "uri": "spotify:album:albumA",
+    "name": "First Album",
+    "artists": [
+     {
+      "name": "Band A"
+     }
+    ],
+    "images": [
+     {
+      "url": "https://i.scdn.co/image/ab67616d0000b2730001",
+      "width": 640,
+      "height": 640
+     },
+     {
+      "url": "https://i.scdn.co/image/ab67616d00001e020001",
+      "width": 300,
+      "height": 300
+     },
+     {
+      "url": "https://i.scdn.co/image/ab67616d000048510001",
+      "width": 64,
+      "height": 64
+     }
+    ]
+   }
+  },
+  {
+   "added_at": "2026-01-02T00:00:00Z",
+   "album": {
+    "id": "albumB",
+    "uri": "spotify:album:albumB",
+    "name": "Second Album",
+    "artists": [
+     {
+      "name": "Band B"
+     },
+     {
+      "name": "Guest"
+     }
+    ],
+    "images": []
+   }
+  }
+ ]
+}

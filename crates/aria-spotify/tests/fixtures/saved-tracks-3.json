@@ -1,0 +1,325 @@
+{
+ "href": "{base}/v1/me/tracks?offset=100&limit=50",
+ "limit": 50,
+ "offset": 100,
+ "total": 107,
+ "next": null,
+ "previous": null,
+ "items": [
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "track": {
+    "type": "track",
+    "id": "track0100",
+    "uri": "spotify:track:track0100",
+    "name": "Song 100",
+    "duration_ms": 200100,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist2",
+      "uri": "spotify:artist:artist2",
+      "name": "Artist 2"
+     }
+    ],
+    "album": {
+     "id": "album1",
+     "uri": "spotify:album:album1",
+     "name": "Album 1",
+     "artists": [
+      {
+       "name": "Artist 2"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730001",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020001",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510001",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "track": {
+    "type": "track",
+    "id": "track0101",
+    "uri": "spotify:track:track0101",
+    "name": "Song 101",
+    "duration_ms": 200101,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist3",
+      "uri": "spotify:artist:artist3",
+      "name": "Artist 3"
+     }
+    ],
+    "album": {
+     "id": "album2",
+     "uri": "spotify:album:album2",
+     "name": "Album 2",
+     "artists": [
+      {
+       "name": "Artist 3"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730002",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020002",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510002",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "track": {
+    "type": "track",
+    "id": "track0102",
+    "uri": "spotify:track:track0102",
+    "name": "Song 102",
+    "duration_ms": 200102,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist4",
+      "uri": "spotify:artist:artist4",
+      "name": "Artist 4"
+     }
+    ],
+    "album": {
+     "id": "album3",
+     "uri": "spotify:album:album3",
+     "name": "Album 3",
+     "artists": [
+      {
+       "name": "Artist 4"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730003",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020003",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510003",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "track": {
+    "type": "track",
+    "id": "track0103",
+    "uri": "spotify:track:track0103",
+    "name": "Song 103",
+    "duration_ms": 200103,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist5",
+      "uri": "spotify:artist:artist5",
+      "name": "Artist 5"
+     }
+    ],
+    "album": {
+     "id": "album4",
+     "uri": "spotify:album:album4",
+     "name": "Album 4",
+     "artists": [
+      {
+       "name": "Artist 5"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730004",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020004",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510004",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "track": {
+    "type": "track",
+    "id": "track0104",
+    "uri": "spotify:track:track0104",
+    "name": "Song 104",
+    "duration_ms": 200104,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist6",
+      "uri": "spotify:artist:artist6",
+      "name": "Artist 6"
+     }
+    ],
+    "album": {
+     "id": "album5",
+     "uri": "spotify:album:album5",
+     "name": "Album 5",
+     "artists": [
+      {
+       "name": "Artist 6"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730005",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020005",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510005",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "track": {
+    "type": "track",
+    "id": "track0105",
+    "uri": "spotify:track:track0105",
+    "name": "Song 105",
+    "duration_ms": 200105,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist0",
+      "uri": "spotify:artist:artist0",
+      "name": "Artist 0"
+     }
+    ],
+    "album": {
+     "id": "album6",
+     "uri": "spotify:album:album6",
+     "name": "Album 6",
+     "artists": [
+      {
+       "name": "Artist 0"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730006",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020006",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510006",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "track": {
+    "type": "track",
+    "id": "track0106",
+    "uri": "spotify:track:track0106",
+    "name": "Song 106",
+    "duration_ms": 200106,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist1",
+      "uri": "spotify:artist:artist1",
+      "name": "Artist 1"
+     }
+    ],
+    "album": {
+     "id": "album7",
+     "uri": "spotify:album:album7",
+     "name": "Album 7",
+     "artists": [
+      {
+       "name": "Artist 1"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730007",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020007",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510007",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

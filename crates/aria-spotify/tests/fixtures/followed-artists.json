@@ -1,0 +1,43 @@
+{
+ "artists": {
+  "href": "{base}/v1/me/following?type=artist&limit=50",
+  "limit": 50,
+  "next": "{base}/v1/me/following?type=artist&limit=50&after=artistB",
+  "cursors": {
+   "after": "artistB"
+  },
+  "total": 3,
+  "items": [
+   {
+    "id": "artistA",
+    "uri": "spotify:artist:artistA",
+    "name": "Band A",
+    "images": [
+     {
+      "url": "https://i.scdn.co/image/ab67616d0000b2730002",
+      "width": 640,
+      "height": 640
+     },
+     {
+      "url": "https://i.scdn.co/image/ab67616d00001e020002",
+      "width": 300,
+      "height": 300
+     },
+     {
+      "url": "https://i.scdn.co/image/ab67616d000048510002",
+      "width": 64,
+      "height": 64
+     }
+    ],
+    "type": "artist"
+   },
+   {
+    "id": "artistB",
+    "uri": "spotify:artist:artistB",
+    "name": "Band B",
+    "images": [],
+    "type": "artist"
+   }
+  ]
+ }
+}

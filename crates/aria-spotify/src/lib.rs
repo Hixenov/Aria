@@ -4,17 +4,24 @@
 
 pub mod auth;
 pub mod callback;
+pub mod client;
 pub mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake;
 pub mod http;
+pub mod model;
 pub mod secret;
 pub mod token;
 
 pub use auth::{Pkce, authorize_url};
 pub use callback::Callback;
+pub use client::Client;
 pub use error::SpotifyError;
 pub use http::Http;
+pub use model::{
+    Account, NowItem, PlayRequest, PlaybackState, RepeatState, SearchResults, SpAlbum, SpArtist,
+    SpDevice, SpPlaylist, SpTrack,
+};
 pub use secret::Secret;
 pub use token::{Tokens, exchange_code, refresh};
 

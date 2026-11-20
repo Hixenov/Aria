@@ -1,0 +1,20 @@
+{
+ "artists": {
+  "href": "{base}/v1/me/following?type=artist&limit=50&after=artistB",
+  "limit": 50,
+  "next": null,
+  "cursors": {
+   "after": null
+  },
+  "total": 3,
+  "items": [
+   {
+    "id": "artistC",
+    "uri": "spotify:artist:artistC",
+    "name": "Band C",
+    "images": [],
+    "type": "artist"
+   }
+  ]
+ }
+}

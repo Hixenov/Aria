@@ -1,0 +1,52 @@
+{
+ "limit": 50,
+ "offset": 0,
+ "total": 2,
+ "next": null,
+ "items": [
+  {
+   "id": "plA",
+   "uri": "spotify:playlist:plA",
+   "name": "Road Trip",
+   "owner": {
+    "id": "aria-tester",
+    "display_name": "Aria Tester"
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/ab67616d0000b2730003",
+     "width": 640,
+     "height": 640
+    },
+    {
+     "url": "https://i.scdn.co/image/ab67616d00001e020003",
+     "width": 300,
+     "height": 300
+    },
+    {
+     "url": "https://i.scdn.co/image/ab67616d000048510003",
+     "width": 64,
+     "height": 64
+    }
+   ],
+   "items": {
+    "href": "{base}/v1/playlists/plA/items",
+    "total": 12
+   }
+  },
+  {
+   "id": "plB",
+   "uri": "spotify:playlist:plB",
+   "name": "Shared",
+   "owner": {
+    "id": "friend",
+    "display_name": null
+   },
+   "images": null,
+   "tracks": {
+    "href": "{base}/v1/playlists/plB/tracks",
+    "total": 4
+   }
+  }
+ ]
+}

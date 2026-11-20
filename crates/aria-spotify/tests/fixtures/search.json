@@ -1,0 +1,154 @@
+{
+ "tracks": {
+  "limit": 10,
+  "next": null,
+  "items": [
+   {
+    "type": "track",
+    "id": "track0001",
+    "uri": "spotify:track:track0001",
+    "name": "Song 1",
+    "duration_ms": 200001,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist1",
+      "uri": "spotify:artist:artist1",
+      "name": "Artist 1"
+     }
+    ],
+    "album": {
+     "id": "album1",
+     "uri": "spotify:album:album1",
+     "name": "Album 1",
+     "artists": [
+      {
+       "name": "Artist 1"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730001",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020001",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510001",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   },
+   null,
+   {
+    "type": "track",
+    "id": "track0002",
+    "uri": "spotify:track:track0002",
+    "name": "Song 2",
+    "duration_ms": 200002,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist2",
+      "uri": "spotify:artist:artist2",
+      "name": "Artist 2"
+     }
+    ],
+    "album": {
+     "id": "album2",
+     "uri": "spotify:album:album2",
+     "name": "Album 2",
+     "artists": [
+      {
+       "name": "Artist 2"
+      }
+     ],
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/ab67616d0000b2730002",
+       "width": 640,
+       "height": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d00001e020002",
+       "width": 300,
+       "height": 300
+      },
+      {
+       "url": "https://i.scdn.co/image/ab67616d000048510002",
+       "width": 64,
+       "height": 64
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "albums": {
+  "limit": 10,
+  "items": [
+   {
+    "id": "albumA",
+    "uri": "spotify:album:albumA",
+    "name": "First Album",
+    "artists": [
+     {
+      "name": "Band A"
+     }
+    ],
+    "images": [
+     {
+      "url": "https://i.scdn.co/image/ab67616d0000b2730001",
+      "width": 640,
+      "height": 640
+     },
+     {
+      "url": "https://i.scdn.co/image/ab67616d00001e020001",
+      "width": 300,
+      "height": 300
+     },
+     {
+      "url": "https://i.scdn.co/image/ab67616d000048510001",
+      "width": 64,
+      "height": 64
+     }
+    ]
+   },
+   null
+  ]
+ },
+ "artists": {
+  "limit": 10,
+  "items": [
+   null,
+   {
+    "id": "artistA",
+    "uri": "spotify:artist:artistA",
+    "name": "Band A",
+    "images": []
+   }
+  ]
+ },
+ "playlists": {
+  "limit": 10,
+  "items": [
+   null,
+   {
+    "id": "plA",
+    "uri": "spotify:playlist:plA",
+    "name": "Road Trip",
+    "owner": {
+     "id": "x",
+     "display_name": "Someone"
+    },
+    "images": []
+   }
+  ]
+ }
+}
