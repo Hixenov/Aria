@@ -1,7 +1,8 @@
 # Privacy
 
-Aria sends no data over the network. It makes no network requests at runtime, has no
-telemetry and no accounts. Nothing from your music library, tags or folders is sent anywhere.
+Aria sends nothing over the network unless you connect Spotify (since 0.3.0; see "Spotify"
+below). Until then it makes no network requests at runtime, and it has no telemetry. Nothing
+from your music library, tags or folders is sent anywhere, Spotify included.
 
 ## What Aria stores
 
@@ -85,7 +86,7 @@ directory only; the library database, logs and cache still go to the folders abo
 ## One copy at a time (since 0.2.4)
 
 - **The lock.** The running copy holds a lock on `aria.lock` in the data folder. The operating system lets go of it when Aria ends, however it ends.
-- **The pipe.** While Aria runs, it listens on a local named pipe (on Windows, `\\.\pipe\aria-<number>.sock`, where the number is worked out from the data folder's path; on Linux and macOS, a local socket). A second copy of Aria sends it the word `show`, and, since 0.2.7, the full paths of the files and folders it was started with (as with a double-click or "Open with"), one per line. The open copy brings its window forward and opens them: files play, and folders are added to the library. Nothing else is accepted, nothing is sent back, and the paths are not stored, except that a folder becomes part of the library as Add folder makes it. The pipe is local to your computer: it is not a network connection, and Aria still makes no network requests. Other programs running as you on this computer could send the same, and could do no more than bring Aria's window forward, play files, and add folders to the library.
+- **The pipe.** While Aria runs, it listens on a local named pipe (on Windows, `\\.\pipe\aria-<number>.sock`, where the number is worked out from the data folder's path; on Linux and macOS, a local socket). A second copy of Aria sends it the word `show`, and, since 0.2.7, the full paths of the files and folders it was started with (as with a double-click or "Open with"), one per line. The open copy brings its window forward and opens them: files play, and folders are added to the library. Nothing else is accepted, nothing is sent back, and the paths are not stored, except that a folder becomes part of the library as Add folder makes it. The pipe is local to your computer: it is not a network connection. Other programs running as you on this computer could send the same, and could do no more than bring Aria's window forward, play files, and add folders to the library.
 
 ## Files opened from outside the library (since 0.2.7)
 
@@ -101,7 +102,44 @@ While "Watch folders for changes" is on (Settings, Library; on by default), Aria
 - **Portable mode.** With a folder named `AriaData` beside `aria.exe`, everything listed above is stored in it instead of in your user folders: `AriaData\config` (the settings), `AriaData\data` (the library, the logs, the lock) and `AriaData\cache` (the artwork). The window state may still be kept where eframe keeps it.
 - **Backups.** A backup is written only when you ask for one, into the folder you choose: `library.db` (everything the library holds, listed above) and `settings.toml`. It stays where you put it, and Aria never reads it unless you restore it. A restore copies it into `restore` in the data folder until the next start, and keeps the files it replaces as `library.db.before-restore` and `settings.toml.before-restore`, which Aria never deletes.
 - **Playlist files.** "Export…" writes the playlist's file paths, and each track's length, artist and title, to the `.m3u8` file you choose. "Import…" reads the file you choose; nothing else is read from it.
-- **Check for updates.** The button opens the releases page in your web browser. Aria itself still makes no network request.
+- **Check for updates.** The button opens the releases page in your web browser. Aria itself makes no request for it.
+
+## Spotify (since 0.3.0)
+
+Aria talks to Spotify only after you connect it in Settings, Spotify. Before that, and after you
+disconnect, it makes no request to Spotify or anyone else.
+
+- **Signing in.** "Connect Spotify" opens Spotify's own sign-in page in your browser. Aria never
+  sees or stores your Spotify password. The sign-in uses OAuth with PKCE: Aria has no client
+  secret, and Spotify hands the result back to Aria through `http://127.0.0.1:43819/callback`, a
+  one-time listener on your own computer that stops as soon as it has the answer, or after five
+  minutes. While the app is in Spotify's development mode, only the accounts its owner added (up
+  to five) can connect.
+- **What Aria may do.** It asks Spotify for these permissions: your display name
+  (`user-read-private`), your saved tracks and albums (`user-library-read`), the artists you
+  follow (`user-follow-read`), your playlists (`playlist-read-private`,
+  `playlist-read-collaborative`), and to see and control playback on your Spotify devices
+  (`user-read-playback-state`, `user-modify-playback-state`, `user-read-currently-playing`). It
+  changes nothing in your Spotify library or playlists.
+- **What is sent, and to whom.** Requests go to Spotify only: `accounts.spotify.com` (sign-in and
+  token refresh) and `api.spotify.com` (your library, search, playback), with your access token.
+  Covers are fetched from the image addresses Spotify's answers give (Spotify's image servers,
+  such as `i.scdn.co`), over HTTPS and without your token. What you type in Search is sent to
+  Spotify as you type. While Aria is connected it asks Spotify what is playing every 2 seconds
+  while the player bar shows Spotify and every 15 seconds otherwise, and not at all while the
+  window is minimized.
+- **What is kept.** Only the refresh token, in your system's protected store: Windows
+  Credential Manager, the macOS Keychain, or the Secret Service on Linux, under `Aria` /
+  `spotify`. The access token, your Spotify library, search results and covers stay in memory
+  and are gone when Aria closes; nothing of them is written to `library.db` or anywhere else.
+  The chosen Spotify device's id is kept in `settings.toml` (`spotify_device`). A system without
+  a protected store keeps nothing, and you connect again each time. Tokens are never written to
+  the logs; at debug level the logs name Spotify's errors, not your data.
+- **Removing it.** Settings, Spotify, "Disconnect" deletes the stored token and forgets your
+  Spotify library. You can also delete the `Aria` / `spotify` entry from the system store, and
+  remove Aria's access on your Spotify account page (Apps).
+- **Audio.** Aria plays no Spotify audio and records nothing: Spotify plays on your own devices,
+  and Aria only asks it to.
 
 ## The microphone (since 0.2.3)
 

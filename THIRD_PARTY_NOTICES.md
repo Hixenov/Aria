@@ -48,3 +48,18 @@ Rust crate dependencies are under their own licenses, checked in CI with `cargo-
 | Component | License | Used for |
 |-----------|---------|----------|
 | `notify` 8.2 | CC0-1.0 | Watching the library's folders for changes |
+
+## Spotify (Phase 3)
+
+| Component | License | Used for |
+|-----------|---------|----------|
+| `ureq` 3 | MIT OR Apache-2.0 | HTTPS requests to Spotify |
+| `rustls` 0.23, with `ring` 0.17 | Apache-2.0 OR ISC OR MIT (rustls); Apache-2.0 AND ISC (ring) | TLS |
+| `rustls-platform-verifier` 0.6 | MIT OR Apache-2.0 | Checking certificates against the system's store |
+| `webpki-roots` 1 | CDLA-Permissive-2.0 | Mozilla's root certificates, which `ureq` carries |
+| `keyring` 3 | MIT OR Apache-2.0 | Keeping the Spotify refresh token in the system's protected store |
+| `serde_json` 1 | MIT OR Apache-2.0 | Reading Spotify's answers |
+| `getrandom` 0.3, `base64` 0.22, `form_urlencoded` 1 | MIT OR Apache-2.0 | The sign-in's PKCE values and addresses |
+
+This table lists the crates added in Phase 3; their own dependencies are in `Cargo.lock` and
+checked in CI.

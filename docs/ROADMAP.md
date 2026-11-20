@@ -22,7 +22,11 @@ Spotify's developer terms. Local files get the full audio engine (Phase 2).
    not yet checked by hand); then one Aria at a time and fixes to the chat features (0.2.4,
    released, mostly not checked by hand); then Aria's own icon (0.2.5, released); then reliability fixes (0.2.6, released, not yet checked by hand); then opening files with Aria and watching the library's folders (0.2.7, released, not yet checked by hand); then volume levelling and a sleep timer (0.2.8, released, with macOS and Linux files); then portable mode, backups and M3U playlists (0.2.9, released).
 3. **Spotify.** Library, search and playlist access through the Web API (OAuth PKCE) and
-   Spotify Connect remote control. No in-app audio streaming.
+   Spotify Connect remote control. No in-app audio streaming. 0.3.0 brings the core: sign-in,
+   your saved tracks, albums, followed artists and playlists, search, and playing on the device
+   you choose from the player bar. Liking tracks and editing Spotify playlists from Aria come in
+   0.3.x. Spotify's limits for apps in development mode apply: five allow-listed accounts, search
+   results capped at 10 per kind, no artist top tracks (an artist plays as a whole).
 4. **Desktop experience.** System tray (including the minimize-to-tray preference stored in
    Phase 1), media keys, shortcuts, notifications, startup integration and the mini-player.
 5. **Advanced functionality.** LRCLIB lyrics, an equalizer and audio visualizer for local

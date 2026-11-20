@@ -15,7 +15,7 @@ app. See the [roadmap](docs/ROADMAP.md).
 
 Spotify audio is not streamed or decoded inside Aria; Spotify support means library access and remote control of your existing Spotify devices, as explained in the [roadmap](docs/ROADMAP.md#the-spotify-playback-limitation).
 
-## Status: version 0.2.9
+## Status: version 0.3.0
 
 What Aria does now:
 
@@ -28,6 +28,7 @@ What Aria does now:
 - **Music and microphone to a voice chat**, through a virtual audio cable (below).
 - **One copy at a time**: starting Aria again brings the open window forward.
 - **Your data.** A portable mode (a folder `AriaData` beside `aria.exe` holds everything), backup and restore of the library and the settings (Settings, Library), and M3U playlists to import and export (the Playlists page).
+- **Spotify.** Connect your Spotify account in Settings: Search, Your Library (Liked Songs and your playlists), Albums and Artists show your Spotify music, and a click plays it on one of your Spotify devices (a phone, a speaker, the Spotify app). The player bar then controls Spotify: play and pause, next, previous, seek, volume, shuffle and repeat, and the devices button chooses where it plays. Starting a local track pauses Spotify, and the other way round. Playing needs Spotify Premium. While Aria's Spotify app is in development mode, only the five accounts its owner has added can connect. Aria plays no Spotify audio itself, and liking tracks or editing Spotify playlists from Aria come later.
 - English, Russian and Armenian.
 
 Formats: MP3, FLAC, WAV, AIFF, AAC and ALAC in `.m4a`, Ogg Vorbis and Opus. What changed in each version is in the [changelog](CHANGELOG.md), and the checks for a person are in [docs/testing](docs/testing).

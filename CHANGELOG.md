@@ -5,6 +5,28 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20 (Spotify)
+
+Checked with 1241 automated tests on Windows and in CI on Linux and macOS, against a fake Spotify on the computer itself. Nothing in it has been tried against the real Spotify: no real sign-in, no real device. See `docs/testing/0.3.0-manual-check.md`.
+
+### Added
+
+- **Connect Spotify.** Settings, Spotify, "Connect Spotify" opens Spotify's sign-in in your browser (OAuth with PKCE: Aria never sees your password and has no client secret). The sign-in comes back to Aria on `127.0.0.1:43819`. The refresh token is kept in Windows Credential Manager, the macOS Keychain or the Secret Service, so Aria stays connected across starts; "Disconnect" deletes it. While Aria's Spotify app is in development mode, only the five accounts its owner has added can connect, and an account that is not one of them gets a notice saying so.
+- **Your Spotify music in Aria.** Search (songs, albums, artists and playlists, 10 of each, as you type), Your Library (Liked Songs and your playlists), Albums (your saved albums) and Artists (the artists you follow). A click plays on one of your Spotify devices: a song from Search within its album, a liked song with the ones after it (up to 100), an album, an artist or a playlist as a whole. Local files in your Spotify library are shown and cannot be played from here. Covers come from Spotify's image servers and are kept in memory only.
+- **The player bar controls Spotify.** It follows what you last started: start a Spotify item and it shows Spotify's track, cover and the device it plays on, and its play and pause, next, previous, seek, shuffle, repeat and volume (sent when you let go) act on that device; start a local track and Spotify pauses. Something started on your phone takes the bar too. The heart, mute and the sleep timer are not for Spotify and are greyed out. The devices button, a placeholder since Phase 1, lists your Spotify devices to choose the one to play on (also in Settings, Spotify, "Play on").
+- **Notices** for what can go wrong with Spotify, each once until it works again: no network, Spotify asking to wait, no active device, Premium needed for playing, an ended session, the sign-in port in use, a sign-in cancelled or taking too long.
+
+### Changed
+
+- Aria now makes network requests, to Spotify only and only once you connect it; PRIVACY has what is sent and kept. Before connecting, and after disconnecting, it makes none.
+- Spotify is asked what is playing every 2 seconds while the bar shows Spotify, every 15 seconds otherwise, and not at all while the window is minimized.
+- Version 0.3.0. `settings.toml` gains `spotify_device`; no database change.
+- Linux builds need `libdbus-1-dev` and `pkg-config` (for the Secret Service).
+
+### Not in 0.3.0
+
+Liking and unliking tracks, adding to or editing Spotify playlists, the Spotify queue, podcasts, Spotify in the global hotkeys, offline caching of anything. Spotify's limits for development-mode apps apply: no artist top tracks (an artist plays as a whole), and search returns 10 of each kind.
+
 ## [0.2.9] - 2026-11-20 (your data: portable mode, backups, M3U playlists)
 
 Checked with 1142 automated tests on Windows and in CI on Linux and macOS. Nothing in it has been tried by hand; see `docs/testing/0.2.9-manual-check.md`.
