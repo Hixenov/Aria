@@ -530,6 +530,8 @@ mod tests {
         "spotify-liked",
         "spotify-empty",
         "spotify-by",
+        "spotify-load-failed",
+        "spotify-sign-in-failed-page",
     ];
 
     // The six tests below are the Task 4 brief's, verbatim except for the

@@ -328,6 +328,18 @@ fn an_empty_or_loading_library_says_so() {
 }
 
 #[test]
+fn a_library_that_failed_to_load_says_so() {
+    let harness = harness(
+        Route::Library,
+        with_library(SpotifyLibrary {
+            failed: true,
+            ..SpotifyLibrary::default()
+        }),
+    );
+    harness.get_by_label(&en("spotify-load-failed"));
+}
+
+#[test]
 fn the_four_routes_are_no_longer_pending() {
     for route in [Route::Search, Route::Library, Route::Albums, Route::Artists] {
         assert_eq!(route.phase(), None, "{route:?}");

@@ -439,3 +439,7 @@ spotify-liked = Любимые треки ({ $count })
 spotify-empty = Здесь пока ничего нет.
 # $owner (String) - the playlist owner's name
 spotify-by = автор: { $owner }
+
+## Spotify: review fixes
+spotify-load-failed = Aria не смогла загрузить это из Spotify. Попробуйте «Обновить медиатеку» в настройках.
+spotify-sign-in-failed-page = Aria не подключена к Spotify. Вернитесь в Aria и попробуйте ещё раз.

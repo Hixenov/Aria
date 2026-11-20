@@ -369,6 +369,18 @@ impl AriaApp {
         self.show_drop_hint(&ctx, &palette);
     }
 
+    /// What [`eframe::App::logic`] does: it runs before every drawn frame, and alone while the
+    /// window is minimized.
+    pub fn logic_frame(&mut self, ctx: &egui::Context) {
+        for command in self.window_requests() {
+            ctx.send_viewport_cmd(command);
+        }
+        self.open_requested();
+        self.drain_events(ctx);
+        self.tell_window_shown(ctx);
+        self.run_hotkeys(ctx);
+    }
+
     /// Tells the backend when the window is minimized or shown again, so Spotify is not polled
     /// while nobody can see it. The first frame tells it the window is shown.
     fn tell_window_shown(&mut self, ctx: &egui::Context) {
@@ -464,6 +476,20 @@ impl AriaApp {
         let position_ms = self.clock.as_ref().map_or(0, |clock| {
             player_bar::position_ms(clock.read(), &self.player)
         });
+        // The bar shows Spotify even while Spotify plays nothing: its controls then wait.
+        let idle = aria_core::spotify_service::SpotifyPlayback {
+            state: aria_core::PlaybackState {
+                device: None,
+                item: None,
+                progress_ms: 0,
+                playing: false,
+                shuffle: false,
+                repeat: aria_core::RepeatState::Off,
+            },
+            at: std::time::Instant::now(),
+        };
+        let spotify = (self.spotify.active == ActivePlayer::Spotify)
+            .then(|| self.spotify.playback.as_deref().unwrap_or(&idle));
         let mut bar = PlayerBar {
             tr: &self.localizer,
             palette,
@@ -474,11 +500,7 @@ impl AriaApp {
             queue_open: self.settings.right_panel_open,
             artwork: self.artwork.as_mut(),
             collections: &self.collections,
-            spotify: if self.spotify.active == ActivePlayer::Spotify {
-                self.spotify.playback.as_deref()
-            } else {
-                None
-            },
+            spotify,
             spotify_devices: self
                 .spotify
                 .signed_in()
@@ -813,9 +835,12 @@ impl AriaApp {
         match action {
             PageAction::UpdateSettings(settings) => self.update_settings(ctx, settings),
             PageAction::Spotify(SpotifyRequest::SignIn { .. }) => {
-                let text = self.localizer.tr("spotify-signed-in-page");
-                let done_page = crate::spotify::signed_in_page(&text);
-                self.send(Command::Spotify(SpotifyRequest::SignIn { done_page }));
+                let done = self.localizer.tr("spotify-signed-in-page");
+                let failed = self.localizer.tr("spotify-sign-in-failed-page");
+                self.send(Command::Spotify(SpotifyRequest::SignIn {
+                    done_page: crate::spotify::signed_in_page(&done),
+                    failed_page: crate::spotify::signed_in_page(&failed),
+                }));
             }
             PageAction::Spotify(SpotifyRequest::Search(text)) => {
                 self.spotify.search_text.clone_from(&text);
@@ -1256,12 +1281,7 @@ impl eframe::App for AriaApp {
     /// backend's events (a new soundboard list, replaced settings) are taken in and the hotkeys
     /// synced here too: an Aria started minimized registers its hotkeys without a drawn frame.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        for command in self.window_requests() {
-            ctx.send_viewport_cmd(command);
-        }
-        self.open_requested();
-        self.drain_events(ctx);
-        self.run_hotkeys(ctx);
+        self.logic_frame(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1651,6 +1671,29 @@ mod tests {
     }
 
     #[test]
+    fn minimizing_is_told_without_a_drawn_frame() {
+        let mut app = plain_app();
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .minimized = Some(true);
+        ctx.begin_pass(input);
+        // eframe runs only `logic` while the window is minimized.
+        app.logic_frame(&ctx);
+        // No painter takes the frame's textures in a test: drop them on purpose.
+        ctx.end_pass().textures_delta.clear();
+        let sent = app.sent.borrow();
+        assert!(
+            sent.iter()
+                .any(|c| matches!(c, Command::WindowShown(false))),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
     fn sign_in_carries_the_page_text() {
         let ctx = egui::Context::default();
         let mut app = plain_app();
@@ -1658,10 +1701,11 @@ mod tests {
             &ctx,
             PageAction::Spotify(SpotifyRequest::SignIn {
                 done_page: String::new(),
+                failed_page: String::new(),
             }),
         );
         let sent = app.sent.borrow();
-        let [Command::Spotify(SpotifyRequest::SignIn { done_page })] = sent.as_slice() else {
+        let [Command::Spotify(SpotifyRequest::SignIn { done_page, .. })] = sent.as_slice() else {
             panic!("{sent:?}");
         };
         assert!(done_page.contains("You can close this tab"), "{done_page}");

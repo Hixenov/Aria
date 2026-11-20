@@ -55,6 +55,7 @@ pub fn ready(ui: &mut Ui, ctx: &mut PageCtx<'_>, route: Route) -> bool {
         if ui.add_enabled(!waiting, Button::new(&*label)).clicked() {
             out.push(PageAction::Spotify(SpotifyRequest::SignIn {
                 done_page: String::new(),
+                failed_page: String::new(),
             }));
         }
     });
@@ -66,8 +67,11 @@ pub fn loading(ui: &mut Ui, ctx: &PageCtx<'_>, route: Route, empty: bool) -> boo
     if !empty {
         return false;
     }
-    let key = if ctx.spotify.library.loading {
+    let library = &ctx.spotify.library;
+    let key = if library.loading {
         "spotify-loading"
+    } else if library.failed {
+        "spotify-load-failed"
     } else {
         "spotify-empty"
     };

@@ -1029,6 +1029,24 @@ fn the_failed_icon_shows_the_failure() {
 
 // Spotify mode.
 
+#[test]
+fn spotify_with_nothing_playing_shows_nothing_and_sends_nothing() {
+    let mut harness = app_harness();
+    let ctx = harness.ctx.clone();
+    harness
+        .state_mut()
+        .handle_event(&ctx, Event::Player(view(Some(1), false, 200_000)));
+    harness.run();
+    assert!(!is_disabled(&harness, Role::Button, &en("player-play")));
+    harness.state_mut().handle_event(
+        &ctx,
+        Event::ActivePlayer(aria_core::event::ActivePlayer::Spotify),
+    );
+    harness.run();
+    assert!(is_disabled(&harness, Role::Button, &en("player-play")));
+    harness.get_by_label(&en("empty-nothing-playing"));
+}
+
 fn spotify_track(duration_ms: u64) -> aria_core::SpTrack {
     aria_core::SpTrack {
         uri: Some("spotify:track:t1".to_owned()),

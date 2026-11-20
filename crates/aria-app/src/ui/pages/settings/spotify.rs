@@ -21,6 +21,7 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
                     if ui.button(tr.tr("settings-spotify-connect")).clicked() {
                         ctx.out.push(PageAction::Spotify(SpotifyRequest::SignIn {
                             done_page: String::new(),
+                            failed_page: String::new(),
                         }));
                     }
                 });

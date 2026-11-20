@@ -428,3 +428,7 @@ spotify-liked = Liked Songs ({ $count })
 spotify-empty = Nothing here yet.
 # $owner (String) - the playlist owner's name
 spotify-by = by { $owner }
+
+## Spotify: review fixes
+spotify-load-failed = Aria couldn't load this from Spotify. Try Refresh library in Settings.
+spotify-sign-in-failed-page = Aria wasn't connected to Spotify. Go back to Aria and try again.

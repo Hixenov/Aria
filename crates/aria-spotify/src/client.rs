@@ -236,7 +236,7 @@ impl Client {
                 break;
             }
             let page = page_of(self.get::<P>(&url)?);
-            items.extend(page.items.into_iter().flatten());
+            items.extend(page.items.into_iter().filter_map(|item| item.0));
             if let Some(link) = page.next {
                 if !link.starts_with(&own) {
                     return Err(SpotifyError::BadAnswer("a next link elsewhere".to_owned()));
@@ -796,6 +796,24 @@ mod tests {
             Err(SpotifyError::BadAnswer(_))
         ));
         assert_eq!(fake.requests().len(), 1);
+    }
+
+    #[test]
+    fn a_bad_item_is_skipped_not_the_page() {
+        let fake = FakeSpotify::start();
+        fake.reply(
+            "GET",
+            "/v1/me/albums",
+            Reply::json(
+                200,
+                r#"{"items":[{"album":{"uri":"spotify:album:ok","name":"Ok"}},
+                    {"album":{"uri":"spotify:album:bad","name":null}},
+                    {"album":{"name":"No uri"}}],"next":null}"#,
+            ),
+        );
+        let albums = client(&fake).saved_albums().unwrap();
+        let names: Vec<&str> = albums.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Ok"]);
     }
 
     #[test]

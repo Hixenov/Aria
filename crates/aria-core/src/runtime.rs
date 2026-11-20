@@ -635,6 +635,13 @@ impl Worker {
                     Some(Command::TogglePlay) if self.routes_to_spotify() => {
                         self.to_spotify(SpotifyRequest::TogglePlay);
                     }
+                    // Resuming the local track while Spotify plays elsewhere pauses Spotify.
+                    Some(Command::TogglePlay) if !self.local_playing && self.spotify_playing => {
+                        self.to_spotify(SpotifyRequest::Pause);
+                        self.spotify_playing = false;
+                        self.playback.handle(Command::TogglePlay);
+                        self.flush_playback();
+                    }
                     Some(Command::Next) if self.routes_to_spotify() => {
                         self.to_spotify(SpotifyRequest::Next);
                     }
@@ -2916,6 +2923,29 @@ music/two.flac
             // Nothing is playing on Spotify, so the toggle resumes.
             assert!(wait_until(
                 || count(&fake, "PUT", "/v1/me/player/play") == 2,
+                MAX
+            ));
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn resuming_local_pauses_spotify() {
+            let fake = fake(Reply::fixture(200, "player"));
+            let handle = backend(&fake, Settings::default());
+            drain_until(&handle, shows(ActivePlayer::Spotify));
+            handle.send(Command::OpenPaths(vec![tone()]));
+            drain_until_within(&handle, LIBRARY_MAX, |e| {
+                shows(ActivePlayer::Local)(e) && last_view(e).is_some_and(|view| view.playing)
+            });
+            assert!(wait_until(
+                || count(&fake, "PUT", "/v1/me/player/pause") == 1,
+                MAX
+            ));
+            // Pause and resume the local track at once, before a poll can move the bar.
+            handle.send(Command::TogglePlay);
+            handle.send(Command::TogglePlay);
+            assert!(wait_until(
+                || count(&fake, "PUT", "/v1/me/player/pause") == 2,
                 MAX
             ));
             assert!(handle.shutdown(LIBRARY_MAX));

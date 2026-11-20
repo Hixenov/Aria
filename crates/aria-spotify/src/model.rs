@@ -295,11 +295,23 @@ impl From<RawPlaylist> for SpPlaylist {
     }
 }
 
-/// A page of a list. Entries can be `null`; they are skipped.
+/// An entry of a list that never fails its page: one Spotify cannot describe as Aria expects
+/// (`null`, or a field of the wrong type) is `None` and is skipped.
+pub(crate) struct Lenient<T>(pub Option<T>);
+
+impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Lenient<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        Ok(Lenient(serde_json::from_value(value).ok()))
+    }
+}
+
+/// A page of a list. Entries Aria cannot read are skipped.
 #[derive(Deserialize)]
+#[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
 pub(crate) struct Page<T> {
     #[serde(default = "Vec::new")]
-    pub items: Vec<Option<T>>,
+    pub items: Vec<Lenient<T>>,
     #[serde(default)]
     pub next: Option<String>,
 }
@@ -347,28 +359,28 @@ impl From<RawSearch> for SearchResults {
                 .tracks
                 .items
                 .into_iter()
-                .flatten()
+                .filter_map(|item| item.0)
                 .map(SpTrack::from)
                 .collect(),
             albums: raw
                 .albums
                 .items
                 .into_iter()
-                .flatten()
+                .filter_map(|item| item.0)
                 .filter_map(RawAlbum::into_album)
                 .collect(),
             artists: raw
                 .artists
                 .items
                 .into_iter()
-                .flatten()
+                .filter_map(|item| item.0)
                 .map(SpArtist::from)
                 .collect(),
             playlists: raw
                 .playlists
                 .items
                 .into_iter()
-                .flatten()
+                .filter_map(|item| item.0)
                 .map(SpPlaylist::from)
                 .collect(),
         }

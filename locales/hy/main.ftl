@@ -427,3 +427,7 @@ spotify-liked = Հավանած երգեր ({ $count })
 spotify-empty = Այստեղ դեռ ոչինչ չկա։
 # $owner (String) - the playlist owner's name
 spotify-by = հեղինակ՝ { $owner }
+
+## Spotify: review fixes
+spotify-load-failed = Aria-ն չկարողացավ բեռնել սա Spotify-ից։ Փորձեք «Թարմացնել գրադարանը» Կարգավորումներում։
+spotify-sign-in-failed-page = Aria-ն չմիացավ Spotify-ին։ Վերադարձեք Aria և փորձեք կրկին։

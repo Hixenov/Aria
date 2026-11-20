@@ -21,10 +21,7 @@ pub struct Callback {
 impl Callback {
     /// Binds `127.0.0.1:{port}` (`0` picks a free port, for tests).
     pub fn bind(port: u16) -> Result<Callback, SpotifyError> {
-        let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| match e.kind() {
-            io::ErrorKind::AddrInUse => SpotifyError::PortBusy,
-            kind => SpotifyError::Network(kind.to_string()),
-        })?;
+        let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| bind_error(e.kind()))?;
         listener
             .set_nonblocking(true)
             .map_err(|e| SpotifyError::Network(e.kind().to_string()))?;
@@ -48,6 +45,7 @@ impl Callback {
         timeout: Duration,
         cancel: &AtomicBool,
         done_page: &str,
+        failed_page: &str,
     ) -> Result<Secret, SpotifyError> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -59,7 +57,7 @@ impl Callback {
             }
             match self.listener.accept() {
                 Ok((stream, _)) => {
-                    if let Some(result) = answer(stream, state, done_page) {
+                    if let Some(result) = answer(stream, state, done_page, failed_page) {
                         return result;
                     }
                 }
@@ -69,11 +67,21 @@ impl Callback {
     }
 }
 
+/// Why the port could not be had. Windows answers `PermissionDenied` for a port another program
+/// holds alone or one in a range the system keeps for itself: busy, to the user, as well.
+pub(crate) fn bind_error(kind: io::ErrorKind) -> SpotifyError {
+    match kind {
+        io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied => SpotifyError::PortBusy,
+        kind => SpotifyError::Network(kind.to_string()),
+    }
+}
+
 /// Answers one connection. `Some` ends the wait; `None` goes on waiting.
 fn answer(
     mut stream: TcpStream,
     state: &str,
     done_page: &str,
+    failed_page: &str,
 ) -> Option<Result<Secret, SpotifyError>> {
     if stream.set_nonblocking(false).is_err()
         || stream.set_read_timeout(Some(READ_TIMEOUT)).is_err()
@@ -111,8 +119,8 @@ fn answer(
         respond(
             &mut stream,
             "400 Bad Request",
-            "text/plain; charset=utf-8",
-            "This is not the sign-in Aria is waiting for.",
+            "text/html; charset=utf-8",
+            failed_page,
         );
         return None;
     }
@@ -123,8 +131,8 @@ fn answer(
     respond(
         &mut stream,
         "200 OK",
-        "text/plain; charset=utf-8",
-        "Sign-in did not finish. You can close this tab.",
+        "text/html; charset=utf-8",
+        failed_page,
     );
     match error.as_deref() {
         Some("access_denied") => Some(Err(SpotifyError::SignInDenied)),
@@ -185,7 +193,7 @@ mod tests {
     }
 
     fn wait(callback: Callback, timeout: Duration) -> Result<Secret, SpotifyError> {
-        callback.wait("good", timeout, &AtomicBool::new(false), PAGE)
+        callback.wait("good", timeout, &AtomicBool::new(false), PAGE, "<p>no</p>")
     }
 
     #[test]
@@ -266,10 +274,45 @@ mod tests {
         });
         let start = Instant::now();
         assert_eq!(
-            callback.wait("good", Duration::from_secs(10), &cancel, PAGE),
+            callback.wait("good", Duration::from_secs(10), &cancel, PAGE, ""),
             Err(SpotifyError::SignInCancelled)
         );
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_refused_port_is_reported_as_busy() {
+        assert_eq!(
+            bind_error(std::io::ErrorKind::PermissionDenied),
+            SpotifyError::PortBusy
+        );
+        assert_eq!(
+            bind_error(std::io::ErrorKind::AddrInUse),
+            SpotifyError::PortBusy
+        );
+    }
+
+    #[test]
+    fn a_denied_sign_in_shows_the_failure_page() {
+        let callback = Callback::bind(0).unwrap();
+        let browser = browse_all(
+            callback.port(),
+            &["/callback?error=access_denied&state=good"],
+        );
+        let result = callback.wait(
+            "good",
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+            PAGE,
+            "<p>Not connected</p>",
+        );
+        assert_eq!(result, Err(SpotifyError::SignInDenied));
+        let answers = browser.join().unwrap();
+        assert!(
+            answers[0].contains("<p>Not connected</p>"),
+            "{}",
+            answers[0]
+        );
     }
 
     #[test]

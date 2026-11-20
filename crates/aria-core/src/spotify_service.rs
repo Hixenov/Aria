@@ -87,9 +87,11 @@ pub enum Cadence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpotifyRequest {
-    /// Opens the browser to sign in; `done_page` is the HTML the browser shows afterwards.
+    /// Opens the browser to sign in. The browser then shows `done_page` (HTML), or
+    /// `failed_page` when the sign-in did not finish.
     SignIn {
         done_page: String,
+        failed_page: String,
     },
     CancelSignIn,
     /// Deletes the stored token and forgets everything.
@@ -135,6 +137,8 @@ pub struct SpotifyLibrary {
     pub artists: Vec<SpArtist>,
     pub playlists: Vec<SpPlaylist>,
     pub loading: bool,
+    /// The last load could not get every list; what is shown of those is from before.
+    pub failed: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -231,6 +235,7 @@ impl SpotifyService {
             search: None,
             chosen: None,
             devices: Vec::new(),
+            library: Arc::default(),
             last: None,
             noticed: HashSet::new(),
             covers: covers_tx,
@@ -278,6 +283,8 @@ struct Service {
     search: Option<(String, Instant)>,
     chosen: Option<String>,
     devices: Vec<SpDevice>,
+    /// The library last loaded in full.
+    library: Arc<SpotifyLibrary>,
     last: Option<SpotifyPlayback>,
     /// Notice keys shown since the last request that succeeded.
     noticed: HashSet<&'static str>,
@@ -406,6 +413,8 @@ impl Service {
             if let Some(client) = self.client.take() {
                 self.restore = Some(client.tokens().refresh.clone());
                 self.next_poll = self.interval().map(|i| Instant::now() + i);
+                let account = self.signed_out();
+                self.set_account(account);
             }
             return;
         };
@@ -418,7 +427,7 @@ impl Service {
         }
     }
 
-    fn begin_sign_in(&mut self, done_page: String) {
+    fn begin_sign_in(&mut self, done_page: String, failed_page: String) {
         if self.sign_in.is_some() || self.client.is_some() {
             return;
         }
@@ -453,7 +462,7 @@ impl Service {
             .name(SIGN_IN_THREAD.to_owned())
             .spawn(move || {
                 // Fails only if the service has gone, when nobody is waiting.
-                let _ = tx.send(callback.wait(&state, timeout, &flag, &done_page));
+                let _ = tx.send(callback.wait(&state, timeout, &flag, &done_page, &failed_page));
             });
         if spawned.is_err() {
             return self.fail_sign_in(SpotifyError::Network("no thread".to_owned()));
@@ -532,6 +541,7 @@ impl Service {
         self.paused_until = None;
         self.last = None;
         self.devices.clear();
+        self.library = Arc::default();
         let account = self.signed_out();
         self.set_account(account);
         self.emit(SpotifyEvent::Library(Arc::new(SpotifyLibrary::default())));
@@ -544,7 +554,10 @@ impl Service {
 
     fn handle(&mut self, request: SpotifyRequest) {
         match request {
-            SpotifyRequest::SignIn { done_page } => self.begin_sign_in(done_page),
+            SpotifyRequest::SignIn {
+                done_page,
+                failed_page,
+            } => self.begin_sign_in(done_page, failed_page),
             SpotifyRequest::CancelSignIn => self.cancel_sign_in(),
             SpotifyRequest::SignOut => self.sign_out(),
             SpotifyRequest::Refresh => {
@@ -666,29 +679,43 @@ impl Service {
         if self.client.is_none() {
             return;
         }
+        // A list that cannot be loaded keeps what it had.
         let mut library = SpotifyLibrary {
             loading: true,
-            ..SpotifyLibrary::default()
+            failed: false,
+            ..(*self.library).clone()
         };
         self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
-        if let Some(playlists) = self.call(Client::playlists) {
-            library.playlists = playlists;
-            self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
+        match self.call(Client::playlists) {
+            Some(playlists) => {
+                library.playlists = playlists;
+                self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
+            }
+            None => library.failed = true,
         }
-        if let Some(albums) = self.call(Client::saved_albums) {
-            library.albums = albums;
-            self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
+        match self.call(Client::saved_albums) {
+            Some(albums) => {
+                library.albums = albums;
+                self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
+            }
+            None => library.failed = true,
         }
-        if let Some(artists) = self.call(Client::followed_artists) {
-            library.artists = artists;
-            self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
+        match self.call(Client::followed_artists) {
+            Some(artists) => {
+                library.artists = artists;
+                self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
+            }
+            None => library.failed = true,
         }
-        if let Some(tracks) = self.call(Client::saved_tracks) {
-            library.tracks = tracks;
+        match self.call(Client::saved_tracks) {
+            Some(tracks) => library.tracks = tracks,
+            None => library.failed = true,
         }
         if self.client.is_some() {
             library.loading = false;
-            self.emit(SpotifyEvent::Library(Arc::new(library)));
+            let library = Arc::new(library);
+            self.library = Arc::clone(&library);
+            self.emit(SpotifyEvent::Library(library));
         }
     }
 
@@ -1188,6 +1215,7 @@ mod tests {
         h.expect(signed_out);
         h.send(SpotifyRequest::SignIn {
             done_page: "<p>done</p>".to_owned(),
+            failed_page: String::new(),
         });
         h.expect(|e| matches!(e, SpotifyEvent::Account(SpotifyAccount::SigningIn)));
         h.expect(|e| matches!(e, SpotifyEvent::Account(SpotifyAccount::SignedIn { .. })));
@@ -1225,6 +1253,7 @@ mod tests {
         h.expect(signed_out);
         h.send(SpotifyRequest::SignIn {
             done_page: String::new(),
+            failed_page: String::new(),
         });
         h.expect(|e| matches!(e, SpotifyEvent::Account(SpotifyAccount::SigningIn)));
         h.send(SpotifyRequest::CancelSignIn);
@@ -1250,6 +1279,7 @@ mod tests {
         h.expect(signed_out);
         h.send(SpotifyRequest::SignIn {
             done_page: String::new(),
+            failed_page: String::new(),
         });
         h.expect(|e| is_notice(e, "spotify-port-busy"));
         assert!(
@@ -1307,7 +1337,8 @@ mod tests {
         h.send(SpotifyRequest::Cadence(Cadence::Fast));
         h.during(Duration::from_millis(50));
         let start = h.count("GET", "/v1/me/player");
-        h.during(Duration::from_millis(600));
+        // Long enough for a slow CI runner: ten polls are due, four are asked for.
+        h.during(Duration::from_millis(1000));
         let fast = h.count("GET", "/v1/me/player") - start;
         h.send(SpotifyRequest::Cadence(Cadence::Slow));
         h.during(Duration::from_millis(150));
@@ -1374,13 +1405,13 @@ mod tests {
         h.send(SpotifyRequest::Cadence(Cadence::Fast));
         h.during(Duration::from_millis(150));
         h.fake.set_offline(true);
-        let offline = h.during(Duration::from_millis(700));
+        let offline = h.during(Duration::from_millis(1000));
         assert_eq!(notices(&offline, "spotify-offline"), 1, "{offline:?}");
         h.fake.set_offline(false);
-        let back = h.during(Duration::from_millis(400));
+        let back = h.during(Duration::from_millis(800));
         assert_eq!(notices(&back, "spotify-offline"), 0);
         h.fake.set_offline(true);
-        let again = h.during(Duration::from_millis(400));
+        let again = h.during(Duration::from_millis(1000));
         assert_eq!(
             notices(&again, "spotify-offline"),
             1,
@@ -1422,6 +1453,59 @@ mod tests {
         h.expect(|e| is_notice(e, "spotify-not-allow-listed"));
         assert!(h.seen.iter().any(signed_out));
         assert_eq!(h.stored(), None, "no token is kept");
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_old_list() {
+        let mut h = Harness::signed_in();
+        h.fake.clear();
+        script_library(&h.fake);
+        h.fake.clear();
+        h.fake.reply(
+            "GET",
+            "/v1/me/tracks",
+            Reply::json(500, r#"{"error":{"status":500,"message":"down"}}"#),
+        );
+        for (path, name) in [
+            ("/v1/me/albums", "saved-albums"),
+            ("/v1/me/playlists", "playlists"),
+            ("/v1/me/player/devices", "devices"),
+        ] {
+            h.fake.reply("GET", path, Reply::fixture(200, name));
+        }
+        h.fake.reply(
+            "GET",
+            "/v1/me/following",
+            Reply::fixture(200, "followed-artists-2"),
+        );
+        h.fake.reply("GET", "/v1/me/player", Reply::empty(204));
+        h.send(SpotifyRequest::Refresh);
+        let SpotifyEvent::Library(library) =
+            h.expect(|e| matches!(e, SpotifyEvent::Library(l) if !l.loading && l.failed))
+        else {
+            unreachable!()
+        };
+        assert_eq!(library.tracks.len(), 107, "the old list is kept");
+        assert_eq!(library.artists.len(), 1, "what loaded is new");
+    }
+
+    #[test]
+    fn a_failed_lookup_after_sign_in_returns_to_signed_out() {
+        let fake = FakeSpotify::start();
+        fake.reply("POST", "/api/token", Reply::fixture(200, "token"));
+        fake.reply(
+            "GET",
+            "/v1/me",
+            Reply::json(500, r#"{"error":{"status":500,"message":"down"}}"#),
+        );
+        let mut h = Harness::start(fake, MemoryStore::new(), browser(), 0);
+        h.expect(signed_out);
+        h.send(SpotifyRequest::SignIn {
+            done_page: String::new(),
+            failed_page: String::new(),
+        });
+        h.expect(|e| matches!(e, SpotifyEvent::Account(SpotifyAccount::SigningIn)));
+        h.expect(signed_out);
     }
 
     #[test]
