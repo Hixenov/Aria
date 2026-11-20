@@ -246,9 +246,10 @@ fn player_controls_are_disabled() {
 #[test]
 fn disabled_controls_say_when_they_arrive() {
     let mut harness = harness(SIZE);
-    for (key, phase) in [("player-devices", 3), ("player-lyrics", 5)] {
+    let lyrics = en_phase("player-coming-in", 5);
+    let connect = en("player-devices-connect");
+    for (key, hint) in [("player-devices", connect), ("player-lyrics", lyrics)] {
         let name = en(key);
-        let hint = en_phase("player-coming-in", phase);
         let control = harness.get_by_role_and_label(Role::Button, &name);
         assert_eq!(control.accesskit_node().description(), Some(hint.clone()));
         control.hover();

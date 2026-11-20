@@ -2,19 +2,24 @@
 //! bar, and the volume, queue, device and lyrics controls.
 //!
 //! The bar draws what it is given and returns what the user asked for as [`PlayerAction`]s;
-//! the app turns them into commands and settings. The device and lyrics buttons stay disabled
-//! and say which phase brings them.
+//! the app turns them into commands and settings. While the bar shows Spotify, the transport,
+//! the seek bar, shuffle, repeat and the volume act on Spotify's device, and what Spotify cannot
+//! do from here (the heart, mute, the sleep timer) is disabled. The devices button lists
+//! Spotify's devices while signed in. The lyrics button stays disabled and says which phase
+//! brings it.
 
-use std::time::Duration;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::{Duration, Instant};
 
 use aria_core::{
-    ClockReading, OutputPath,
+    ClockReading, NowItem, OutputPath, RepeatState, SpDevice,
     chat::MicState,
     command::SleepTimer,
     i18n::{FluentArgs, Localizer},
     playback_service::{PlayerView, SleepState, TrackFormat},
     player::queue::RepeatMode,
     settings::Settings,
+    spotify_service::{SpotifyPlayback, SpotifyRequest},
 };
 use aria_library::{ArtworkId, Collections, LibrarySnapshot, Quality, TrackId};
 use eframe::egui::{
@@ -25,6 +30,7 @@ use eframe::egui::{
 use super::surface_frame;
 use crate::{
     artwork::{ArtworkTextures, paint_cover},
+    spotify::RemoteCovers,
     ui::{
         pages::PageAction,
         theme::{
@@ -77,8 +83,8 @@ const SETTLE_REPAINT: Duration = Duration::from_millis(50);
 /// How often the bar redraws while playing, to move the position.
 const REPAINT_EVERY: Duration = Duration::from_millis(250);
 
-/// Phase that brings output device selection.
-const DEVICES_PHASE: u8 = 3;
+/// How long a Spotify volume just set is shown before the device's own is trusted again.
+const VOLUME_SETTLE: Duration = Duration::from_secs(3);
 /// Phase that brings lyrics.
 const LYRICS_PHASE: u8 = 5;
 
@@ -106,6 +112,11 @@ pub enum PlayerAction {
     ToggleMicrophone,
     /// Set the sleep timer, or turn it off.
     SetSleepTimer(SleepTimer),
+    /// A request for Spotify: its transport, seek, volume, shuffle and repeat, a cover, or the
+    /// device list.
+    Spotify(SpotifyRequest),
+    /// Play Spotify on this device; `None` is Spotify's active one.
+    SpotifyDevice(Option<String>),
 }
 
 /// The sleep timer's lengths, in minutes, as its menu offers them.
@@ -163,6 +174,30 @@ pub fn position_ms(reading: ClockReading, view: &PlayerView) -> u64 {
     }
 }
 
+/// Where Spotify's track is now: its reported position plus the time since, while playing,
+/// never past the track's end.
+pub fn spotify_position_ms(playback: &SpotifyPlayback, now: Instant) -> u64 {
+    let state = &playback.state;
+    let elapsed = if state.playing {
+        u64::try_from(now.saturating_duration_since(playback.at).as_millis()).unwrap_or(u64::MAX)
+    } else {
+        0
+    };
+    let position = state.progress_ms.saturating_add(elapsed);
+    match spotify_duration(playback) {
+        0 => position,
+        duration => position.min(duration),
+    }
+}
+
+/// The length of what Spotify plays, or 0 when it is not a track.
+fn spotify_duration(playback: &SpotifyPlayback) -> u64 {
+    match &playback.state.item {
+        Some(NowItem::Track(track)) => track.duration_ms,
+        _ => 0,
+    }
+}
+
 /// Everything the bar draws.
 pub struct PlayerBar<'a> {
     pub tr: &'a Localizer,
@@ -179,13 +214,23 @@ pub struct PlayerBar<'a> {
     pub artwork: Option<&'a mut ArtworkTextures>,
     /// Which tracks are favorites, for the heart.
     pub collections: &'a Collections,
+    /// What Spotify plays, while the bar shows Spotify.
+    pub spotify: Option<&'a SpotifyPlayback>,
+    /// Spotify's devices, while signed in to Spotify.
+    pub spotify_devices: Option<&'a [SpDevice]>,
+    /// Spotify's covers.
+    pub covers: Option<&'a mut RemoteCovers>,
 }
 
 /// Shows the bar and returns what the user did on it this frame.
 pub fn show(ui: &mut Ui, bar: &mut PlayerBar<'_>) -> Vec<PlayerAction> {
     let margin = Margin::symmetric(SPACE[3] as i8, SPACE[1] as i8);
     let mut actions = Vec::new();
-    if bar.view.playing {
+    let playing = match bar.spotify {
+        Some(playback) => playback.state.playing,
+        None => bar.view.playing,
+    };
+    if playing {
         ui.ctx().request_repaint_after(REPAINT_EVERY);
     }
     Panel::bottom(ID)
@@ -214,6 +259,9 @@ fn zone(ui: &mut Ui, rect: Rect, layout: Layout, add: impl FnOnce(&mut Ui)) {
 
 /// The artwork, the title and artist, or "Nothing playing", and the heart.
 fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
+    if let Some(playback) = bar.spotify {
+        return spotify_now_playing(ui, bar, playback, out);
+    }
     let p = bar.palette;
     let [size, icon] = ARTWORK;
     let (art, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
@@ -273,6 +321,90 @@ fn now_playing(ui: &mut Ui, bar: &mut PlayerBar<'_>, out: &mut Vec<PlayerAction>
     {
         out.push(PlayerAction::SetFavorite { track, favorite });
     }
+}
+
+/// What Spotify plays: its cover, its name and artists ("Spotify" for an episode), the device
+/// it plays on, and a heart that does nothing here.
+fn spotify_now_playing(
+    ui: &mut Ui,
+    bar: &mut PlayerBar<'_>,
+    playback: &SpotifyPlayback,
+    out: &mut Vec<PlayerAction>,
+) {
+    let p = bar.palette;
+    let [size, icon] = ARTWORK;
+    let (title, artist, image) = match &playback.state.item {
+        Some(NowItem::Track(track)) => {
+            let artist = if track.artists.is_empty() {
+                bar.tr.tr("library-unknown-artist").into_owned()
+            } else {
+                track.artists.join(", ")
+            };
+            (Some(track.name.clone()), artist, track.image.clone())
+        }
+        Some(NowItem::Other { name }) => (Some(name.clone()), "Spotify".to_owned(), None),
+        None => (None, String::new(), None),
+    };
+    let (art, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    if ui.is_rect_visible(art) {
+        let mut asked = Vec::new();
+        let cover = match (&image, bar.covers.as_deref_mut()) {
+            (Some(url), Some(covers)) => covers.get(url, &mut asked).cloned(),
+            _ => None,
+        };
+        out.extend(asked.into_iter().filter_map(|action| match action {
+            PageAction::Spotify(request) => Some(PlayerAction::Spotify(request)),
+            _ => None,
+        }));
+        let painter = ui.painter();
+        painter.rect_filled(art, ARTWORK_RADIUS, p.surface_raised);
+        match cover {
+            Some(texture) => paint_cover(painter, art, ARTWORK_RADIUS, &texture),
+            None => {
+                painter.text(
+                    art.center(),
+                    Align2::CENTER_CENTER,
+                    icons::MUSIC_NOTES,
+                    icon_font(icon),
+                    p.text_muted,
+                );
+            }
+        }
+    }
+    ui.add_space(SPACE[1]);
+    let not_here = bar.tr.tr("player-spotify-not-here");
+    let heart_label = bar.tr.tr(track_menu::favorite_key(false));
+    let [heart_size, heart_icon] = HEART_BUTTON;
+    let Some(title) = title else {
+        let text = RichText::new(bar.tr.tr("empty-nothing-playing")).color(p.text_muted);
+        ui.add(Label::new(text).selectable(false).truncate());
+        let heart = IconButton::new(icons::HEART, &heart_label, p).size(heart_size, heart_icon);
+        ui.add_enabled(false, heart)
+            .on_disabled_hover_text(&*not_here);
+        return;
+    };
+    let text_width = ui.available_width() - heart_size - ui.spacing().item_spacing.x;
+    ui.scope(|ui| {
+        ui.set_max_width(text_width.max(0.0));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let body = TextStyle::Body.resolve(ui.style()).size;
+            let title = RichText::new(&title).font(semibold(body)).color(p.text);
+            ui.add(Label::new(title).selectable(false).truncate());
+            let artist = RichText::new(&artist).small().color(p.text_muted);
+            ui.add(Label::new(artist).selectable(false).truncate());
+            if let Some(device) = &playback.state.device {
+                let mut args = FluentArgs::new();
+                args.set("device", device.name.as_str());
+                let line = bar.tr.tr_args("player-spotify-on", &args);
+                let text = RichText::new(&*line).small().color(p.text_muted);
+                ui.add(Label::new(text).selectable(false).truncate());
+            }
+        });
+    });
+    let heart = IconButton::new(icons::HEART, &heart_label, p).size(heart_size, heart_icon);
+    ui.add_enabled(false, heart)
+        .on_disabled_hover_text(&*not_here);
 }
 
 /// Between the format and the path on the bar's line.
@@ -378,15 +510,103 @@ fn center(ui: &mut Ui, area: Rect, bar: &mut PlayerBar<'_>, out: &mut Vec<Player
     zone(ui, buttons, Layout::left_to_right(Align::Center), |ui| {
         transport(ui, bar, out);
     });
-    zone(ui, seek, Layout::left_to_right(Align::Center), |ui| {
-        seek_row(ui, bar, out);
-    });
+    zone(
+        ui,
+        seek,
+        Layout::left_to_right(Align::Center),
+        |ui| match bar.spotify {
+            Some(playback) => {
+                let duration = spotify_duration(playback);
+                let position = spotify_position_ms(playback, Instant::now());
+                let seekable = playback.state.item.is_some() && duration > 0;
+                let token = item_token(playback);
+                if let Some(target) =
+                    seek_scrub(ui, bar.tr, bar.palette, token, position, duration, seekable)
+                {
+                    out.push(PlayerAction::Spotify(SpotifyRequest::Seek(target)));
+                }
+            }
+            None => seek_row(ui, bar, out),
+        },
+    );
+}
+
+/// A number that changes when Spotify moves to another item, for the seek bar's memory.
+fn item_token(playback: &SpotifyPlayback) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    match &playback.state.item {
+        Some(NowItem::Track(track)) => (&track.uri, &track.name).hash(&mut hasher),
+        Some(NowItem::Other { name }) => name.hash(&mut hasher),
+        None => 0u8.hash(&mut hasher),
+    }
+    hasher.finish().max(1)
+}
+
+/// What the transport shows and does, from the local player or from Spotify.
+struct Transport {
+    loaded: bool,
+    playing: bool,
+    shuffle: bool,
+    /// The icon and the key naming the repeat mode, and whether it is on.
+    repeat: (&'static str, &'static str, bool),
+}
+
+impl Transport {
+    fn of(bar: &PlayerBar<'_>) -> Transport {
+        match bar.spotify {
+            Some(playback) => {
+                let state = &playback.state;
+                Transport {
+                    loaded: state.item.is_some(),
+                    playing: state.playing,
+                    shuffle: state.shuffle,
+                    repeat: match state.repeat {
+                        RepeatState::Off => (icons::REPEAT, "player-repeat-off", false),
+                        RepeatState::Context => (icons::REPEAT, "player-repeat-all", true),
+                        RepeatState::Track => (icons::REPEAT_ONCE, "player-repeat-one", true),
+                    },
+                }
+            }
+            None => Transport {
+                loaded: bar.view.current.is_some(),
+                playing: bar.view.playing,
+                shuffle: bar.settings.shuffle,
+                repeat: match bar.settings.repeat {
+                    RepeatMode::Off => (icons::REPEAT, "player-repeat-off", false),
+                    RepeatMode::All => (icons::REPEAT, "player-repeat-all", true),
+                    RepeatMode::One => (icons::REPEAT_ONCE, "player-repeat-one", true),
+                },
+            },
+        }
+    }
+}
+
+/// The action for a transport button: the local one, or Spotify's request.
+fn transport_action(bar: &PlayerBar<'_>, local: PlayerAction) -> PlayerAction {
+    let Some(playback) = bar.spotify else {
+        return local;
+    };
+    let state = &playback.state;
+    let request = match local {
+        PlayerAction::TogglePlay => SpotifyRequest::TogglePlay,
+        PlayerAction::Next => SpotifyRequest::Next,
+        PlayerAction::Previous => SpotifyRequest::Previous,
+        PlayerAction::ToggleShuffle => SpotifyRequest::SetShuffle(!state.shuffle),
+        PlayerAction::CycleRepeat => SpotifyRequest::SetRepeat(match state.repeat {
+            RepeatState::Off => RepeatState::Context,
+            RepeatState::Context => RepeatState::Track,
+            RepeatState::Track => RepeatState::Off,
+        }),
+        other => return other,
+    };
+    PlayerAction::Spotify(request)
 }
 
 /// The transport's buttons, centered in the row they are in.
 fn transport(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let (tr, p) = (bar.tr, bar.palette);
-    let loaded = bar.view.current.is_some();
+    let shown = Transport::of(bar);
+    let loaded = shown.loaded;
     let gap = SPACE[1];
     let [side, side_icon] = SMALL_BUTTON;
     let [button, icon] = BUTTON;
@@ -398,18 +618,18 @@ fn transport(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let shuffle = tr.tr("player-shuffle");
     let control = IconButton::new(icons::SHUFFLE, &shuffle, p)
         .size(side, side_icon)
-        .selected(bar.settings.shuffle);
+        .selected(shown.shuffle);
     if ui.add(control).clicked() {
-        out.push(PlayerAction::ToggleShuffle);
+        out.push(transport_action(bar, PlayerAction::ToggleShuffle));
     }
 
     let previous = tr.tr("player-previous");
     let control = IconButton::new(icons::SKIP_BACK, &previous, p).size(button, icon);
     if ui.add_enabled(loaded, control).clicked() {
-        out.push(PlayerAction::Previous);
+        out.push(transport_action(bar, PlayerAction::Previous));
     }
 
-    let (glyph, key) = if bar.view.playing {
+    let (glyph, key) = if shown.playing {
         (icons::PAUSE, "player-pause")
     } else {
         (icons::PLAY, "player-play")
@@ -419,34 +639,46 @@ fn transport(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         .size(play, play_icon)
         .prominent();
     if ui.add_enabled(loaded, control).clicked() {
-        out.push(PlayerAction::TogglePlay);
+        out.push(transport_action(bar, PlayerAction::TogglePlay));
     }
 
     let next = tr.tr("player-next");
     let control = IconButton::new(icons::SKIP_FORWARD, &next, p).size(button, icon);
     if ui.add_enabled(loaded, control).clicked() {
-        out.push(PlayerAction::Next);
+        out.push(transport_action(bar, PlayerAction::Next));
     }
 
-    let (glyph, key) = match bar.settings.repeat {
-        RepeatMode::Off => (icons::REPEAT, "player-repeat-off"),
-        RepeatMode::All => (icons::REPEAT, "player-repeat-all"),
-        RepeatMode::One => (icons::REPEAT_ONCE, "player-repeat-one"),
-    };
+    let (glyph, key, on) = shown.repeat;
     let name = tr.tr(key);
     let control = IconButton::new(glyph, &name, p)
         .size(side, side_icon)
-        .selected(bar.settings.repeat != RepeatMode::Off);
+        .selected(on);
     if ui.add(control).clicked() {
-        out.push(PlayerAction::CycleRepeat);
+        out.push(transport_action(bar, PlayerAction::CycleRepeat));
     }
 }
 
 /// The elapsed time, the seek bar and the length.
 fn seek_row(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
-    let p = bar.palette;
     let duration = bar.view.duration_ms;
     let seekable = bar.view.current.is_some() && duration > 0;
+    let (tr, p, token, position) = (bar.tr, bar.palette, bar.view.token, bar.position_ms);
+    if let Some(target) = seek_scrub(ui, tr, p, token, position, duration, seekable) {
+        out.push(PlayerAction::Seek(target));
+    }
+}
+
+/// The seek bar with its times; returns the position the user seeked to.
+fn seek_scrub(
+    ui: &mut Ui,
+    tr: &Localizer,
+    p: &Palette,
+    token: u64,
+    position_ms: u64,
+    duration: u64,
+    seekable: bool,
+) -> Option<u64> {
+    let mut sought = None;
     let row = ui.max_rect();
     let gap = SPACE[1];
     let elapsed = Rect::from_min_size(row.min, vec2(TIME_WIDTH, row.height()));
@@ -465,14 +697,14 @@ fn seek_row(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let now = ui.input(|input| input.time);
     let pending = ui
         .data(|data| data.get_temp::<PendingSeek>(memory))
-        .filter(|pending| !pending.settled(bar.view.token, bar.position_ms, now));
-    let base_ms = pending.map_or(bar.position_ms, |pending| pending.target_ms);
+        .filter(|pending| !pending.settled(token, position_ms, now));
+    let base_ms = pending.map_or(position_ms, |pending| pending.target_ms);
     let fraction = if duration > 0 {
         (base_ms as f64 / duration as f64).clamp(0.0, 1.0) as f32
     } else {
         0.0
     };
-    let label = bar.tr.tr("player-seek");
+    let label = tr.tr("player-seek");
     let step = if duration > 0 {
         (SEEK_STEP_MS as f64 / duration as f64) as f32
     } else {
@@ -496,9 +728,9 @@ fn seek_row(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let mut pending = pending;
     if let (Some(at), true) = (moved.committed, seekable) {
         let target_ms = at_ms(at, duration);
-        out.push(PlayerAction::Seek(target_ms));
+        sought = Some(target_ms);
         pending = Some(PendingSeek {
-            token: bar.view.token,
+            token,
             from_ms: base_ms,
             target_ms,
             since: now,
@@ -528,6 +760,7 @@ fn seek_row(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     zone(ui, total, Layout::left_to_right(Align::Center), |ui| {
         ui.add(time_label(&total_text, p));
     });
+    sought
 }
 
 /// A seek the user made, which the clock has not reported yet.
@@ -590,7 +823,13 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let control = IconButton::new(icons::QUOTES, &lyrics, p).size(button, icon);
     pending(ui, control, &lyrics, LYRICS_PHASE, tr, p);
 
-    sleep_timer(ui, bar, out);
+    if bar.spotify.is_some() {
+        let name = tr.tr("player-sleep");
+        let control = IconButton::new(icons::MOON, &name, p).size(button, icon);
+        not_for_spotify(ui, control, &name, tr, p);
+    } else {
+        sleep_timer(ui, bar, out);
+    }
 
     let queue = tr.tr("player-queue");
     let control = IconButton::new(icons::QUEUE, &queue, p)
@@ -600,11 +839,13 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         out.push(PlayerAction::ToggleQueue);
     }
 
-    let devices = tr.tr("player-devices");
-    let control = IconButton::new(icons::DEVICES, &devices, p).size(button, icon);
-    pending(ui, control, &devices, DEVICES_PHASE, tr, p);
+    devices_button(ui, bar, out);
 
     microphone(ui, bar, out);
+
+    if let Some(playback) = bar.spotify {
+        return spotify_volume(ui, bar, playback, out);
+    }
 
     let (rect, _) = ui.allocate_exact_size(vec2(VOLUME_WIDTH, SEEK_ROW), Sense::hover());
     let label = tr.tr("player-volume");
@@ -647,6 +888,121 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         .selected(muted);
     if ui.add(control).clicked() {
         out.push(PlayerAction::ToggleMute);
+    }
+}
+
+/// Spotify's volume, the device's own, sent when the drag ends; and mute, which Spotify does
+/// not have here.
+fn spotify_volume(
+    ui: &mut Ui,
+    bar: &PlayerBar<'_>,
+    playback: &SpotifyPlayback,
+    out: &mut Vec<PlayerAction>,
+) {
+    let (tr, p) = (bar.tr, bar.palette);
+    let [button, icon] = BUTTON;
+    let device = playback.state.device.as_ref();
+    let supported = device.is_some_and(|d| d.supports_volume && d.volume.is_some());
+    let reported = device
+        .and_then(|d| d.volume)
+        .map_or(0.0, |v| f32::from(v.min(100)) / 100.0);
+    // What was just set or is being dragged is shown until the device reports it, or a while.
+    let memory = ui.make_persistent_id("aria_spotify_volume");
+    let now = ui.input(|input| input.time);
+    let held = ui
+        .data(|data| data.get_temp::<(f32, f64)>(memory))
+        .filter(|(_, since)| now - since < VOLUME_SETTLE.as_secs_f64());
+    let shown = held.map_or(reported, |(value, _)| value);
+    let (rect, _) = ui.allocate_exact_size(vec2(VOLUME_WIDTH, SEEK_ROW), Sense::hover());
+    let label = tr.tr("player-volume");
+    let scrub = Scrub {
+        id: "aria_volume",
+        rect,
+        value: shown,
+        enabled: supported,
+        label: &label,
+        step: VOLUME_STEP,
+        full: 1.0,
+    };
+    let moved = scrub.show(ui, p);
+    if let Some(at) = moved.dragging {
+        ui.data_mut(|data| data.insert_temp(memory, (at, now)));
+    }
+    if let Some(at) = moved.committed {
+        ui.data_mut(|data| data.insert_temp(memory, (at, now)));
+        let percent = (at.clamp(0.0, 1.0) * 100.0).round() as u8;
+        out.push(PlayerAction::Spotify(SpotifyRequest::SetVolume(percent)));
+    }
+    if held.is_some_and(|(value, _)| (value - reported).abs() < 0.015) && moved.dragging.is_none() {
+        ui.data_mut(|data| data.remove::<(f32, f64)>(memory));
+    }
+    let glyph = if shown < 0.5 {
+        icons::SPEAKER_LOW
+    } else {
+        icons::SPEAKER_HIGH
+    };
+    let name = tr.tr("player-mute");
+    let control = IconButton::new(glyph, &name, p).size(button, icon);
+    not_for_spotify(ui, control, &name, tr, p);
+}
+
+/// Adds `control` disabled, saying it does nothing for Spotify's playback.
+fn not_for_spotify(ui: &mut Ui, control: IconButton<'_>, name: &str, tr: &Localizer, p: &Palette) {
+    let hint = tr.tr("player-spotify-not-here");
+    let response = ui.add_enabled(false, control);
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
+    response.on_disabled_hover_ui(|ui| {
+        ui.label(RichText::new(name).color(p.text));
+        ui.label(RichText::new(&*hint).color(p.text_muted));
+    });
+}
+
+/// The devices button: Spotify's devices while signed in, to choose the one to play on.
+/// Signed out, it is disabled and says where to connect.
+fn devices_button(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
+    let (tr, p) = (bar.tr, bar.palette);
+    let [button, icon] = BUTTON;
+    let name = tr.tr("player-devices");
+    let control = IconButton::new(icons::DEVICES, &name, p).size(button, icon);
+    let Some(devices) = bar.spotify_devices else {
+        let hint = tr.tr("player-devices-connect");
+        let response = ui.add_enabled(false, control);
+        ui.ctx()
+            .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
+        response.on_disabled_hover_ui(|ui| {
+            ui.label(RichText::new(&*name).color(p.text));
+            ui.label(RichText::new(&*hint).color(p.text_muted));
+        });
+        return;
+    };
+    let response = ui.add(control);
+    if response.clicked() {
+        out.push(PlayerAction::Spotify(SpotifyRequest::ListDevices));
+    }
+    let chosen = bar.settings.spotify_device.as_deref();
+    let picked = eframe::egui::Popup::menu(&response).show(|ui| {
+        let mut picked = None;
+        let active = tr.tr("settings-spotify-active-device");
+        if ui.selectable_label(chosen.is_none(), &*active).clicked() {
+            picked = Some(None);
+        }
+        for device in devices {
+            let Some(id) = &device.id else {
+                continue;
+            };
+            let selected = chosen == Some(id.as_str());
+            let control = eframe::egui::Button::selectable(selected, &device.name);
+            if ui.add_enabled(!device.restricted, control).clicked() {
+                picked = Some(Some(id.clone()));
+            }
+        }
+        picked
+    });
+    if let Some(id) = picked.and_then(|shown| shown.inner)
+        && id.as_deref() != chosen
+    {
+        out.push(PlayerAction::SpotifyDevice(id));
     }
 }
 

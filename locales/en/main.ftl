@@ -407,3 +407,24 @@ settings-spotify-disconnect-confirm = Disconnect Spotify? Aria forgets the sign-
 settings-spotify-allow-list = While Aria's Spotify app is in development mode, only accounts its owner has added can connect (up to 5).
 settings-spotify-no-keyring = This system has no keyring, so you'll connect again each time Aria starts.
 settings-spotify-premium = Playing on your devices needs Spotify Premium.
+
+## Player bar: Spotify
+# $device (String) - the name of the Spotify device playing
+player-spotify-on = On { $device }
+player-spotify-not-here = Not for Spotify playback
+player-devices-connect = Connect Spotify in Settings to choose a device
+
+## Spotify pages
+spotify-page-signed-out = Connect Spotify to see your music here.
+spotify-loading = Loading your Spotify library…
+spotify-search-hint = Search Spotify
+spotify-search-none = Nothing on Spotify matches that.
+spotify-songs = Songs
+spotify-albums = Albums
+spotify-artists = Artists
+spotify-playlists = Playlists
+# $count (Number) - how many saved tracks there are
+spotify-liked = Liked Songs ({ $count })
+spotify-empty = Nothing here yet.
+# $owner (String) - the playlist owner's name
+spotify-by = by { $owner }

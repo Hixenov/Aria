@@ -10,15 +10,12 @@ mod playlists;
 mod search;
 mod settings;
 mod soundboard;
+mod spotify_lists;
 #[cfg(test)]
 mod test_support;
 
 use aria_core::{
-    DeviceInfo,
-    hotkey::Hotkey,
-    i18n::{FluentArgs, Localizer},
-    settings::Settings,
-    soundboard::SoundboardState,
+    DeviceInfo, hotkey::Hotkey, i18n::Localizer, settings::Settings, soundboard::SoundboardState,
     spotify_service::SpotifyRequest,
 };
 use aria_library::{Collections, FolderId, PlaylistId, SoundId, TrackId};
@@ -30,10 +27,7 @@ use crate::{
     artwork::ArtworkTextures,
     nav::Route,
     spotify::{RemoteCovers, SpotifyUi},
-    ui::{
-        theme::Palette,
-        widgets::{empty_state, section_header},
-    },
+    ui::theme::Palette,
 };
 
 /// What a page reads, and where it leaves requests for the app.
@@ -204,17 +198,4 @@ pub fn show(route: Route, ui: &mut Ui, ctx: &mut PageCtx<'_>) {
         Route::Soundboard => soundboard::show(ui, ctx),
         Route::Settings => settings::show(ui, ctx),
     }
-}
-
-/// A page whose content comes in a later phase: its heading, then an empty state saying
-/// which phase. The heading already names the page, so the empty state does not repeat it.
-fn pending(ui: &mut Ui, ctx: &PageCtx<'_>, route: Route) {
-    section_header(ui, &ctx.tr.tr(route.label_key()));
-    let Some(phase) = route.phase() else {
-        return;
-    };
-    let mut args = FluentArgs::new();
-    args.set("phase", phase);
-    let text = ctx.tr.tr_args("empty-phase-pending", &args);
-    empty_state(ui, route.icon(), &text, "", &ctx.palette);
 }

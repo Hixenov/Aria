@@ -418,3 +418,24 @@ settings-spotify-disconnect-confirm = Отключить Spotify? Aria забу�
 settings-spotify-allow-list = Пока приложение Aria для Spotify в режиме разработки, подключиться могут только аккаунты, которые добавил его владелец (до 5).
 settings-spotify-no-keyring = В этой системе нет хранилища ключей, поэтому подключаться придётся при каждом запуске Aria.
 settings-spotify-premium = Для воспроизведения на ваших устройствах нужен Spotify Premium.
+
+## Player bar: Spotify
+# $device (String) - the name of the Spotify device playing
+player-spotify-on = На устройстве { $device }
+player-spotify-not-here = Недоступно для воспроизведения Spotify
+player-devices-connect = Подключите Spotify в настройках, чтобы выбрать устройство
+
+## Spotify pages
+spotify-page-signed-out = Подключите Spotify, чтобы видеть здесь свою музыку.
+spotify-loading = Загрузка медиатеки Spotify…
+spotify-search-hint = Поиск в Spotify
+spotify-search-none = В Spotify ничего не найдено.
+spotify-songs = Песни
+spotify-albums = Альбомы
+spotify-artists = Исполнители
+spotify-playlists = Плейлисты
+# $count (Number) - how many saved tracks there are
+spotify-liked = Любимые треки ({ $count })
+spotify-empty = Здесь пока ничего нет.
+# $owner (String) - the playlist owner's name
+spotify-by = автор: { $owner }

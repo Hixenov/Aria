@@ -19,7 +19,7 @@ use aria_app::{
     },
 };
 use aria_core::{
-    ClockReading, OutputPath, OutputState, PlaybackClock,
+    ClockReading, OutputPath, OutputState, PlaybackClock, SpDevice,
     chat::MicState,
     command::SleepTimer,
     event::Event,
@@ -27,6 +27,7 @@ use aria_core::{
     playback_service::{PlayerView, SleepState, TrackFormat},
     player::queue::{RepeatMode, UpNext},
     settings::{Language, Settings},
+    spotify_service::SpotifyPlayback,
 };
 use aria_library::{FolderId, LibrarySnapshot, Quality, Track, TrackId};
 use eframe::egui::{self, accesskit::Role};
@@ -100,6 +101,8 @@ struct Bar {
     position_ms: u64,
     settings: Settings,
     actions: Vec<PlayerAction>,
+    spotify: Option<SpotifyPlayback>,
+    devices: Option<Vec<SpDevice>>,
 }
 
 fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
@@ -114,6 +117,8 @@ fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
         position_ms,
         settings: english(),
         actions: Vec::new(),
+        spotify: None,
+        devices: None,
     };
     Harness::builder()
         .with_size(SIZE)
@@ -131,6 +136,9 @@ fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
                     queue_open: false,
                     collections: &Default::default(),
                     artwork: None,
+                    spotify: bar.spotify.as_ref(),
+                    spotify_devices: bar.devices.as_deref(),
+                    covers: None,
                 };
                 let actions = player_bar::show(ui, &mut shown);
                 bar.actions.extend(actions);
@@ -1016,5 +1024,247 @@ fn the_failed_icon_shows_the_failure() {
             .state()
             .actions
             .contains(&PlayerAction::ToggleMicrophone)
+    );
+}
+
+// Spotify mode.
+
+fn spotify_track(duration_ms: u64) -> aria_core::SpTrack {
+    aria_core::SpTrack {
+        uri: Some("spotify:track:t1".to_owned()),
+        name: "Around the World".to_owned(),
+        artists: vec!["Daft Punk".to_owned()],
+        album: "Homework".to_owned(),
+        album_uri: Some("spotify:album:a1".to_owned()),
+        duration_ms,
+        image: None,
+    }
+}
+
+fn phone() -> SpDevice {
+    SpDevice {
+        id: Some("phone".to_owned()),
+        name: "My Phone".to_owned(),
+        kind: "Smartphone".to_owned(),
+        active: true,
+        restricted: false,
+        volume: Some(40),
+        supports_volume: true,
+    }
+}
+
+fn spotify_playback(item: Option<aria_core::NowItem>, playing: bool) -> SpotifyPlayback {
+    SpotifyPlayback {
+        state: aria_core::PlaybackState {
+            device: Some(phone()),
+            item,
+            progress_ms: 30_000,
+            playing,
+            shuffle: false,
+            repeat: aria_core::RepeatState::Context,
+        },
+        at: std::time::Instant::now(),
+    }
+}
+
+fn spotify_bar(playback: SpotifyPlayback) -> Harness<'static, Bar> {
+    let mut harness = bar_harness(view(None, false, 0), 0);
+    harness.state_mut().spotify = Some(playback);
+    harness.state_mut().devices = Some(vec![phone()]);
+    harness.run();
+    harness
+}
+
+fn spotify_actions(harness: &Harness<'_, Bar>) -> Vec<aria_core::spotify_service::SpotifyRequest> {
+    harness
+        .state()
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            PlayerAction::Spotify(request) => Some(request.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn spotify_position_moves_while_playing_and_stops_at_the_end() {
+    let start = std::time::Instant::now();
+    let mut playback =
+        spotify_playback(Some(aria_core::NowItem::Track(spotify_track(31_000))), true);
+    playback.at = start;
+    let later = start + Duration::from_millis(500);
+    assert_eq!(player_bar::spotify_position_ms(&playback, later), 30_500);
+    let much_later = start + Duration::from_secs(60);
+    assert_eq!(
+        player_bar::spotify_position_ms(&playback, much_later),
+        31_000
+    );
+    playback.state.playing = false;
+    assert_eq!(
+        player_bar::spotify_position_ms(&playback, much_later),
+        30_000
+    );
+}
+
+#[test]
+fn the_bar_shows_spotifys_track_and_device() {
+    let harness = spotify_bar(spotify_playback(
+        Some(aria_core::NowItem::Track(spotify_track(200_000))),
+        true,
+    ));
+    harness.get_by_label("Around the World");
+    harness.get_by_label("Daft Punk");
+    let mut args = FluentArgs::new();
+    args.set("device", "My Phone");
+    harness.get_by_label(&localizer().tr_args("player-spotify-on", &args));
+    harness.get_by_role_and_label(Role::Button, &en("player-pause"));
+    harness.get_by_role_and_label(Role::Button, &en("player-repeat-all"));
+}
+
+#[test]
+fn an_episode_shows_its_name() {
+    let harness = spotify_bar(spotify_playback(
+        Some(aria_core::NowItem::Other {
+            name: "A Podcast Episode".to_owned(),
+        }),
+        true,
+    ));
+    harness.get_by_label("A Podcast Episode");
+    harness.get_by_label("Spotify");
+    assert!(is_disabled(&harness, Role::Slider, &en("player-seek")));
+}
+
+#[test]
+fn transport_in_spotify_mode_sends_spotify_requests() {
+    use aria_core::spotify_service::SpotifyRequest;
+    let mut harness = spotify_bar(spotify_playback(
+        Some(aria_core::NowItem::Track(spotify_track(200_000))),
+        true,
+    ));
+    for key in [
+        "player-pause",
+        "player-next",
+        "player-previous",
+        "player-shuffle",
+        "player-repeat-all",
+    ] {
+        harness
+            .get_by_role_and_label(Role::Button, &en(key))
+            .click();
+        harness.run();
+    }
+    assert_eq!(
+        spotify_actions(&harness),
+        [
+            SpotifyRequest::TogglePlay,
+            SpotifyRequest::Next,
+            SpotifyRequest::Previous,
+            SpotifyRequest::SetShuffle(true),
+            SpotifyRequest::SetRepeat(aria_core::RepeatState::Track),
+        ]
+    );
+    let pos = point_on(&harness, &en("player-seek"), 0.5);
+    click_at(&mut harness, pos);
+    let seek = spotify_actions(&harness).pop();
+    assert!(
+        matches!(seek, Some(SpotifyRequest::Seek(ms)) if (95_000..=105_000).contains(&ms)),
+        "{seek:?}"
+    );
+    assert!(
+        !harness.state().actions.iter().any(|a| matches!(
+            a,
+            PlayerAction::TogglePlay | PlayerAction::Seek(_) | PlayerAction::ToggleShuffle
+        )),
+        "nothing local"
+    );
+}
+
+#[test]
+fn volume_is_sent_on_release_only() {
+    use aria_core::spotify_service::SpotifyRequest;
+    let mut harness = spotify_bar(spotify_playback(
+        Some(aria_core::NowItem::Track(spotify_track(200_000))),
+        true,
+    ));
+    let label = en("player-volume");
+    let node = harness.get_by_role_and_label(Role::Slider, &label);
+    let shown = node.accesskit_node().numeric_value().unwrap();
+    assert!((shown - 40.0).abs() < 0.01, "{shown}");
+    let (a, b, c) = (
+        point_on(&harness, &label, 0.2),
+        point_on(&harness, &label, 0.5),
+        point_on(&harness, &label, 0.8),
+    );
+    pointer(&mut harness, vec![moved(a), button(a, true)]);
+    pointer(&mut harness, vec![moved(b)]);
+    pointer(&mut harness, vec![moved(c)]);
+    assert!(
+        spotify_actions(&harness).is_empty(),
+        "nothing while dragging"
+    );
+    pointer(&mut harness, vec![button(c, false)]);
+    harness.run();
+    let sent = spotify_actions(&harness);
+    assert!(
+        matches!(sent.as_slice(), [SpotifyRequest::SetVolume(v)] if (75..=85).contains(v)),
+        "{sent:?}"
+    );
+    assert!(
+        !harness
+            .state()
+            .actions
+            .iter()
+            .any(|a| matches!(a, PlayerAction::SetVolume(_))),
+        "the local volume is left alone"
+    );
+}
+
+#[test]
+fn heart_mute_and_sleep_are_disabled_for_spotify() {
+    let harness = spotify_bar(spotify_playback(
+        Some(aria_core::NowItem::Track(spotify_track(200_000))),
+        false,
+    ));
+    for key in ["track-favorite", "player-mute", "player-sleep"] {
+        assert!(is_disabled(&harness, Role::Button, &en(key)), "{key}");
+    }
+}
+
+#[test]
+fn the_devices_popup_lists_devices_and_sends_the_choice() {
+    use aria_core::spotify_service::SpotifyRequest;
+    let mut harness = spotify_bar(spotify_playback(None, false));
+    let devices = en("player-devices");
+    assert!(!is_disabled(&harness, Role::Button, &devices));
+    harness
+        .get_by_role_and_label(Role::Button, &devices)
+        .click();
+    harness.run();
+    assert_eq!(spotify_actions(&harness), [SpotifyRequest::ListDevices]);
+    harness.get_by_label(&en("settings-spotify-active-device"));
+    harness
+        .get_by_role_and_label(Role::Button, "My Phone")
+        .click();
+    harness.run();
+    assert!(
+        harness
+            .state()
+            .actions
+            .contains(&PlayerAction::SpotifyDevice(Some("phone".to_owned()))),
+        "{:?}",
+        harness.state().actions
+    );
+}
+
+#[test]
+fn signed_out_the_devices_button_says_where_to_connect() {
+    let harness = bar_harness(view(None, false, 0), 0);
+    let devices = en("player-devices");
+    assert!(is_disabled(&harness, Role::Button, &devices));
+    let node = harness.get_by_role_and_label(Role::Button, &devices);
+    assert_eq!(
+        node.accesskit_node().description(),
+        Some(en("player-devices-connect"))
     );
 }

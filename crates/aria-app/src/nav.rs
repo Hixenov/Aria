@@ -72,8 +72,12 @@ impl Route {
     /// The delivery phase that implements this page, or `None` for pages with no phase.
     pub fn phase(self) -> Option<u8> {
         match self {
-            Route::Search | Route::Library | Route::Albums | Route::Artists => Some(3),
-            Route::Home
+            // Phase 3 (Spotify) brought the last four.
+            Route::Search
+            | Route::Library
+            | Route::Albums
+            | Route::Artists
+            | Route::Home
             | Route::Liked
             | Route::Playlists
             | Route::LocalMusic

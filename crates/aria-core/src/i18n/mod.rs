@@ -516,6 +516,20 @@ mod tests {
         "settings-spotify-allow-list",
         "settings-spotify-no-keyring",
         "settings-spotify-premium",
+        "player-spotify-on",
+        "player-spotify-not-here",
+        "player-devices-connect",
+        "spotify-page-signed-out",
+        "spotify-loading",
+        "spotify-search-hint",
+        "spotify-search-none",
+        "spotify-songs",
+        "spotify-albums",
+        "spotify-artists",
+        "spotify-playlists",
+        "spotify-liked",
+        "spotify-empty",
+        "spotify-by",
     ];
 
     // The six tests below are the Task 4 brief's, verbatim except for the

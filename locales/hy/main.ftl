@@ -406,3 +406,24 @@ settings-spotify-disconnect-confirm = Անջատե՞լ Spotify-ը։ Aria-ն կմ
 settings-spotify-allow-list = Քանի դեռ Aria-ի Spotify հավելվածը մշակման ռեժիմում է, կարող են միանալ միայն այն հաշիվները, որոնք ավելացրել է սեփականատերը (մինչև 5)։
 settings-spotify-no-keyring = Այս համակարգում բանալիների պահոց չկա, ուստի պետք է միանաք Aria-ի յուրաքանչյուր գործարկման ժամանակ։
 settings-spotify-premium = Ձեր սարքերում նվագարկելու համար անհրաժեշտ է Spotify Premium։
+
+## Player bar: Spotify
+# $device (String) - the name of the Spotify device playing
+player-spotify-on = { $device } սարքում
+player-spotify-not-here = Հասանելի չէ Spotify նվագարկման համար
+player-devices-connect = Միացրեք Spotify-ը Կարգավորումներում՝ սարք ընտրելու համար
+
+## Spotify pages
+spotify-page-signed-out = Միացրեք Spotify-ը՝ ձեր երաժշտությունն այստեղ տեսնելու համար։
+spotify-loading = Spotify գրադարանը բեռնվում է…
+spotify-search-hint = Որոնել Spotify-ում
+spotify-search-none = Spotify-ում համապատասխան ոչինչ չգտնվեց։
+spotify-songs = Երգեր
+spotify-albums = Ալբոմներ
+spotify-artists = Կատարողներ
+spotify-playlists = Երգացանկեր
+# $count (Number) - how many saved tracks there are
+spotify-liked = Հավանած երգեր ({ $count })
+spotify-empty = Այստեղ դեռ ոչինչ չկա։
+# $owner (String) - the playlist owner's name
+spotify-by = հեղինակ՝ { $owner }

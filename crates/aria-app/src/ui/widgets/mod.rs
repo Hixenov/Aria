@@ -9,6 +9,7 @@ mod nav_item;
 pub mod reorder;
 mod scrub;
 mod section_header;
+pub mod spotify_row;
 mod toast;
 pub mod track_menu;
 

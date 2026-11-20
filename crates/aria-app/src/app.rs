@@ -1,5 +1,6 @@
 //! Application state and the per-frame shell: player bar, sidebar, right panel and page.
 
+use aria_core::event::ActivePlayer;
 use aria_core::spotify_service::{SpotifyAccount, SpotifyEvent, SpotifyRequest};
 
 use crate::spotify::{RemoteCovers, SpotifyUi};
@@ -473,6 +474,16 @@ impl AriaApp {
             queue_open: self.settings.right_panel_open,
             artwork: self.artwork.as_mut(),
             collections: &self.collections,
+            spotify: if self.spotify.active == ActivePlayer::Spotify {
+                self.spotify.playback.as_deref()
+            } else {
+                None
+            },
+            spotify_devices: self
+                .spotify
+                .signed_in()
+                .then_some(self.spotify.devices.as_slice()),
+            covers: Some(&mut self.covers),
         };
         let actions = player_bar::show(ui, &mut bar);
         let now = ctx.input(|input| input.time);
@@ -483,6 +494,12 @@ impl AriaApp {
                     | PlayerAction::Previous
                     | PlayerAction::Next
                     | PlayerAction::TogglePlay
+                    | PlayerAction::Spotify(
+                        SpotifyRequest::Seek(_)
+                            | SpotifyRequest::Previous
+                            | SpotifyRequest::Next
+                            | SpotifyRequest::TogglePlay
+                    )
             )
         };
         if actions.iter().any(moves_position) {
@@ -510,6 +527,10 @@ impl AriaApp {
             }
             PlayerAction::SetFavorite { track, favorite } => {
                 return self.send(Command::SetFavorite { track, favorite });
+            }
+            PlayerAction::Spotify(request) => return self.send(Command::Spotify(request)),
+            PlayerAction::SpotifyDevice(id) => {
+                return self.send(Command::Spotify(SpotifyRequest::Device(id)));
             }
             PlayerAction::SetVolume(volume) => {
                 settings.volume = volume;
@@ -795,6 +816,10 @@ impl AriaApp {
                 let text = self.localizer.tr("spotify-signed-in-page");
                 let done_page = crate::spotify::signed_in_page(&text);
                 self.send(Command::Spotify(SpotifyRequest::SignIn { done_page }));
+            }
+            PageAction::Spotify(SpotifyRequest::Search(text)) => {
+                self.spotify.search_text.clone_from(&text);
+                self.send(Command::Spotify(SpotifyRequest::Search(text)));
             }
             PageAction::Spotify(request) => self.send(Command::Spotify(request)),
             PageAction::ResetSettings => {
