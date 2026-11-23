@@ -454,6 +454,7 @@ vinyl-finish-tinted = Тонированная
 vinyl-finish-splatter = С брызгами
 vinyl-speed = Скорость
 vinyl-rpm = { $rpm } об/мин
+player-mini-player = Мини-плеер
 mini-title = Мини-плеер Aria
 mini-back = Вернуться в Aria
 mini-on-top = Поверх всех окон

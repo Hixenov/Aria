@@ -4,6 +4,7 @@ use aria_core::event::ActivePlayer;
 use aria_core::spotify_service::{SpotifyAccount, SpotifyEvent, SpotifyRequest};
 
 use crate::spotify::{RemoteCovers, SpotifyUi};
+use crate::ui::mini::{self, MiniAction, MiniInput, MiniPlayer, place::place_on_screen};
 use crate::ui::vinyl::{VinylAction, VinylInput, VinylMode};
 use std::{
     io, mem,
@@ -231,7 +232,25 @@ pub struct AriaApp {
     window_shown: Option<bool>,
     /// The full-screen record.
     vinyl: VinylMode,
+    /// The mini-player.
+    mini: MiniPlayer,
+    /// Its window as it was made when it opened; kept unchanged while it is open, so egui
+    /// sends the window no new size or place.
+    mini_builder: Option<egui::ViewportBuilder>,
+    /// A new place and size of its window not saved yet, and when it last changed.
+    mini_moved: Option<(egui::Rect, f64)>,
+    /// The monitors, in points, for whether the mini-player's saved place is on one, and when
+    /// they were last looked at.
+    monitors: Vec<egui::Rect>,
+    monitors_at: Option<f64>,
+    /// How many times the mini-player asked for the main window, for tests.
+    main_window_asked: u32,
 }
+
+/// How long the mini-player's window must be still before its place is saved, in seconds.
+const MINI_SAVE_AFTER: f64 = 1.0;
+/// How often the monitors are looked at, in seconds.
+const MONITORS_EVERY: f64 = 2.0;
 
 impl AriaApp {
     /// Creates the app. Nothing touches egui until the first frame, which installs the
@@ -301,6 +320,12 @@ impl AriaApp {
             covers: RemoteCovers::default(),
             window_shown: None,
             vinyl: VinylMode::default(),
+            mini: MiniPlayer::default(),
+            mini_builder: None,
+            mini_moved: None,
+            monitors: Vec::new(),
+            monitors_at: None,
+            main_window_asked: 0,
         }
     }
 
@@ -323,6 +348,16 @@ impl AriaApp {
     }
 
     /// Whether the full-screen record is open.
+    /// Whether the mini-player is open.
+    pub fn mini_open(&self) -> bool {
+        self.mini.is_open()
+    }
+
+    /// How many times the mini-player asked for the main window.
+    pub fn main_window_asked(&self) -> u32 {
+        self.main_window_asked
+    }
+
     pub fn vinyl_open(&self) -> bool {
         self.vinyl.is_open()
     }
@@ -358,8 +393,8 @@ impl AriaApp {
         self.drain_events(&ctx);
         self.tell_window_shown(&ctx);
         self.vinyl.leave_restored_fullscreen(&ctx);
-        if !self.vinyl.is_open() {
-            // Only the full-screen record shows a large cover.
+        if !self.vinyl.is_open() && !self.mini.is_open() {
+            // Only the full-screen record and the mini-player show a large cover.
             self.covers.clear_large();
         }
         self.prepare_style(ui);
@@ -375,6 +410,14 @@ impl AriaApp {
         self.poll_artwork(&ctx);
 
         let palette = Palette::for_theme(ctx.theme(), &self.settings);
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        if minimized && self.mini.is_open() {
+            // Nothing of the main window can be seen. The mini-player is drawn alone and last:
+            // the textures and glyphs of this frame go up with the last window painted.
+            self.run_hotkeys(&ctx);
+            self.show_mini(&ctx, &palette);
+            return;
+        }
         if self.vinyl.is_open() && !self.vinyl.follow_os(&ctx) {
             // The full-screen record takes the whole window; only the toasts stay over it.
             self.show_vinyl(ui, &ctx, &palette);
@@ -393,6 +436,7 @@ impl AriaApp {
         self.run_hotkeys(&ctx);
         self.toasts.show(&ctx, &self.localizer, &palette);
         self.show_drop_hint(&ctx, &palette);
+        self.show_mini(&ctx, &palette);
     }
 
     /// What [`eframe::App::logic`] does: it runs before every drawn frame, and alone while the
@@ -411,7 +455,8 @@ impl AriaApp {
     /// while nobody can see it. The first frame tells it the window is shown.
     fn tell_window_shown(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-        let shown = !minimized;
+        // The mini-player shows what plays while the main window is minimized.
+        let shown = !minimized || self.mini.is_open();
         if self.window_shown != Some(shown) {
             self.window_shown = Some(shown);
             self.send(Command::WindowShown(shown));
@@ -524,6 +569,7 @@ impl AriaApp {
             position_ms,
             settings: &self.settings,
             queue_open: self.settings.right_panel_open,
+            mini_open: self.mini.is_open(),
             artwork: self.artwork.as_mut(),
             collections: &self.collections,
             spotify,
@@ -559,6 +605,224 @@ impl AriaApp {
         if now < self.settle_until {
             ctx.request_repaint_after(SETTLE_REPAINT);
         }
+    }
+
+    /// Opens or closes the full-screen record; opening it closes the mini-player.
+    fn toggle_vinyl(&mut self, ctx: &egui::Context) {
+        if !self.vinyl.is_open() && self.mini.is_open() {
+            self.close_mini(ctx);
+        }
+        self.vinyl.toggle(ctx);
+    }
+
+    /// Opens or closes the mini-player; opening it closes the full-screen record.
+    fn toggle_mini(&mut self, ctx: &egui::Context) {
+        if self.mini.is_open() {
+            self.close_mini(ctx);
+            return;
+        }
+        if self.vinyl.is_open() {
+            self.vinyl.close(ctx);
+        }
+        self.mini.open();
+        self.mini_builder = None;
+        self.mini_moved = None;
+    }
+
+    /// Closes the mini-player, saving where its window was.
+    fn close_mini(&mut self, ctx: &egui::Context) {
+        self.save_mini_place(ctx);
+        self.mini.close();
+        self.mini_builder = None;
+    }
+
+    /// The mini-player's window as it opens: its saved size and, when it is on a screen, its
+    /// saved place.
+    fn mini_viewport(&self) -> egui::ViewportBuilder {
+        let saved = self.settings.mini_player;
+        let level = if saved.on_top {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        };
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title(self.localizer.tr("mini-title"))
+            .with_decorations(false)
+            .with_resizable(true)
+            .with_inner_size(saved.size)
+            .with_min_inner_size([aria_core::settings::MINI_SIZE_MIN; 2])
+            .with_max_inner_size([aria_core::settings::MINI_SIZE_MAX; 2])
+            .with_taskbar(false)
+            .with_window_level(level);
+        if let Some(place) = saved
+            .place
+            .filter(|place| place_on_screen(*place, saved.size, &self.monitors))
+        {
+            builder = builder.with_position(place);
+        }
+        builder
+    }
+
+    /// Draws the mini-player in its own window, with the player bar's data, and carries out
+    /// what was done in it.
+    fn show_mini(&mut self, ctx: &egui::Context, palette: &Palette) {
+        if !self.mini.is_open() {
+            return;
+        }
+        let builder = match &self.mini_builder {
+            Some(builder) => builder.clone(),
+            None => {
+                let builder = self.mini_viewport();
+                self.mini_builder = Some(builder.clone());
+                builder
+            }
+        };
+        let now = NowPlaying::of(&self.player, self.playing_snapshot(), &self.localizer);
+        let local = self.player.current.and_then(|id| {
+            self.playing_snapshot()
+                .track(id)
+                .map(|track| (id, track.path.clone()))
+        });
+        let position_ms = self.clock.as_ref().map_or(0, |clock| {
+            player_bar::position_ms(clock.read(), &self.player)
+        });
+        let idle = aria_core::spotify_service::SpotifyPlayback {
+            state: aria_core::PlaybackState {
+                device: None,
+                item: None,
+                progress_ms: 0,
+                playing: false,
+                shuffle: false,
+                repeat: aria_core::RepeatState::Off,
+            },
+            at: std::time::Instant::now(),
+        };
+        let spotify = (self.spotify.active == ActivePlayer::Spotify)
+            .then(|| self.spotify.playback.as_deref().unwrap_or(&idle));
+        let on_top = self.settings.mini_player.on_top;
+        let actions = {
+            let mut bar = PlayerBar {
+                tr: &self.localizer,
+                palette,
+                view: &self.player,
+                now: now.as_ref(),
+                position_ms,
+                settings: &self.settings,
+                queue_open: self.settings.right_panel_open,
+                mini_open: true,
+                artwork: self.artwork.as_mut(),
+                collections: &self.collections,
+                spotify,
+                spotify_devices: None,
+                covers: Some(&mut self.covers),
+            };
+            let mini = &mut self.mini;
+            ctx.show_viewport_immediate(mini::viewport_id(), builder, |ui, class| {
+                let input = MiniInput {
+                    local: local.as_ref().map(|(id, path)| (*id, path.as_path())),
+                    on_top,
+                    own_window: !matches!(class, egui::ViewportClass::EmbeddedWindow),
+                };
+                mini.show(ui, &mut bar, &input)
+            })
+        };
+        for action in actions {
+            self.handle_mini_action(ctx, action);
+        }
+        self.track_mini_window(ctx);
+    }
+
+    fn handle_mini_action(&mut self, ctx: &egui::Context, action: MiniAction) {
+        match action {
+            MiniAction::Player(action) => self.handle_player_action(ctx, action),
+            MiniAction::Close => self.close_mini(ctx),
+            MiniAction::ShowMain => {
+                for command in [
+                    egui::ViewportCommand::Visible(true),
+                    egui::ViewportCommand::Minimized(false),
+                    egui::ViewportCommand::Focus,
+                ] {
+                    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+                }
+                self.main_window_asked += 1;
+            }
+            MiniAction::SetOnTop(on) => {
+                let mut settings = self.settings.clone();
+                settings.mini_player.on_top = on;
+                self.update_settings(ctx, settings);
+                let level = if on {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                };
+                if let Some(builder) = self.mini_builder.take() {
+                    self.mini_builder = Some(builder.with_window_level(level));
+                }
+                ctx.send_viewport_cmd_to(
+                    mini::viewport_id(),
+                    egui::ViewportCommand::WindowLevel(level),
+                );
+            }
+        }
+    }
+
+    /// Notes a new place or size of the mini-player's window, and saves it once it has been
+    /// still for a second: a drag is not written to disk at every step.
+    fn track_mini_window(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if let Some(rect) = self.mini.window_rect() {
+            let saved = self.settings.mini_player;
+            let is_saved = saved.place == Some([rect.left(), rect.top()])
+                && saved.size == [rect.width(), rect.height()];
+            match self.mini_moved {
+                Some((moved, _)) if moved == rect => {}
+                _ if is_saved => self.mini_moved = None,
+                _ => self.mini_moved = Some((rect, now)),
+            }
+        }
+        if let Some((_, at)) = self.mini_moved {
+            let waited = now - at;
+            if waited >= MINI_SAVE_AFTER {
+                self.save_mini_place(ctx);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                    MINI_SAVE_AFTER - waited,
+                ));
+            }
+        }
+    }
+
+    /// Saves the mini-player's window place and size, if they changed.
+    fn save_mini_place(&mut self, ctx: &egui::Context) {
+        if let Some((rect, _)) = self.mini_moved.take() {
+            let mut settings = self.settings.clone();
+            settings.mini_player.place = Some([rect.left(), rect.top()]);
+            settings.mini_player.size = [rect.width(), rect.height()];
+            self.update_settings(ctx, settings);
+        }
+    }
+
+    /// Looks at the monitors every few seconds, for the mini-player's saved place.
+    fn refresh_monitors(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let now = ctx.input(|i| i.time);
+        if self.monitors_at.is_some_and(|at| now - at < MONITORS_EVERY) {
+            return;
+        }
+        self.monitors_at = Some(now);
+        let Some(window) = frame.winit_window() else {
+            return;
+        };
+        self.monitors = window
+            .available_monitors()
+            .map(|monitor| {
+                let scale = monitor.scale_factor() as f32;
+                let (at, size) = (monitor.position(), monitor.size());
+                egui::Rect::from_min_size(
+                    egui::pos2(at.x as f32 / scale, at.y as f32 / scale),
+                    egui::vec2(size.width as f32 / scale, size.height as f32 / scale),
+                )
+            })
+            .collect();
     }
 
     /// Draws the full-screen record, with the player bar's own controls.
@@ -600,6 +864,7 @@ impl AriaApp {
                 position_ms,
                 settings: &self.settings,
                 queue_open: self.settings.right_panel_open,
+                mini_open: false,
                 artwork: self.artwork.as_mut(),
                 collections: &self.collections,
                 spotify,
@@ -638,7 +903,8 @@ impl AriaApp {
     fn handle_player_action(&mut self, ctx: &egui::Context, action: PlayerAction) {
         let mut settings = self.settings.clone();
         match action {
-            PlayerAction::ToggleFullScreen => return self.vinyl.toggle(ctx),
+            PlayerAction::ToggleFullScreen => return self.toggle_vinyl(ctx),
+            PlayerAction::ToggleMiniPlayer => return self.toggle_mini(ctx),
             PlayerAction::TogglePlay => return self.send(Command::TogglePlay),
             PlayerAction::Next => return self.send(Command::Next),
             PlayerAction::Previous => return self.send(Command::Previous),
@@ -829,7 +1095,7 @@ impl AriaApp {
             self.send(Command::TogglePlay);
         }
         if shortcuts.toggle_full_screen {
-            self.vinyl.toggle(ctx);
+            self.toggle_vinyl(ctx);
         }
         if self.vinyl.is_open() {
             // Esc closes the finish panel first, then the mode; page shortcuts are off.
@@ -1395,7 +1661,9 @@ impl eframe::App for AriaApp {
         self.logic_frame(ctx);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.refresh_monitors(&ctx, frame);
         self.show(ui);
     }
 
@@ -3139,6 +3407,166 @@ mod tests {
             // Past the controls' fade, with nothing playing.
             h.run_steps(45);
             assert!(h.try_run().is_ok(), "the mode keeps asking for frames");
+        }
+    }
+    mod mini {
+        use super::*;
+        use crate::ui::mini::MiniAction;
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable as _;
+
+        fn harness() -> Harness<'static, AriaApp> {
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1400.0, 900.0))
+                .with_step_dt(0.1)
+                .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), plain_app());
+            harness.run_steps(2);
+            harness
+        }
+
+        fn en(key: &str) -> String {
+            Localizer::new(Language::En).unwrap().tr(key).into_owned()
+        }
+
+        fn click(harness: &mut Harness<'_, AriaApp>, label: &str) {
+            harness.get_by_role_and_label(Role::Button, label).click();
+            harness.run_steps(2);
+        }
+
+        fn key(harness: &mut Harness<'_, AriaApp>, key: egui::Key) {
+            harness.key_press_modifiers(egui::Modifiers::NONE, key);
+            harness.run_steps(2);
+        }
+
+        fn minimize(h: &mut Harness<'_, AriaApp>) {
+            h.input_mut()
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .minimized = Some(true);
+            h.run_steps(2);
+        }
+
+        fn shown_false(h: &Harness<'_, AriaApp>) -> usize {
+            h.state()
+                .sent
+                .borrow()
+                .iter()
+                .filter(|c| matches!(c, Command::WindowShown(false)))
+                .count()
+        }
+
+        #[test]
+        fn the_bar_button_opens_and_closes_the_mini_player() {
+            let mut h = harness();
+            click(&mut h, &en("player-mini-player"));
+            assert!(h.state().mini_open());
+            click(&mut h, &en("player-mini-player"));
+            assert!(!h.state().mini_open());
+        }
+
+        #[test]
+        fn the_record_and_the_mini_player_are_not_open_together() {
+            let mut h = harness();
+            let ctx = h.ctx.clone();
+            click(&mut h, &en("player-mini-player"));
+            key(&mut h, egui::Key::F11);
+            assert!(h.state().vinyl_open());
+            assert!(!h.state().mini_open());
+            h.state_mut().toggle_mini(&ctx);
+            h.run_steps(2);
+            assert!(h.state().mini_open());
+            assert!(!h.state().vinyl_open());
+        }
+
+        #[test]
+        fn back_to_aria_asks_for_the_main_window() {
+            let mut h = harness();
+            let ctx = h.ctx.clone();
+            click(&mut h, &en("player-mini-player"));
+            h.state_mut().handle_mini_action(&ctx, MiniAction::ShowMain);
+            assert_eq!(h.state().main_window_asked(), 1);
+            assert!(h.state().mini_open());
+        }
+
+        #[test]
+        fn spotify_stays_shown_while_the_mini_player_is_open() {
+            let mut h = harness();
+            let ctx = h.ctx.clone();
+            click(&mut h, &en("player-mini-player"));
+            minimize(&mut h);
+            assert_eq!(shown_false(&h), 0);
+            h.state_mut().close_mini(&ctx);
+            h.run_steps(2);
+            assert_eq!(shown_false(&h), 1);
+        }
+
+        #[test]
+        fn the_minimized_main_window_draws_only_the_mini_player() {
+            let mut h = harness();
+            click(&mut h, &en("player-mini-player"));
+            assert!(h.query_by_label(&en("nav-settings")).is_some());
+            minimize(&mut h);
+            assert!(h.query_by_label(&en("nav-settings")).is_none());
+            assert!(h.query_by_label(&en("empty-nothing-playing")).is_some());
+        }
+
+        #[test]
+        fn a_moved_mini_player_is_saved_once_it_is_still() {
+            let mut h = harness();
+            click(&mut h, &en("player-mini-player"));
+            let moved = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(320.0, 280.0));
+            h.state_mut().mini.report_window(moved);
+            h.run_steps(5);
+            assert_eq!(h.state().settings().mini_player.place, None);
+            h.run_steps(8);
+            assert_eq!(h.state().settings().mini_player.place, Some([40.0, 60.0]));
+            assert_eq!(h.state().settings().mini_player.size, [320.0, 280.0]);
+            let writes = h
+                .state()
+                .sent
+                .borrow()
+                .iter()
+                .filter(
+                    |c| matches!(c, Command::UpdateSettings(s) if s.mini_player.place.is_some()),
+                )
+                .count();
+            assert_eq!(writes, 1);
+        }
+
+        #[test]
+        fn closing_saves_a_pending_place() {
+            let mut h = harness();
+            let ctx = h.ctx.clone();
+            click(&mut h, &en("player-mini-player"));
+            let moved = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(300.0, 300.0));
+            h.state_mut().mini.report_window(moved);
+            h.step();
+            h.state_mut().close_mini(&ctx);
+            assert_eq!(h.state().settings().mini_player.place, Some([40.0, 60.0]));
+        }
+
+        #[test]
+        fn the_large_cover_stays_while_the_mini_player_is_open() {
+            let mut h = harness();
+            let ctx = h.ctx.clone();
+            click(&mut h, &en("player-mini-player"));
+            h.state_mut().handle_event(
+                &ctx,
+                Event::Spotify(SpotifyEvent::Cover(std::sync::Arc::new(
+                    aria_core::spotify_service::Cover {
+                        url: "https://i.scdn.co/large".to_owned(),
+                        width: 1,
+                        height: 1,
+                        rgba: vec![0; 4],
+                        large: true,
+                    },
+                ))),
+            );
+            h.run_steps(2);
+            assert!(h.state().covers.has_large());
+            click(&mut h, &en("player-mini-player"));
+            assert!(!h.state().covers.has_large());
         }
     }
 }

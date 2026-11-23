@@ -540,6 +540,7 @@ mod tests {
         "vinyl-finish-tinted",
         "vinyl-rpm",
         "vinyl-speed",
+        "player-mini-player",
         "mini-title",
         "mini-back",
         "mini-on-top",

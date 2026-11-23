@@ -443,6 +443,7 @@ vinyl-finish-tinted = Tinted
 vinyl-finish-splatter = Splatter
 vinyl-speed = Speed
 vinyl-rpm = { $rpm } rpm
+player-mini-player = Mini player
 mini-title = Aria mini player
 mini-back = Back to Aria
 mini-on-top = Keep on top

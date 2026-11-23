@@ -442,6 +442,7 @@ vinyl-finish-tinted = Գունավոր
 vinyl-finish-splatter = Ցայտերով
 vinyl-speed = Արագություն
 vinyl-rpm = { $rpm } պտ/ր
+player-mini-player = Մինի նվագարկիչ
 mini-title = Aria մինի նվագարկիչ
 mini-back = Վերադառնալ Aria
 mini-on-top = Միշտ վերևում

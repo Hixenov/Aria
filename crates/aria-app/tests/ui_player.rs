@@ -134,6 +134,7 @@ fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
                     position_ms: bar.position_ms,
                     settings: &bar.settings,
                     queue_open: false,
+                    mini_open: false,
                     collections: &Default::default(),
                     artwork: None,
                     spotify: bar.spotify.as_ref(),

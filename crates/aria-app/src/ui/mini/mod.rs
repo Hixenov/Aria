@@ -58,6 +58,9 @@ pub struct MiniInput<'a> {
     /// The current local track and its file, for its large cover.
     pub local: Option<(TrackId, &'a Path)>,
     pub on_top: bool,
+    /// Whether it is drawn in a window of its own (not embedded, as in tests): only then does
+    /// it read the window's place and close requests, and move or resize it.
+    pub own_window: bool,
 }
 
 #[derive(Default)]
@@ -108,16 +111,18 @@ impl MiniPlayer {
         let rect = ui.max_rect();
         let mut out = Vec::new();
         let mut player = Vec::new();
-        if let Some(window) = ui.input(|i| i.viewport().outer_rect) {
-            self.window = Some(window);
-        }
-        if ui.input(|i| i.viewport().close_requested()) {
-            out.push(MiniAction::Close);
+        if input.own_window {
+            if let Some(window) = ui.input(|i| i.viewport().outer_rect) {
+                self.window = Some(window);
+            }
+            if ui.input(|i| i.viewport().close_requested()) {
+                out.push(MiniAction::Close);
+            }
         }
 
         // Under everything else, so the buttons take their clicks first.
         let background = ui.interact(rect, Id::unique("aria_mini_background"), Sense::drag());
-        if background.drag_started() {
+        if background.drag_started() && input.own_window {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         }
 
@@ -215,6 +220,7 @@ fn overlay(ui: &mut Ui, rect: Rect, parts: &mut Parts<'_, '_, '_>) {
                 position_ms: bar.position_ms,
                 settings: bar.settings,
                 queue_open: bar.queue_open,
+                mini_open: bar.mini_open,
                 artwork: bar.artwork.as_deref_mut(),
                 collections: bar.collections,
                 spotify: bar.spotify,
@@ -308,7 +314,7 @@ fn overlay(ui: &mut Ui, rect: Rect, parts: &mut Parts<'_, '_, '_>) {
         let response = ui
             .interact(grip, Id::unique("aria_mini_grip"), Sense::drag())
             .on_hover_cursor(CursorIcon::ResizeSouthEast);
-        if response.drag_started() {
+        if response.drag_started() && input.own_window {
             ui.ctx()
                 .send_viewport_cmd(ViewportCommand::BeginResize(ResizeDirection::SouthEast));
         }
@@ -480,6 +486,7 @@ mod tests {
                         position_ms: 0,
                         settings: &settings,
                         queue_open: false,
+                        mini_open: false,
                         artwork: None,
                         collections: &collections,
                         spotify: s.spotify.as_ref(),
@@ -489,6 +496,7 @@ mod tests {
                     let input = MiniInput {
                         local: None,
                         on_top: s.on_top,
+                        own_window: true,
                     };
                     let actions = s.mini.show(ui, &mut bar, &input);
                     s.out.extend(actions);

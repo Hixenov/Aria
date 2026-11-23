@@ -119,6 +119,8 @@ pub enum PlayerAction {
     SpotifyDevice(Option<String>),
     /// Open or close the full-screen record.
     ToggleFullScreen,
+    /// Open or close the mini-player.
+    ToggleMiniPlayer,
 }
 
 /// The sleep timer's lengths, in minutes, as its menu offers them.
@@ -212,6 +214,8 @@ pub struct PlayerBar<'a> {
     pub settings: &'a Settings,
     /// Marks the queue button as on.
     pub queue_open: bool,
+    /// Marks the mini-player button as on.
+    pub mini_open: bool,
     /// Where covers come from. Without it the placeholder shows.
     pub artwork: Option<&'a mut ArtworkTextures>,
     /// Which tracks are favorites, for the heart.
@@ -853,6 +857,14 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         out.push(PlayerAction::ToggleFullScreen);
     }
 
+    let mini = tr.tr("player-mini-player");
+    let control = IconButton::new(icons::PICTURE_IN_PICTURE, &mini, p)
+        .size(button, icon)
+        .selected(bar.mini_open);
+    if ui.add(control).clicked() {
+        out.push(PlayerAction::ToggleMiniPlayer);
+    }
+
     let lyrics = tr.tr("player-lyrics");
     let control = IconButton::new(icons::QUOTES, &lyrics, p).size(button, icon);
     pending(ui, control, &lyrics, LYRICS_PHASE, tr, p);
@@ -1260,6 +1272,7 @@ mod tests {
                     position_ms: 0,
                     settings: &settings,
                     queue_open: false,
+                    mini_open: false,
                     artwork: None,
                     collections: &collections,
                     spotify: None,
