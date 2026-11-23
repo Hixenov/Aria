@@ -3,4 +3,5 @@
 pub mod layout;
 pub mod pages;
 pub mod theme;
+pub mod vinyl;
 pub mod widgets;
