@@ -303,6 +303,18 @@ fn lenient_mic_volume<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> 
     lenient(d, MIC_VOLUME_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::vinyl_rpm`].
+fn lenient_vinyl_rpm<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    lenient(d, VINYL_RPM_DEFAULT)
+}
+
+/// The slowest the full-screen record turns, in turns per minute.
+pub const VINYL_RPM_MIN: f32 = 10.0;
+/// The fastest, a 78.
+pub const VINYL_RPM_MAX: f32 = 78.0;
+/// The speed it turns at unless chosen otherwise.
+pub const VINYL_RPM_DEFAULT: f32 = 20.0;
+
 /// Accepts any value for a hotkey; anything that is not a hotkey's text becomes `None` with a
 /// warning instead of failing the file. The value itself is not logged.
 fn lenient_hotkey<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Hotkey>, D::Error> {
@@ -428,6 +440,10 @@ pub struct Settings {
     /// The record's finish in the full-screen mode.
     #[serde(deserialize_with = "lenient_or_default")]
     pub vinyl_finish: VinylFinish,
+    /// How fast the full-screen record turns, in turns per minute, clamped to
+    /// `VINYL_RPM_MIN..=VINYL_RPM_MAX`.
+    #[serde(deserialize_with = "lenient_vinyl_rpm")]
+    pub vinyl_rpm: f32,
 }
 
 impl Default for Settings {
@@ -464,6 +480,7 @@ impl Default for Settings {
             mic_toggle_hotkey: None,
             spotify_device: None,
             vinyl_finish: VinylFinish::Black,
+            vinyl_rpm: VINYL_RPM_DEFAULT,
         }
     }
 }
@@ -484,6 +501,11 @@ impl Settings {
         };
         self.share_music_volume = level(self.share_music_volume, 1.0, SHARE_MUSIC_VOLUME_DEFAULT);
         self.mic_volume = level(self.mic_volume, MIC_VOLUME_MAX, MIC_VOLUME_DEFAULT);
+        self.vinyl_rpm = if self.vinyl_rpm.is_nan() {
+            VINYL_RPM_DEFAULT
+        } else {
+            self.vinyl_rpm.clamp(VINYL_RPM_MIN, VINYL_RPM_MAX)
+        };
         self.spotify_device = self
             .spotify_device
             .filter(|id| !id.trim().is_empty() && id.chars().count() <= SPOTIFY_DEVICE_MAX);
@@ -506,6 +528,22 @@ fn level(value: f32, max: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vinyl_rpm_defaults_clamps_and_falls_back() {
+        assert_eq!(Settings::default().vinyl_rpm, 20.0);
+        let read = |text: &str| {
+            toml::from_str::<Settings>(text)
+                .unwrap()
+                .sanitized()
+                .vinyl_rpm
+        };
+        assert_eq!(read("vinyl_rpm = 45.0"), 45.0);
+        assert_eq!(read("vinyl_rpm = 5.0"), VINYL_RPM_MIN);
+        assert_eq!(read("vinyl_rpm = 500.0"), VINYL_RPM_MAX);
+        assert_eq!(read("vinyl_rpm = \"fast\""), 20.0);
+        assert_eq!(read("vinyl_rpm = nan"), 20.0);
+    }
 
     #[test]
     fn vinyl_finish_reads_and_falls_back() {

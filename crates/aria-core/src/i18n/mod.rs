@@ -538,6 +538,8 @@ mod tests {
         "vinyl-finish-random",
         "vinyl-finish-black",
         "vinyl-finish-tinted",
+        "vinyl-rpm",
+        "vinyl-speed",
         "vinyl-finish-splatter",
         "vinyl-finish-marble",
     ];
@@ -668,6 +670,7 @@ mod tests {
         args.set("message", "777");
         args.set("device", "777");
         args.set("owner", "777");
+        args.set("rpm", "777");
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));

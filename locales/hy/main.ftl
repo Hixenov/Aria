@@ -440,4 +440,6 @@ vinyl-finish-random = Պատահական
 vinyl-finish-black = Սև
 vinyl-finish-tinted = Գունավոր
 vinyl-finish-splatter = Ցայտերով
+vinyl-speed = Արագություն
+vinyl-rpm = { $rpm } պտ/ր
 vinyl-finish-marble = Մարմարե

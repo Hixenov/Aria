@@ -1,10 +1,25 @@
-//! How the record and the tonearm move: the record turns at 33⅓ rpm while playing, speeding up
-//! and slowing down smoothly, and the arm swings on and off the record.
+//! How the record and the tonearm move: the record turns at the chosen speed while playing,
+//! speeding up and slowing down smoothly, and the arm swings on and off the record.
 
 use std::f32::consts::TAU;
 
-/// The record's speed, in turns per minute.
-pub const RPM: f32 = 100.0 / 3.0;
+use aria_core::settings::{VINYL_RPM_MAX, VINYL_RPM_MIN};
+
+/// The marks on the speed slider, in turns per minute: 20 is Aria's own, the rest are the
+/// speeds records are made for.
+pub const RPM_MARKS: [f32; 5] = [10.0, 20.0, 100.0 / 3.0, 45.0, 78.0];
+/// How close to a mark a chosen speed snaps to it.
+const SNAP: f32 = 1.5;
+
+/// `rpm` within the slider's range, on a mark when it is near one.
+pub fn snap_rpm(rpm: f32) -> f32 {
+    let rpm = rpm.clamp(VINYL_RPM_MIN, VINYL_RPM_MAX);
+    RPM_MARKS
+        .iter()
+        .copied()
+        .find(|mark| (rpm - mark).abs() <= SNAP)
+        .unwrap_or(rpm)
+}
 /// From still to full speed, in seconds.
 const SPIN_UP: f32 = 0.6;
 /// From full speed to still, in seconds.
@@ -17,7 +32,7 @@ const ARM: f32 = 0.5;
 pub struct Turntable {
     /// The record's angle, in radians, within `0..TAU`.
     pub angle: f32,
-    /// The record's speed, from 0 (still) to 1 (33⅓ rpm).
+    /// The record's speed, from 0 (still) to 1 (full speed).
     pub speed: f32,
     /// The arm, from 0 (at rest, off the record) to 1 (on the record).
     pub arm: f32,
@@ -35,7 +50,7 @@ fn smoothstep(t: f32) -> f32 {
 
 impl Turntable {
     /// Moves everything on by `dt` seconds.
-    pub fn step(&mut self, dt: f32, playing: bool) {
+    pub fn step(&mut self, dt: f32, playing: bool, rpm: f32) {
         let dt = dt.max(0.0);
         self.spin = if playing {
             (self.spin + dt / SPIN_UP).min(1.0)
@@ -49,7 +64,7 @@ impl Turntable {
         };
         self.speed = smoothstep(self.spin);
         self.arm = smoothstep(self.swing);
-        self.angle = (self.angle + self.speed * RPM / 60.0 * TAU * dt).rem_euclid(TAU);
+        self.angle = (self.angle + self.speed * rpm / 60.0 * TAU * dt).rem_euclid(TAU);
     }
 
     /// Whether anything moves, so the window must keep drawing.
@@ -67,7 +82,7 @@ mod tests {
     fn run(t: &mut Turntable, seconds: f32, playing: bool) {
         let steps = (seconds / DT).round() as usize;
         for _ in 0..steps {
-            t.step(DT, playing);
+            t.step(DT, playing, 20.0);
         }
     }
 
@@ -77,19 +92,36 @@ mod tests {
     }
 
     #[test]
-    fn full_speed_is_33_and_a_third_rpm() {
-        let mut t = Turntable::default();
-        run(&mut t, 1.0, true);
-        let mut total = 0.0;
-        let mut last = t.angle;
-        for _ in 0..(6.0 / DT).round() as usize {
-            t.step(DT, true);
-            total += travelled(last, t.angle);
-            last = t.angle;
+    fn full_speed_is_the_rpm_given() {
+        for (rpm, turns) in [(20.0, 2.0), (45.0, 4.5), (100.0 / 3.0, 10.0 / 3.0)] {
+            let mut t = Turntable::default();
+            for _ in 0..(1.0 / DT).round() as usize {
+                t.step(DT, true, rpm);
+            }
+            let mut total = 0.0;
+            let mut last = t.angle;
+            for _ in 0..(6.0 / DT).round() as usize {
+                t.step(DT, true, rpm);
+                total += travelled(last, t.angle);
+                last = t.angle;
+            }
+            let expected = turns * TAU;
+            assert!(
+                (total - expected).abs() < 1e-2,
+                "{rpm}: {total} vs {expected}"
+            );
+            assert!((0.0..TAU).contains(&t.angle));
         }
-        let expected = 6.0 * RPM / 60.0 * TAU;
-        assert!((total - expected).abs() < 1e-2, "{total} vs {expected}");
-        assert!((0.0..TAU).contains(&t.angle));
+    }
+
+    #[test]
+    fn a_speed_near_a_mark_snaps_to_it() {
+        assert_eq!(snap_rpm(33.0), 100.0 / 3.0);
+        assert_eq!(snap_rpm(21.0), 20.0);
+        assert_eq!(snap_rpm(44.0), 45.0);
+        assert_eq!(snap_rpm(60.0), 60.0);
+        assert_eq!(snap_rpm(2.0), 10.0);
+        assert_eq!(snap_rpm(99.0), 78.0);
     }
 
     #[test]
@@ -105,10 +137,10 @@ mod tests {
     fn pause_slows_down_without_a_jump() {
         let mut t = Turntable::default();
         run(&mut t, 1.0, true);
-        let most = RPM / 60.0 * TAU * DT * 1.001;
+        let most = 20.0 / 60.0 * TAU * DT * 1.001;
         for _ in 0..(1.0 / DT).round() as usize {
             let before = t.angle;
-            t.step(DT, false);
+            t.step(DT, false, 20.0);
             assert!(travelled(before, t.angle) <= most);
         }
         assert_eq!(t.speed, 0.0);

@@ -12,6 +12,15 @@ pub const ARTIST_BELOW: f32 = 32.0;
 /// The margin around the title.
 const MARGIN: f32 = 48.0;
 
+/// Where the volume goes in the control strip: at its right, centred in its height.
+pub fn volume_rect(strip: Rect) -> Rect {
+    let height = 40.0;
+    Rect::from_min_max(
+        pos2(strip.right() - 260.0, strip.center().y - height / 2.0),
+        pos2(strip.right() - 24.0, strip.center().y + height / 2.0),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
     /// The sleeve, on a wide window.
@@ -101,6 +110,16 @@ mod tests {
                 s.bottom() - STRIP
             );
         }
+    }
+
+    #[test]
+    fn the_volume_is_centred_in_the_strip() {
+        let s = screen(1920.0, 1080.0);
+        let strip = Rect::from_min_max(pos2(s.left(), s.bottom() - STRIP), s.max);
+        let volume = volume_rect(strip);
+        assert!((volume.center().y - strip.center().y).abs() < 0.5);
+        assert!(strip.contains_rect(volume));
+        assert!(volume.right() < strip.right());
     }
 
     #[test]

@@ -23,8 +23,8 @@ use self::draw::{
     ArmColours, FinishCache, Label as RecordLabel, draw_arm, draw_record, draw_sleeve,
 };
 use self::finish::{CoverColours, Finish, render, resolve};
-use self::layout::{ARTIST_BELOW, STRIP, layout};
-use self::motion::Turntable;
+use self::layout::{ARTIST_BELOW, STRIP, layout, volume_rect};
+use self::motion::{RPM_MARKS, Turntable, snap_rpm};
 use crate::ui::layout::player_bar::{self, PlayerAction, PlayerBar};
 use crate::ui::pages::PageAction;
 use crate::ui::theme::fonts::{icon_font, semibold};
@@ -44,11 +44,15 @@ pub enum VinylAction {
     Player(PlayerAction),
     Close,
     SetFinish(VinylFinish),
+    /// Turn at this speed, in turns per minute.
+    SetRpm(f32),
 }
 
 /// What the mode needs beside the player bar.
 pub struct VinylInput<'a> {
     pub finish: VinylFinish,
+    /// The record's speed, in turns per minute.
+    pub rpm: f32,
     pub dark: bool,
     /// The current local track and its file, for its large cover.
     pub local: Option<(TrackId, &'a Path)>,
@@ -75,6 +79,8 @@ pub struct VinylMode {
     swatches: Option<(CoverColours, Vec<TextureHandle>)>,
     /// The window's first reported state has been looked at.
     start_checked: bool,
+    /// The speed on the slider while it is dragged, before it is saved.
+    dragged_rpm: Option<f32>,
 }
 
 impl VinylMode {
@@ -178,7 +184,8 @@ impl VinylMode {
         let now = ui.input(|i| i.time);
         let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.1);
         let playing = bar.spotify.map_or(bar.view.playing, |p| p.state.playing);
-        self.turntable.step(dt, playing);
+        let rpm = self.dragged_rpm.unwrap_or(input.rpm);
+        self.turntable.step(dt, playing, rpm);
         let p = *bar.palette;
         let mut out = Vec::new();
         let mut player = Vec::new();
@@ -367,10 +374,7 @@ impl VinylMode {
                 p.bg.gamma_multiply(if dark { 0.75 } else { 0.85 }),
             );
             player_bar::center(ui, strip, parts.bar, parts.player);
-            let volume = Rect::from_min_max(
-                pos2(strip.right() - 260.0, strip.top()),
-                pos2(strip.right() - 24.0, strip.top() + STRIP / 2.0 + 18.0),
-            );
+            let volume = volume_rect(strip);
             ui.scope_builder(
                 UiBuilder::new()
                     .max_rect(volume)
@@ -409,8 +413,8 @@ impl VinylMode {
         let (tr, shown) = (parts.bar.tr, parts.shown);
         let width = 5.0 * (SWATCH + 16.0) + 32.0;
         let rect = Rect::from_center_size(
-            pos2(screen.center().x, screen.bottom() - STRIP - 70.0),
-            vec2(width, 110.0),
+            pos2(screen.center().x, screen.bottom() - STRIP - 110.0),
+            vec2(width, 190.0),
         );
         ui.painter().rect_filled(rect, 16.0, p.surface);
         let title = tr.tr("vinyl-finish");
@@ -489,6 +493,86 @@ impl VinylMode {
                 parts.out.push(VinylAction::SetFinish(*finish));
             }
         }
+        let speed = Rect::from_min_max(
+            pos2(rect.left() + 20.0, rect.top() + 110.0),
+            pos2(rect.right() - 20.0, rect.bottom() - 10.0),
+        );
+        self.speed_slider(ui, speed, p, parts);
+    }
+
+    /// The speed: a slider from the slowest to the fastest, its marks named under it. It is
+    /// saved when let go, and turns the record as it is dragged.
+    fn speed_slider(
+        &mut self,
+        ui: &mut Ui,
+        area: Rect,
+        p: &Palette,
+        parts: &mut Parts<'_, '_, '_>,
+    ) {
+        let tr = parts.bar.tr;
+        let mut rpm = self.dragged_rpm.unwrap_or(parts.input.rpm);
+        let name = tr.tr("vinyl-speed");
+        let head = Rect::from_min_size(area.min, vec2(area.width(), 20.0));
+        ui.put(
+            head,
+            Label::new(RichText::new(&*name).color(p.text_muted)).selectable(false),
+        );
+        let mut args = aria_core::i18n::FluentArgs::new();
+        args.set("rpm", rpm_text(rpm));
+        let value = tr.tr_args("vinyl-rpm", &args);
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(head)
+                .layout(EguiLayout::right_to_left(Align::Center)),
+            |ui| ui.add(Label::new(RichText::new(&*value).color(p.text)).selectable(false)),
+        );
+        let track = Rect::from_min_size(
+            pos2(area.left(), head.bottom() + 4.0),
+            vec2(area.width(), 24.0),
+        );
+        let range = aria_core::settings::VINYL_RPM_MIN..=aria_core::settings::VINYL_RPM_MAX;
+        let response = ui
+            .scope_builder(UiBuilder::new().max_rect(track), |ui| {
+                ui.spacing_mut().slider_width = track.width();
+                ui.add(
+                    egui::Slider::new(&mut rpm, range.clone())
+                        .show_value(false)
+                        .text(""),
+                )
+            })
+            .inner;
+        response.widget_info(|| WidgetInfo::slider(true, f64::from(rpm), &*name));
+        let rpm = snap_rpm(rpm);
+        if response.dragged() {
+            self.dragged_rpm = Some(rpm);
+        } else if response.drag_stopped() || response.changed() {
+            self.dragged_rpm = None;
+            parts.out.push(VinylAction::SetRpm(rpm));
+        }
+        let (low, high) = (*range.start(), *range.end());
+        let painter = ui.painter();
+        for mark in RPM_MARKS {
+            let x = track.left() + (mark - low) / (high - low) * track.width();
+            painter.text(
+                pos2(
+                    x.clamp(track.left() + 8.0, track.right() - 8.0),
+                    track.bottom() + 10.0,
+                ),
+                egui::Align2::CENTER_CENTER,
+                rpm_text(mark),
+                egui::FontId::proportional(12.0),
+                p.text_muted,
+            );
+        }
+    }
+}
+
+/// A speed as the slider names it: whole numbers, and 33⅓ for a third.
+fn rpm_text(rpm: f32) -> String {
+    if (rpm - 100.0 / 3.0).abs() < 0.01 {
+        "33⅓".to_owned()
+    } else {
+        format!("{}", rpm.round() as i32)
     }
 }
 

@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- The full-screen record turns at 20 rpm by default, and a speed slider in its palette panel chooses from 10 to 78 rpm, with marks at 10, 20, 33⅓, 45 and 78 that it snaps to. The speed is kept in `settings.toml` (`vinyl_rpm`) when the slider is let go.
+- In the full-screen record the volume sits in the middle of the control strip's height, level with the transport, no longer near its top.
+
 ## [0.3.1] - 2026-11-23 (the full-screen record)
 
 Checked with 1291 automated tests on Windows and in CI on Linux and macOS. The mode has not been looked at in a real window or tried by hand yet; see `docs/testing/0.3.1-manual-check.md`.

@@ -452,4 +452,6 @@ vinyl-finish-random = Случайный
 vinyl-finish-black = Чёрная
 vinyl-finish-tinted = Тонированная
 vinyl-finish-splatter = С брызгами
+vinyl-speed = Скорость
+vinyl-rpm = { $rpm } об/мин
 vinyl-finish-marble = Мраморная

@@ -441,4 +441,6 @@ vinyl-finish-random = Random
 vinyl-finish-black = Black
 vinyl-finish-tinted = Tinted
 vinyl-finish-splatter = Splatter
+vinyl-speed = Speed
+vinyl-rpm = { $rpm } rpm
 vinyl-finish-marble = Marble

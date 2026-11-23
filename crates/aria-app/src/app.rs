@@ -587,6 +587,7 @@ impl AriaApp {
             .then(|| self.spotify.playback.as_deref().unwrap_or(&idle));
         let input = VinylInput {
             finish: self.settings.vinyl_finish,
+            rpm: self.settings.vinyl_rpm,
             dark: ctx.theme() == egui::Theme::Dark,
             local: local.as_ref().map(|(id, path)| (*id, path.as_path())),
         };
@@ -623,6 +624,11 @@ impl AriaApp {
                 VinylAction::SetFinish(finish) => {
                     let mut settings = self.settings.clone();
                     settings.vinyl_finish = finish;
+                    self.update_settings(ctx, settings);
+                }
+                VinylAction::SetRpm(rpm) => {
+                    let mut settings = self.settings.clone();
+                    settings.vinyl_rpm = rpm;
                     self.update_settings(ctx, settings);
                 }
             }
@@ -3035,6 +3041,21 @@ mod tests {
             click(&mut h, &en("vinyl-finish"));
             click(&mut h, &en("vinyl-finish-marble"));
             assert_eq!(h.state().settings().vinyl_finish, VinylFinish::Marble);
+        }
+
+        #[test]
+        fn the_speed_slider_saves_the_speed() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            click(&mut h, &en("vinyl-finish"));
+            h.get_by_role_and_label(Role::Slider, &en("vinyl-speed"))
+                .set_value_accesskit(44.0);
+            h.run_steps(2);
+            assert_eq!(
+                h.state().settings().vinyl_rpm,
+                45.0,
+                "snapped to the 45 mark"
+            );
         }
 
         #[test]
