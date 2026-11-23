@@ -124,8 +124,9 @@ disconnect, it makes no request to Spotify or anyone else.
 - **What is sent, and to whom.** Requests go to Spotify only: `accounts.spotify.com` (sign-in and
   token refresh) and `api.spotify.com` (your library, search, playback), with your access token.
   Covers are fetched from the image addresses Spotify's answers give (Spotify's image servers,
-  such as `i.scdn.co`), over HTTPS and without your token. The full-screen record fetches the
-  largest image Spotify offers (about 640 pixels) for the item it shows, and only while it is open. What you type in Search is sent to
+  such as `i.scdn.co`), over HTTPS and without your token. The full-screen record and the
+  mini-player fetch the largest image Spotify offers (about 640 pixels) for the item they show,
+  and only while one of them is open. What you type in Search is sent to
   Spotify as you type. While Aria is connected it asks Spotify what is playing every 2 seconds
   while the player bar shows Spotify and every 15 seconds otherwise, and not at all while the
   window is minimized.

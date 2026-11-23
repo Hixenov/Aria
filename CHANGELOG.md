@@ -5,10 +5,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-24 (the mini-player)
+
+Checked with 1318 automated tests on Windows. The mini-player has been drawn only in a simulated window; nobody has opened it as a real second window yet. See `docs/testing/0.3.2-manual-check.md`.
+
+### Added
+
+- **Mini-player.** A new button in the player bar, beside the full-screen one, opens a small window of its own that stays above other windows: the cover fills it, and with the mouse over it the title and artists, previous, play and pause, next and the seek bar show over the cover, with "Back to Aria", a pin for keeping it on top, and close. Drag it anywhere to move it and its bottom-right corner to resize it (200 to 640 points either way). It works for local tracks and for Spotify, and keeps updating while the main window is minimized. Space plays and pauses while it has the focus. Closing it never closes Aria; closing Aria closes it. It and the full-screen record are not open together.
+- Its place, size and the pin are kept in `settings.toml` (`[mini_player]`). A place that is no longer on any screen (a monitor unplugged) is not used. It starts closed each time Aria starts.
+
 ### Changed
 
+- Version 0.3.2. `settings.toml` gains `vinyl_rpm` and `[mini_player]`; no database change.
+- While the mini-player is open, Spotify is still asked what is playing when the main window is minimized, and the large cover is kept while either the mini-player or the full-screen record shows it.
 - The full-screen record turns at 20 rpm by default, and a speed slider in its palette panel chooses from 10 to 78 rpm, with marks at 10, 20, 33⅓, 45 and 78 that it snaps to. The speed is kept in `settings.toml` (`vinyl_rpm`) when the slider is let go.
 - In the full-screen record the volume sits in the middle of the control strip's height, level with the transport, no longer near its top.
+
+### Limits
+
+- On Linux with Wayland the system decides where the mini-player goes and may not keep it on top; with some compositors it stops updating while the main window is minimized, until the main window is shown again.
+- Screen readers reach the mini-player's title only, not its buttons (eframe's accessibility covers the main window); everything it does is also in the main window.
 
 ## [0.3.1] - 2026-11-23 (the full-screen record)
 
