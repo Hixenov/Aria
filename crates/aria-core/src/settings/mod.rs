@@ -83,6 +83,34 @@ pub enum ReplayGainMode {
     Album,
 }
 
+/// The record's look in the full-screen mode.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VinylFinish {
+    /// Deep black vinyl.
+    #[default]
+    Black,
+    /// Translucent vinyl in a colour from the cover.
+    Tinted,
+    /// Smoky vinyl with streaks thrown from the centre.
+    Splatter,
+    /// Swirls of the cover's colours over black.
+    Marble,
+    /// One of the others, chosen per track.
+    Random,
+}
+
+impl VinylFinish {
+    /// Every finish, in the order the finish panel shows them.
+    pub const ALL: [VinylFinish; 5] = [
+        VinylFinish::Random,
+        VinylFinish::Black,
+        VinylFinish::Tinted,
+        VinylFinish::Splatter,
+        VinylFinish::Marble,
+    ];
+}
+
 /// Log verbosity.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -397,6 +425,9 @@ pub struct Settings {
     /// The Spotify device Aria plays on, by Spotify's device id; `None` is the active one.
     #[serde(deserialize_with = "lenient_or_default")]
     pub spotify_device: Option<String>,
+    /// The record's finish in the full-screen mode.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub vinyl_finish: VinylFinish,
 }
 
 impl Default for Settings {
@@ -432,6 +463,7 @@ impl Default for Settings {
             mic_volume: MIC_VOLUME_DEFAULT,
             mic_toggle_hotkey: None,
             spotify_device: None,
+            vinyl_finish: VinylFinish::Black,
         }
     }
 }
@@ -474,6 +506,21 @@ fn level(value: f32, max: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vinyl_finish_reads_and_falls_back() {
+        let read = |text: &str| toml::from_str::<Settings>(text).unwrap().vinyl_finish;
+        assert_eq!(read("vinyl_finish = \"marble\""), VinylFinish::Marble);
+        assert_eq!(read("vinyl_finish = 3"), VinylFinish::Black);
+        assert_eq!(read(""), VinylFinish::Black);
+        let saved = toml::to_string(&Settings {
+            vinyl_finish: VinylFinish::Splatter,
+            ..Settings::default()
+        })
+        .unwrap();
+        let back: Settings = toml::from_str(&saved).unwrap();
+        assert_eq!(back.vinyl_finish, VinylFinish::Splatter);
+    }
 
     #[test]
     fn spotify_device_is_sanitized() {
