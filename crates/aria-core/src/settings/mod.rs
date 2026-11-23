@@ -346,6 +346,53 @@ fn lenient_hotkey<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Hotkey>, D::
     }
 }
 
+/// The smallest the mini-player's window gets, either way, in points.
+pub const MINI_SIZE_MIN: f32 = 200.0;
+/// The largest, either way.
+pub const MINI_SIZE_MAX: f32 = 640.0;
+/// Its size the first time.
+const MINI_SIZE_DEFAULT: f32 = 300.0;
+
+/// The mini-player's window: where it was, how big, and whether it stays on top.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(default)]
+pub struct MiniPlayerSettings {
+    /// The window's top-left corner, in points; `None` lets the system place it.
+    pub place: Option<[f32; 2]>,
+    /// Its width and height, in points, within `MINI_SIZE_MIN..=MINI_SIZE_MAX`.
+    pub size: [f32; 2],
+    /// Whether it stays above other windows.
+    pub on_top: bool,
+}
+
+impl Default for MiniPlayerSettings {
+    fn default() -> Self {
+        Self {
+            place: None,
+            size: [MINI_SIZE_DEFAULT, MINI_SIZE_DEFAULT],
+            on_top: true,
+        }
+    }
+}
+
+impl MiniPlayerSettings {
+    /// A place with a number that is not one is dropped; a size is kept in range.
+    fn sanitized(self) -> Self {
+        let side = |v: f32| {
+            if v.is_nan() {
+                MINI_SIZE_DEFAULT
+            } else {
+                v.clamp(MINI_SIZE_MIN, MINI_SIZE_MAX)
+            }
+        };
+        Self {
+            place: self.place.filter(|[x, y]| x.is_finite() && y.is_finite()),
+            size: [side(self.size[0]), side(self.size[1])],
+            on_top: self.on_top,
+        }
+    }
+}
+
 /// Persisted user settings.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -444,6 +491,9 @@ pub struct Settings {
     /// `VINYL_RPM_MIN..=VINYL_RPM_MAX`.
     #[serde(deserialize_with = "lenient_vinyl_rpm")]
     pub vinyl_rpm: f32,
+    /// The mini-player's window.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub mini_player: MiniPlayerSettings,
 }
 
 impl Default for Settings {
@@ -481,6 +531,7 @@ impl Default for Settings {
             spotify_device: None,
             vinyl_finish: VinylFinish::Black,
             vinyl_rpm: VINYL_RPM_DEFAULT,
+            mini_player: MiniPlayerSettings::default(),
         }
     }
 }
@@ -506,6 +557,7 @@ impl Settings {
         } else {
             self.vinyl_rpm.clamp(VINYL_RPM_MIN, VINYL_RPM_MAX)
         };
+        self.mini_player = self.mini_player.sanitized();
         self.spotify_device = self
             .spotify_device
             .filter(|id| !id.trim().is_empty() && id.chars().count() <= SPOTIFY_DEVICE_MAX);
@@ -528,6 +580,67 @@ fn level(value: f32, max: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mini_player_defaults() {
+        let s = Settings::default();
+        assert_eq!(
+            s.mini_player,
+            MiniPlayerSettings {
+                place: None,
+                size: [300.0, 300.0],
+                on_top: true
+            }
+        );
+    }
+
+    #[test]
+    fn mini_player_reads_clamps_and_falls_back() {
+        let read = |text: &str| {
+            toml::from_str::<Settings>(text)
+                .unwrap()
+                .sanitized()
+                .mini_player
+        };
+        let m = read(
+            "[mini_player]
+place = [40.0, 50.0]
+size = [900.0, 120.0]
+on_top = false",
+        );
+        assert_eq!(
+            m,
+            MiniPlayerSettings {
+                place: Some([40.0, 50.0]),
+                size: [MINI_SIZE_MAX, MINI_SIZE_MIN],
+                on_top: false
+            }
+        );
+        assert_eq!(read("mini_player = 3"), MiniPlayerSettings::default());
+        let odd = read(
+            "[mini_player]
+place = [nan, 50.0]
+size = [nan, 300.0]",
+        );
+        assert_eq!(odd.place, None);
+        assert_eq!(odd.size, [300.0, 300.0]);
+    }
+
+    #[test]
+    fn mini_player_round_trips() {
+        let settings = Settings {
+            mini_player: MiniPlayerSettings {
+                place: Some([10.0, 20.0]),
+                size: [320.0, 280.0],
+                on_top: false,
+            },
+            ..Settings::default()
+        };
+        let text = toml::to_string(&settings).unwrap();
+        assert!(text.contains("[mini_player]"), "{text}");
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back.mini_player, settings.mini_player);
+    }
 
     #[test]
     fn vinyl_rpm_defaults_clamps_and_falls_back() {
