@@ -9,12 +9,14 @@ use aria_core::TrackId;
 use eframe::egui;
 use image::RgbaImage;
 
+use super::finish::{CoverColours, cover_colours};
+
 /// Large covers fit in this many pixels.
 pub const LARGE: u32 = 1024;
 
 pub struct LocalCover {
     wanted: Option<TrackId>,
-    texture: Option<(TrackId, egui::TextureHandle)>,
+    texture: Option<(TrackId, egui::TextureHandle, CoverColours)>,
     sender: Sender<(TrackId, Option<RgbaImage>)>,
     arrived: Receiver<(TrackId, Option<RgbaImage>)>,
 }
@@ -60,16 +62,25 @@ impl LocalCover {
             }
             self.texture = cover.map(|image| {
                 let size = [image.width() as usize, image.height() as usize];
+                let colours = cover_colours(image.as_raw(), image.width(), image.height());
                 let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
                 let texture =
                     ctx.load_texture("aria-large-cover", pixels, egui::TextureOptions::LINEAR);
-                (arrived, texture)
+                (arrived, texture, colours)
             });
         }
         self.texture
             .as_ref()
-            .filter(|(held, _)| *held == key)
-            .map(|(_, texture)| texture)
+            .filter(|(held, _, _)| *held == key)
+            .map(|(_, texture, _)| texture)
+    }
+
+    /// The colours of `key`'s large cover, once it has arrived.
+    pub fn colours(&self, key: TrackId) -> Option<CoverColours> {
+        self.texture
+            .as_ref()
+            .filter(|(held, _, _)| *held == key)
+            .map(|(_, _, colours)| *colours)
     }
 
     /// Forgets the cover (when the mode closes).

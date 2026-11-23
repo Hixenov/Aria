@@ -117,6 +117,8 @@ pub enum PlayerAction {
     Spotify(SpotifyRequest),
     /// Play Spotify on this device; `None` is Spotify's active one.
     SpotifyDevice(Option<String>),
+    /// Open or close the full-screen record.
+    ToggleFullScreen,
 }
 
 /// The sleep timer's lengths, in minutes, as its menu offers them.
@@ -498,7 +500,12 @@ pub fn format_label(format: &TrackFormat) -> String {
 }
 
 /// Shuffle, previous, play, next and repeat, with the seek bar under them, centered in `bar`.
-fn center(ui: &mut Ui, area: Rect, bar: &mut PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
+pub(crate) fn center(
+    ui: &mut Ui,
+    area: Rect,
+    bar: &mut PlayerBar<'_>,
+    out: &mut Vec<PlayerAction>,
+) {
     let width = (area.width() * (1.0 - 2.0 * SIDE_SHARE)).min(CENTER_MAX_WIDTH);
     let height = PLAY_BUTTON[0] + SEEK_ROW;
     let column = Rect::from_center_size(area.center(), vec2(width, height));
@@ -819,6 +826,12 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     ui.spacing_mut().item_spacing.x = SPACE[0];
     let [button, icon] = BUTTON;
 
+    let full = tr.tr("player-full-screen");
+    let control = IconButton::new(icons::CORNERS_OUT, &full, p).size(button, icon);
+    if ui.add(control).clicked() {
+        out.push(PlayerAction::ToggleFullScreen);
+    }
+
     let lyrics = tr.tr("player-lyrics");
     let control = IconButton::new(icons::QUOTES, &lyrics, p).size(button, icon);
     pending(ui, control, &lyrics, LYRICS_PHASE, tr, p);
@@ -843,6 +856,14 @@ fn extras(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
 
     microphone(ui, bar, out);
 
+    volume_controls(ui, bar, out);
+}
+
+/// The volume bar and mute (Spotify's volume while the bar shows Spotify), laid out from the
+/// right in a right-to-left `ui`.
+pub(crate) fn volume_controls(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
+    let (tr, p) = (bar.tr, bar.palette);
+    let [button, icon] = BUTTON;
     if let Some(playback) = bar.spotify {
         return spotify_volume(ui, bar, playback, out);
     }

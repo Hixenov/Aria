@@ -23,6 +23,9 @@ pub const DEVICES: &str = "\u{eba4}";
 pub const QUEUE: &str = "\u{e6ac}";
 pub const QUOTES: &str = "\u{e660}";
 pub const MOON: &str = "\u{e330}";
+pub const CORNERS_OUT: &str = "\u{e1d0}";
+pub const CORNERS_IN: &str = "\u{e1ce}";
+pub const PALETTE: &str = "\u{e6c8}";
 pub const CARET_LEFT: &str = "\u{e138}";
 pub const CARET_RIGHT: &str = "\u{e13a}";
 pub const CARET_UP: &str = "\u{e13c}";
@@ -37,6 +40,9 @@ pub const MICROPHONE_SLASH: &str = "\u{e328}";
 /// Every icon above, for the font coverage test.
 pub const ALL: &[&str] = &[
     MOON,
+    CORNERS_OUT,
+    CORNERS_IN,
+    PALETTE,
     HOUSE,
     MAGNIFYING_GLASS,
     BOOKS,

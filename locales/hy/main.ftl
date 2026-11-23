@@ -431,3 +431,13 @@ spotify-by = հեղինակ՝ { $owner }
 ## Spotify: review fixes
 spotify-load-failed = Aria-ն չկարողացավ բեռնել սա Spotify-ից։ Փորձեք «Թարմացնել գրադարանը» Կարգավորումներում։
 spotify-sign-in-failed-page = Aria-ն չմիացավ Spotify-ին։ Վերադարձեք Aria և փորձեք կրկին։
+
+## Full-screen record
+player-full-screen = Ամբողջ էկրանով
+player-exit-full-screen = Դուրս գալ ամբողջ էկրանից
+vinyl-finish = Ձայնապնակի տեսքը
+vinyl-finish-random = Պատահական
+vinyl-finish-black = Սև
+vinyl-finish-tinted = Գունավոր
+vinyl-finish-splatter = Ցայտերով
+vinyl-finish-marble = Մարմարե

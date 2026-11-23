@@ -532,6 +532,14 @@ mod tests {
         "spotify-by",
         "spotify-load-failed",
         "spotify-sign-in-failed-page",
+        "player-full-screen",
+        "player-exit-full-screen",
+        "vinyl-finish",
+        "vinyl-finish-random",
+        "vinyl-finish-black",
+        "vinyl-finish-tinted",
+        "vinyl-finish-splatter",
+        "vinyl-finish-marble",
     ];
 
     // The six tests below are the Task 4 brief's, verbatim except for the

@@ -443,3 +443,13 @@ spotify-by = автор: { $owner }
 ## Spotify: review fixes
 spotify-load-failed = Aria не смогла загрузить это из Spotify. Попробуйте «Обновить медиатеку» в настройках.
 spotify-sign-in-failed-page = Aria не подключена к Spotify. Вернитесь в Aria и попробуйте ещё раз.
+
+## Full-screen record
+player-full-screen = На весь экран
+player-exit-full-screen = Выйти из полноэкранного режима
+vinyl-finish = Вид пластинки
+vinyl-finish-random = Случайный
+vinyl-finish-black = Чёрная
+vinyl-finish-tinted = Тонированная
+vinyl-finish-splatter = С брызгами
+vinyl-finish-marble = Мраморная

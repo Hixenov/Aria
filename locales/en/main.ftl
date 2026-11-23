@@ -432,3 +432,13 @@ spotify-by = by { $owner }
 ## Spotify: review fixes
 spotify-load-failed = Aria couldn't load this from Spotify. Try Refresh library in Settings.
 spotify-sign-in-failed-page = Aria wasn't connected to Spotify. Go back to Aria and try again.
+
+## Full-screen record
+player-full-screen = Full screen
+player-exit-full-screen = Exit full screen
+vinyl-finish = Record finish
+vinyl-finish-random = Random
+vinyl-finish-black = Black
+vinyl-finish-tinted = Tinted
+vinyl-finish-splatter = Splatter
+vinyl-finish-marble = Marble

@@ -4,6 +4,7 @@ use aria_core::event::ActivePlayer;
 use aria_core::spotify_service::{SpotifyAccount, SpotifyEvent, SpotifyRequest};
 
 use crate::spotify::{RemoteCovers, SpotifyUi};
+use crate::ui::vinyl::{VinylAction, VinylInput, VinylMode};
 use std::{
     io, mem,
     path::PathBuf,
@@ -228,6 +229,8 @@ pub struct AriaApp {
     covers: RemoteCovers,
     /// Whether the window was shown at the last frame, as last told to the backend.
     window_shown: Option<bool>,
+    /// The full-screen record.
+    vinyl: VinylMode,
 }
 
 impl AriaApp {
@@ -297,6 +300,7 @@ impl AriaApp {
             spotify: SpotifyUi::default(),
             covers: RemoteCovers::default(),
             window_shown: None,
+            vinyl: VinylMode::default(),
         }
     }
 
@@ -316,6 +320,16 @@ impl AriaApp {
     /// The settings in effect.
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// Whether the full-screen record is open.
+    pub fn vinyl_open(&self) -> bool {
+        self.vinyl.is_open()
+    }
+
+    /// The last OS full-screen command the full-screen record sent.
+    pub fn vinyl_requested_fullscreen(&self) -> Option<bool> {
+        self.vinyl.requested_fullscreen()
     }
 
     /// Spotify as the backend last reported it.
@@ -356,6 +370,13 @@ impl AriaApp {
         self.poll_artwork(&ctx);
 
         let palette = Palette::for_theme(ctx.theme(), &self.settings);
+        if self.vinyl.is_open() && !self.vinyl.follow_os(&ctx) {
+            // The full-screen record takes the whole window; only the toasts stay over it.
+            self.show_vinyl(ui, &ctx, &palette);
+            self.run_hotkeys(&ctx);
+            self.toasts.show(&ctx, &self.localizer, &palette);
+            return;
+        }
         // The player bar goes first so it spans the full width of the window.
         self.show_player_bar(ui, &ctx, &palette);
         self.show_sidebar(ui, &ctx, &palette);
@@ -535,9 +556,78 @@ impl AriaApp {
         }
     }
 
+    /// Draws the full-screen record, with the player bar's own controls.
+    fn show_vinyl(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, palette: &Palette) {
+        let now = NowPlaying::of(&self.player, self.playing_snapshot(), &self.localizer);
+        let local = self.player.current.and_then(|id| {
+            self.playing_snapshot()
+                .track(id)
+                .map(|track| (id, track.path.clone()))
+        });
+        let position_ms = self.clock.as_ref().map_or(0, |clock| {
+            player_bar::position_ms(clock.read(), &self.player)
+        });
+        let idle = aria_core::spotify_service::SpotifyPlayback {
+            state: aria_core::PlaybackState {
+                device: None,
+                item: None,
+                progress_ms: 0,
+                playing: false,
+                shuffle: false,
+                repeat: aria_core::RepeatState::Off,
+            },
+            at: std::time::Instant::now(),
+        };
+        let spotify = (self.spotify.active == ActivePlayer::Spotify)
+            .then(|| self.spotify.playback.as_deref().unwrap_or(&idle));
+        let input = VinylInput {
+            finish: self.settings.vinyl_finish,
+            dark: ctx.theme() == egui::Theme::Dark,
+            local: local.as_ref().map(|(id, path)| (*id, path.as_path())),
+        };
+        let actions = {
+            let mut bar = PlayerBar {
+                tr: &self.localizer,
+                palette,
+                view: &self.player,
+                now: now.as_ref(),
+                position_ms,
+                settings: &self.settings,
+                queue_open: self.settings.right_panel_open,
+                artwork: self.artwork.as_mut(),
+                collections: &self.collections,
+                spotify,
+                spotify_devices: self
+                    .spotify
+                    .signed_in()
+                    .then_some(self.spotify.devices.as_slice()),
+                covers: Some(&mut self.covers),
+            };
+            let vinyl = &mut self.vinyl;
+            egui::CentralPanel::default()
+                .frame(Frame::NONE)
+                .show(ui, |ui| vinyl.show(ui, &mut bar, &input))
+                .inner
+        };
+        for action in actions {
+            match action {
+                VinylAction::Close | VinylAction::Player(PlayerAction::ToggleFullScreen) => {
+                    self.vinyl.close(ctx);
+                }
+                VinylAction::Player(action) => self.handle_player_action(ctx, action),
+                VinylAction::SetFinish(finish) => {
+                    let mut settings = self.settings.clone();
+                    settings.vinyl_finish = finish;
+                    self.update_settings(ctx, settings);
+                }
+            }
+        }
+    }
+
     fn handle_player_action(&mut self, ctx: &egui::Context, action: PlayerAction) {
         let mut settings = self.settings.clone();
         match action {
+            PlayerAction::ToggleFullScreen => return self.vinyl.toggle(ctx),
             PlayerAction::TogglePlay => return self.send(Command::TogglePlay),
             PlayerAction::Next => return self.send(Command::Next),
             PlayerAction::Previous => return self.send(Command::Previous),
@@ -726,6 +816,16 @@ impl AriaApp {
         if shortcuts.toggle_play {
             self.settle_until = ctx.input(|input| input.time) + SETTLE_FOR;
             self.send(Command::TogglePlay);
+        }
+        if shortcuts.toggle_full_screen {
+            self.vinyl.toggle(ctx);
+        }
+        if self.vinyl.is_open() {
+            // Esc closes the finish panel first, then the mode; page shortcuts are off.
+            if shortcuts.escape && !self.vinyl.escape() {
+                self.vinyl.close(ctx);
+            }
+            return;
         }
         if shortcuts.toggle_right_panel {
             self.toggle_right_panel(ctx);
@@ -2794,5 +2894,190 @@ mod tests {
         assert_eq!(plays_sent(&app, 1), 1, "the press waited for a drawn frame");
         eframe::App::logic(&mut app, &ctx, &mut frame);
         assert_eq!(plays_sent(&app, 1), 1, "a press fired twice");
+    }
+
+    mod vinyl {
+        use super::*;
+        use aria_core::event::ActivePlayer;
+        use aria_core::settings::VinylFinish;
+        use aria_core::spotify_service::SpotifyPlayback;
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable as _;
+
+        fn harness() -> Harness<'static, AriaApp> {
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1400.0, 900.0))
+                .with_step_dt(0.1)
+                .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), plain_app());
+            harness.run_steps(2);
+            harness
+        }
+
+        fn en(key: &str) -> String {
+            Localizer::new(Language::En).unwrap().tr(key).into_owned()
+        }
+
+        fn click(harness: &mut Harness<'_, AriaApp>, label: &str) {
+            harness.get_by_role_and_label(Role::Button, label).click();
+            harness.run_steps(2);
+        }
+
+        fn key(harness: &mut Harness<'_, AriaApp>, key: egui::Key, modifiers: egui::Modifiers) {
+            harness.key_press_modifiers(modifiers, key);
+            harness.run_steps(2);
+        }
+
+        #[test]
+        fn the_bar_button_opens_the_mode_and_esc_closes_it() {
+            let mut h = harness();
+            click(&mut h, &en("player-full-screen"));
+            assert!(h.state().vinyl_open());
+            assert_eq!(h.state().vinyl_requested_fullscreen(), Some(true));
+            key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+            assert!(!h.state().vinyl_open());
+            assert_eq!(h.state().vinyl_requested_fullscreen(), Some(false));
+        }
+
+        #[test]
+        fn closing_restores_a_windowed_window() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            assert!(h.state().vinyl_open());
+            click(&mut h, &en("player-exit-full-screen"));
+            assert!(!h.state().vinyl_open());
+            assert_eq!(h.state().vinyl_requested_fullscreen(), Some(false));
+        }
+
+        fn report_fullscreen(h: &mut Harness<'_, AriaApp>, on: bool) {
+            h.input_mut()
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .fullscreen = Some(on);
+            h.run_steps(2);
+        }
+
+        #[test]
+        fn a_window_already_full_screen_stays_so() {
+            let mut h = harness();
+            report_fullscreen(&mut h, true);
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            assert!(!h.state().vinyl_open());
+            assert_eq!(
+                h.state().vinyl_requested_fullscreen(),
+                Some(true),
+                "no command leaves full screen"
+            );
+        }
+
+        #[test]
+        fn leaving_os_full_screen_closes_the_mode() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            report_fullscreen(&mut h, true);
+            assert!(h.state().vinyl_open());
+            report_fullscreen(&mut h, false);
+            assert!(!h.state().vinyl_open());
+        }
+
+        #[test]
+        fn controls_show_on_movement_and_hide_after_3_s() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            let exit = en("player-exit-full-screen");
+            assert!(h.query_by_label(&exit).is_some());
+            h.run_steps(40);
+            assert!(h.query_by_label(&exit).is_none(), "hidden after 3 s");
+            h.input_mut()
+                .events
+                .push(egui::Event::PointerMoved(egui::pos2(700.0, 450.0)));
+            h.run_steps(5);
+            assert!(h.query_by_label(&exit).is_some(), "back on movement");
+        }
+
+        #[test]
+        fn esc_closes_the_panel_then_the_mode() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            click(&mut h, &en("vinyl-finish"));
+            let marble = en("vinyl-finish-marble");
+            assert!(h.query_by_label(&marble).is_some());
+            key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+            assert!(h.state().vinyl_open());
+            assert!(h.query_by_label(&marble).is_none());
+            key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+            assert!(!h.state().vinyl_open());
+        }
+
+        #[test]
+        fn choosing_a_finish_saves_it() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            click(&mut h, &en("vinyl-finish"));
+            click(&mut h, &en("vinyl-finish-marble"));
+            assert_eq!(h.state().settings().vinyl_finish, VinylFinish::Marble);
+        }
+
+        #[test]
+        fn page_shortcuts_are_off_in_the_mode() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            key(&mut h, egui::Key::Num9, egui::Modifiers::COMMAND);
+            assert_eq!(h.state().current_route(), Route::Home);
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            key(&mut h, egui::Key::Num9, egui::Modifiers::COMMAND);
+            assert_eq!(h.state().current_route(), Route::Settings);
+        }
+
+        #[test]
+        fn the_mode_controls_spotify_like_the_bar() {
+            let mut h = harness();
+            let ctx = h.ctx.clone();
+            let playback = SpotifyPlayback {
+                state: aria_core::PlaybackState {
+                    device: None,
+                    item: Some(aria_core::NowItem::Other {
+                        name: "An Episode".to_owned(),
+                    }),
+                    progress_ms: 0,
+                    playing: true,
+                    shuffle: false,
+                    repeat: aria_core::RepeatState::Off,
+                },
+                at: std::time::Instant::now(),
+            };
+            h.state_mut().handle_event(
+                &ctx,
+                Event::Spotify(SpotifyEvent::Playback(Some(std::sync::Arc::new(playback)))),
+            );
+            h.state_mut()
+                .handle_event(&ctx, Event::ActivePlayer(ActivePlayer::Spotify));
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            h.get_by_label("An Episode");
+            click(&mut h, &en("player-pause"));
+            let sent = h.state().sent.borrow();
+            assert!(
+                sent.iter()
+                    .any(|c| matches!(c, Command::Spotify(SpotifyRequest::TogglePlay))),
+                "{sent:?}"
+            );
+        }
+
+        #[test]
+        fn nothing_playing_says_so() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            h.get_by_label(&en("empty-nothing-playing"));
+        }
+
+        #[test]
+        fn a_paused_record_asks_for_no_repaint() {
+            let mut h = harness();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            // Past the controls' fade, with nothing playing.
+            h.run_steps(45);
+            assert!(h.try_run().is_ok(), "the mode keeps asking for frames");
+        }
     }
 }

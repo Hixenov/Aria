@@ -14,6 +14,7 @@ use aria_core::spotify_service::{
 use eframe::egui;
 
 use crate::ui::pages::PageAction;
+use crate::ui::vinyl::finish::{CoverColours, cover_colours};
 
 /// The most covers kept as textures; past it the oldest go.
 const MAX_COVERS: usize = 400;
@@ -83,6 +84,8 @@ pub struct RemoteCovers {
     order: VecDeque<String>,
     /// When each missing cover was asked for.
     asked: HashMap<String, Instant>,
+    /// Each cover's colours, for the full-screen record.
+    colours: HashMap<String, CoverColours>,
 }
 
 impl RemoteCovers {
@@ -138,18 +141,29 @@ impl RemoteCovers {
             egui::TextureOptions::LINEAR,
         );
         self.asked.remove(&cover.url);
+        self.colours.insert(
+            cover.url.clone(),
+            cover_colours(&cover.rgba, cover.width, cover.height),
+        );
         if self.textures.insert(cover.url.clone(), texture).is_none() {
             self.order.push_back(cover.url.clone());
         }
         while self.order.len() > MAX_COVERS {
             if let Some(oldest) = self.order.pop_front() {
                 self.textures.remove(&oldest);
+                self.colours.remove(&oldest);
             }
         }
     }
 
+    /// The colours of the cover at `url`, once it has arrived.
+    pub fn colours(&self, url: &str) -> Option<CoverColours> {
+        self.colours.get(url).copied()
+    }
+
     /// Forgets every cover (after sign-out).
     pub fn clear(&mut self) {
+        self.colours.clear();
         self.textures.clear();
         self.order.clear();
         self.asked.clear();

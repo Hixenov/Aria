@@ -14,6 +14,8 @@ const BACK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::ArrowL
 const FORWARD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::ALT, Key::ArrowRight);
 /// Space plays and pauses.
 const TOGGLE_PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
+/// Opens or closes the full-screen record.
+const FULL_SCREEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F11);
 /// With Ctrl (Cmd on macOS), these keys jump to their route. Ctrl+1…8 take the first eight
 /// entries of [`Route::ALL`], as they always did; Settings stays on Ctrl+9, and the Soundboard,
 /// which sits before it in the sidebar, is Ctrl+0.
@@ -38,6 +40,10 @@ pub(crate) struct Shortcuts {
     pub(crate) forward: bool,
     pub(crate) toggle_right_panel: bool,
     pub(crate) toggle_play: bool,
+    pub(crate) toggle_full_screen: bool,
+    /// Esc was pressed outside a text field. It is not consumed: only the full-screen record
+    /// acts on it.
+    pub(crate) escape: bool,
 }
 
 /// Reads and consumes this frame's shortcuts, so a focused text field doesn't act on them
@@ -53,7 +59,9 @@ pub(crate) fn read_shortcuts(input: &mut InputState, typing: bool) -> Shortcuts 
     };
     if !typing {
         shortcuts.toggle_play = consume_exact(input, &TOGGLE_PLAY);
+        shortcuts.escape = input.key_pressed(Key::Escape);
     }
+    shortcuts.toggle_full_screen = consume_exact(input, &FULL_SCREEN);
     for (key, route) in ROUTE_KEYS {
         if consume_exact(input, &KeyboardShortcut::new(Modifiers::COMMAND, key)) {
             shortcuts.jump = Some(route);
