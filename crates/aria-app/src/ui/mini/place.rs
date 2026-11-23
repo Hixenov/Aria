@@ -6,7 +6,8 @@ use eframe::egui::{Rect, pos2, vec2};
 const ON_SCREEN: f32 = 48.0;
 
 /// Whether the window at `place`, of `size`, has at least a 48 × 48 piece on one of
-/// `monitors`. With no monitors known it is taken as on screen.
+/// `monitors`, all in physical pixels (`size` is in points, near enough for this). With no
+/// monitors known it is taken as on screen.
 pub fn place_on_screen(place: [f32; 2], size: [f32; 2], monitors: &[Rect]) -> bool {
     if monitors.is_empty() {
         return true;

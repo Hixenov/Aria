@@ -357,7 +357,8 @@ const MINI_SIZE_DEFAULT: f32 = 300.0;
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(default)]
 pub struct MiniPlayerSettings {
-    /// The window's top-left corner, in points; `None` lets the system place it.
+    /// The window's top-left corner, in physical pixels (the same on every screen, whatever
+    /// its scaling); `None` lets the system place it.
     pub place: Option<[f32; 2]>,
     /// Its width and height, in points, within `MINI_SIZE_MIN..=MINI_SIZE_MAX`.
     pub size: [f32; 2],

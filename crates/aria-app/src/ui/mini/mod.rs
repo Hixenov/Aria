@@ -63,11 +63,21 @@ pub struct MiniInput<'a> {
     pub own_window: bool,
 }
 
+/// Where the mini-player's window is: its top-left corner in physical pixels, which mean the
+/// same on every screen, and its size in points, as the window is made with it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowSpot {
+    pub place: [f32; 2],
+    pub size: [f32; 2],
+}
+
 #[derive(Default)]
 pub struct MiniPlayer {
     open: bool,
-    /// The window's outer rect as the system last reported it.
-    window: Option<Rect>,
+    /// Where the system last reported the window.
+    window: Option<WindowSpot>,
+    /// A place, in pixels, to move the window to once it has a scale.
+    move_to: Option<[f32; 2]>,
     local_cover: LocalCover,
 }
 
@@ -76,27 +86,64 @@ impl MiniPlayer {
         self.open
     }
 
-    pub fn open(&mut self) {
+    /// Opens it; `move_to` is a saved place, in pixels, already known to be on a screen.
+    pub fn open(&mut self, move_to: Option<[f32; 2]>) {
         self.open = true;
         self.window = None;
+        self.move_to = move_to;
     }
 
     /// Closes it and lets its large cover go.
     pub fn close(&mut self) {
         self.open = false;
         self.window = None;
+        self.move_to = None;
         self.local_cover.clear();
     }
 
-    /// The window's outer rect as the system last reported it.
-    pub fn window_rect(&self) -> Option<Rect> {
+    /// Where the system last reported the window.
+    pub fn window_spot(&self) -> Option<WindowSpot> {
         self.window
+    }
+
+    /// The saved place still to be moved to.
+    pub fn pending_move(&self) -> Option<[f32; 2]> {
+        self.move_to
     }
 
     /// Stands for the system reporting where the window is, in tests without a real window.
     #[cfg(test)]
-    pub fn report_window(&mut self, rect: Rect) {
-        self.window = Some(rect);
+    pub fn report_window(&mut self, spot: WindowSpot) {
+        self.window = Some(spot);
+    }
+
+    /// Notes where the window is, in pixels, and moves it to a saved place once it has a
+    /// scale. The window is made where the system puts it; a place in points would be read in
+    /// the scale of that screen, not of the screen it was saved on.
+    fn follow_window(&mut self, ui: &Ui) {
+        let (outer, native) = ui.input(|i| {
+            (
+                i.viewport().outer_rect,
+                i.viewport().native_pixels_per_point,
+            )
+        });
+        let Some(ppp) = native
+            .or_else(|| Some(ui.ctx().pixels_per_point()))
+            .filter(|ppp| ppp.is_finite() && *ppp > 0.0)
+        else {
+            return;
+        };
+        if let Some(place) = self.move_to.take() {
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::OuterPosition(outer_position(place, ppp)));
+            return;
+        }
+        if let Some(outer) = outer {
+            self.window = Some(WindowSpot {
+                place: [outer.left() * ppp, outer.top() * ppp],
+                size: [outer.width(), outer.height()],
+            });
+        }
     }
 
     /// Draws the mini-player into `ui`, which is its whole window, and returns what the user
@@ -112,9 +159,7 @@ impl MiniPlayer {
         let mut out = Vec::new();
         let mut player = Vec::new();
         if input.own_window {
-            if let Some(window) = ui.input(|i| i.viewport().outer_rect) {
-                self.window = Some(window);
-            }
+            self.follow_window(ui);
             if ui.input(|i| i.viewport().close_requested()) {
                 out.push(MiniAction::Close);
             }
@@ -329,6 +374,12 @@ fn overlay(ui: &mut Ui, rect: Rect, parts: &mut Parts<'_, '_, '_>) {
             );
         }
     }
+}
+
+/// Where to ask a window on a screen of `ppp` pixels per point to go, so that it lands at
+/// `place`, in pixels: the system turns the points back into pixels with that same scale.
+fn outer_position(place: [f32; 2], ppp: f32) -> Pos2 {
+    pos2(place[0] / ppp, place[1] / ppp)
 }
 
 /// The cover filling `rect`, cropped to its shape; without one, the placeholder.
@@ -595,6 +646,92 @@ mod tests {
     fn nothing_playing_says_so() {
         let h = harness(state(PlayerView::default(), None));
         assert!(h.query_by_label(&en("empty-nothing-playing")).is_some());
+    }
+
+    /// A harness whose window is at `outer`, in its own points, on a screen of `ppp` pixels
+    /// per point; one frame is run.
+    fn on_screen(state: State, outer: Rect, ppp: f32) -> Harness<'static, State> {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(300.0, 300.0))
+            .with_context_setup(fonts::install)
+            .build_ui_state(
+                |ui, s: &mut State| {
+                    let palette = Palette::dark();
+                    let settings = Settings::default();
+                    let collections = Collections::default();
+                    let mut bar = PlayerBar {
+                        tr: &s.tr,
+                        palette: &palette,
+                        view: &s.view,
+                        now: s.now.as_ref(),
+                        position_ms: 0,
+                        settings: &settings,
+                        queue_open: false,
+                        mini_open: true,
+                        artwork: None,
+                        collections: &collections,
+                        spotify: s.spotify.as_ref(),
+                        spotify_devices: None,
+                        covers: None,
+                    };
+                    let input = MiniInput {
+                        local: None,
+                        on_top: s.on_top,
+                        own_window: true,
+                    };
+                    let actions = s.mini.show(ui, &mut bar, &input);
+                    s.out.extend(actions);
+                },
+                state,
+            );
+        let info = h
+            .input_mut()
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default();
+        info.outer_rect = Some(outer);
+        info.native_pixels_per_point = Some(ppp);
+        h.step();
+        h
+    }
+
+    #[test]
+    fn the_window_is_reported_in_pixels() {
+        // At 150 %, a window at (2800, 200) points is at (4200, 300) pixels; its size stays in
+        // points, as the window is made with it.
+        let outer = Rect::from_min_size(egui::pos2(2800.0, 200.0), egui::vec2(200.0, 220.0));
+        let h = on_screen(local(), outer, 1.5);
+        assert_eq!(
+            h.state().mini.window_spot(),
+            Some(WindowSpot {
+                place: [4200.0, 300.0],
+                size: [200.0, 220.0]
+            })
+        );
+    }
+
+    #[test]
+    fn a_saved_place_is_set_in_the_windows_own_pixels() {
+        // The window opens where the system puts it, on a screen at 150 %; the saved place, in
+        // pixels, is reached through that screen's scale, whatever the target screen's is.
+        assert_eq!(
+            outer_position([4200.0, 300.0], 1.5),
+            egui::pos2(2800.0, 200.0)
+        );
+        assert_eq!(
+            outer_position([4200.0, 300.0], 1.0),
+            egui::pos2(4200.0, 300.0)
+        );
+        let mut s = local();
+        s.mini.open(Some([4200.0, 300.0]));
+        let outer = Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(300.0, 300.0));
+        let h = on_screen(s, outer, 1.5);
+        // Moved once; after that the window is followed again, in pixels.
+        assert_eq!(h.state().mini.pending_move(), None);
+        assert_eq!(
+            h.state().mini.window_spot().map(|spot| spot.place),
+            Some([150.0, 150.0])
+        );
     }
 
     #[test]

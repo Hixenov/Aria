@@ -4,7 +4,9 @@ use aria_core::event::ActivePlayer;
 use aria_core::spotify_service::{SpotifyAccount, SpotifyEvent, SpotifyRequest};
 
 use crate::spotify::{RemoteCovers, SpotifyUi};
-use crate::ui::mini::{self, MiniAction, MiniInput, MiniPlayer, place::place_on_screen};
+use crate::ui::mini::{
+    self, MiniAction, MiniInput, MiniPlayer, WindowSpot, place::place_on_screen,
+};
 use crate::ui::vinyl::{VinylAction, VinylInput, VinylMode};
 use std::{
     io, mem,
@@ -238,9 +240,9 @@ pub struct AriaApp {
     /// sends the window no new size or place.
     mini_builder: Option<egui::ViewportBuilder>,
     /// A new place and size of its window not saved yet, and when it last changed.
-    mini_moved: Option<(egui::Rect, f64)>,
-    /// The monitors, in points, for whether the mini-player's saved place is on one, and when
-    /// they were last looked at.
+    mini_moved: Option<(WindowSpot, f64)>,
+    /// The monitors, in physical pixels, for whether the mini-player's saved place is on one,
+    /// and when they were last looked at.
     monitors: Vec<egui::Rect>,
     monitors_at: Option<f64>,
     /// How many times the mini-player asked for the main window, for tests.
@@ -624,7 +626,11 @@ impl AriaApp {
         if self.vinyl.is_open() {
             self.vinyl.close(ctx);
         }
-        self.mini.open();
+        let saved = self.settings.mini_player;
+        let move_to = saved
+            .place
+            .filter(|place| place_on_screen(*place, saved.size, &self.monitors));
+        self.mini.open(move_to);
         self.mini_builder = None;
         self.mini_moved = None;
     }
@@ -636,8 +642,8 @@ impl AriaApp {
         self.mini_builder = None;
     }
 
-    /// The mini-player's window as it opens: its saved size and, when it is on a screen, its
-    /// saved place.
+    /// The mini-player's window as it opens: its saved size, where the system puts it (it is
+    /// then moved to its saved place, see [`MiniPlayer::open`]).
     fn mini_viewport(&self) -> egui::ViewportBuilder {
         let saved = self.settings.mini_player;
         let level = if saved.on_top {
@@ -645,7 +651,7 @@ impl AriaApp {
         } else {
             egui::WindowLevel::Normal
         };
-        let mut builder = egui::ViewportBuilder::default()
+        egui::ViewportBuilder::default()
             .with_title(self.localizer.tr("mini-title"))
             .with_decorations(false)
             .with_resizable(true)
@@ -653,14 +659,7 @@ impl AriaApp {
             .with_min_inner_size([aria_core::settings::MINI_SIZE_MIN; 2])
             .with_max_inner_size([aria_core::settings::MINI_SIZE_MAX; 2])
             .with_taskbar(false)
-            .with_window_level(level);
-        if let Some(place) = saved
-            .place
-            .filter(|place| place_on_screen(*place, saved.size, &self.monitors))
-        {
-            builder = builder.with_position(place);
-        }
-        builder
+            .with_window_level(level)
     }
 
     /// Draws the mini-player in its own window, with the player bar's data, and carries out
@@ -770,14 +769,13 @@ impl AriaApp {
     /// still for a second: a drag is not written to disk at every step.
     fn track_mini_window(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        if let Some(rect) = self.mini.window_rect() {
+        if let Some(spot) = self.mini.window_spot() {
             let saved = self.settings.mini_player;
-            let is_saved = saved.place == Some([rect.left(), rect.top()])
-                && saved.size == [rect.width(), rect.height()];
+            let is_saved = saved.place == Some(spot.place) && saved.size == spot.size;
             match self.mini_moved {
-                Some((moved, _)) if moved == rect => {}
+                Some((moved, _)) if moved == spot => {}
                 _ if is_saved => self.mini_moved = None,
-                _ => self.mini_moved = Some((rect, now)),
+                _ => self.mini_moved = Some((spot, now)),
             }
         }
         if let Some((_, at)) = self.mini_moved {
@@ -794,10 +792,10 @@ impl AriaApp {
 
     /// Saves the mini-player's window place and size, if they changed.
     fn save_mini_place(&mut self, ctx: &egui::Context) {
-        if let Some((rect, _)) = self.mini_moved.take() {
+        if let Some((spot, _)) = self.mini_moved.take() {
             let mut settings = self.settings.clone();
-            settings.mini_player.place = Some([rect.left(), rect.top()]);
-            settings.mini_player.size = [rect.width(), rect.height()];
+            settings.mini_player.place = Some(spot.place);
+            settings.mini_player.size = spot.size;
             self.update_settings(ctx, settings);
         }
     }
@@ -815,11 +813,10 @@ impl AriaApp {
         self.monitors = window
             .available_monitors()
             .map(|monitor| {
-                let scale = monitor.scale_factor() as f32;
                 let (at, size) = (monitor.position(), monitor.size());
                 egui::Rect::from_min_size(
-                    egui::pos2(at.x as f32 / scale, at.y as f32 / scale),
-                    egui::vec2(size.width as f32 / scale, size.height as f32 / scale),
+                    egui::pos2(at.x as f32, at.y as f32),
+                    egui::vec2(size.width as f32, size.height as f32),
                 )
             })
             .collect();
@@ -3411,7 +3408,7 @@ mod tests {
     }
     mod mini {
         use super::*;
-        use crate::ui::mini::MiniAction;
+        use crate::ui::mini::{MiniAction, WindowSpot};
         use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable as _;
 
@@ -3515,7 +3512,10 @@ mod tests {
         fn a_moved_mini_player_is_saved_once_it_is_still() {
             let mut h = harness();
             click(&mut h, &en("player-mini-player"));
-            let moved = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(320.0, 280.0));
+            let moved = WindowSpot {
+                place: [40.0, 60.0],
+                size: [320.0, 280.0],
+            };
             h.state_mut().mini.report_window(moved);
             h.run_steps(5);
             assert_eq!(h.state().settings().mini_player.place, None);
@@ -3535,11 +3535,42 @@ mod tests {
         }
 
         #[test]
+        fn a_saved_place_waits_for_the_window() {
+            // The place is in pixels: it is not given to the window as it is made (in points of
+            // whichever screen the system picks), but moved to once the window has a scale.
+            let mut h = harness();
+            h.state_mut().settings.mini_player.place = Some([4200.0, 300.0]);
+            h.state_mut().monitors = vec![
+                egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(3840.0, 2160.0)),
+                egui::Rect::from_min_size(egui::pos2(3840.0, 0.0), egui::vec2(1920.0, 1080.0)),
+            ];
+            click(&mut h, &en("player-mini-player"));
+            let builder = h.state().mini_builder.clone().unwrap_or_default();
+            assert_eq!(builder.position, None);
+            assert_eq!(h.state().mini.pending_move(), Some([4200.0, 300.0]));
+        }
+
+        #[test]
+        fn a_saved_place_off_every_screen_is_not_used() {
+            let mut h = harness();
+            h.state_mut().settings.mini_player.place = Some([6300.0, 100.0]);
+            h.state_mut().monitors = vec![
+                egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(3840.0, 2160.0)),
+                egui::Rect::from_min_size(egui::pos2(3840.0, 0.0), egui::vec2(1920.0, 1080.0)),
+            ];
+            click(&mut h, &en("player-mini-player"));
+            assert_eq!(h.state().mini.pending_move(), None);
+        }
+
+        #[test]
         fn closing_saves_a_pending_place() {
             let mut h = harness();
             let ctx = h.ctx.clone();
             click(&mut h, &en("player-mini-player"));
-            let moved = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(300.0, 300.0));
+            let moved = WindowSpot {
+                place: [40.0, 60.0],
+                size: [300.0, 300.0],
+            };
             h.state_mut().mini.report_window(moved);
             h.step();
             h.state_mut().close_mini(&ctx);

@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format is based on
 
 ## [0.3.2] - 2026-11-24 (the mini-player)
 
-Checked with 1318 automated tests on Windows. The mini-player has been drawn only in a simulated window; nobody has opened it as a real second window yet. See `docs/testing/0.3.2-manual-check.md`.
+Checked with 1322 automated tests on Windows. The mini-player has been drawn only in a simulated window; nobody has opened it as a real second window yet. See `docs/testing/0.3.2-manual-check.md`.
 
 ### Added
 
@@ -24,6 +24,7 @@ Checked with 1318 automated tests on Windows. The mini-player has been drawn onl
 ### Limits
 
 - On Linux with Wayland the system decides where the mini-player goes and may not keep it on top; with some compositors it stops updating while the main window is minimized, until the main window is shown again.
+- On macOS the corner does not resize the mini-player (winit cannot start a resize there); it opens at its saved size.
 - Screen readers reach the mini-player's title only, not its buttons (eframe's accessibility covers the main window); everything it does is also in the main window.
 
 ## [0.3.1] - 2026-11-23 (the full-screen record)
