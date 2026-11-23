@@ -36,9 +36,17 @@ pub const INFO: &str = "\u{e2ce}";
 pub const MUSIC_NOTES: &str = "\u{e340}";
 pub const MICROPHONE: &str = "\u{e326}";
 pub const MICROPHONE_SLASH: &str = "\u{e328}";
+pub const PICTURE_IN_PICTURE: &str = "\u{e64c}";
+pub const PUSH_PIN: &str = "\u{e3e2}";
+pub const PUSH_PIN_SLASH: &str = "\u{e3e4}";
+pub const ARROW_SQUARE_OUT: &str = "\u{e5de}";
 
 /// Every icon above, for the font coverage test.
 pub const ALL: &[&str] = &[
+    PICTURE_IN_PICTURE,
+    PUSH_PIN,
+    PUSH_PIN_SLASH,
+    ARROW_SQUARE_OUT,
     MOON,
     CORNERS_OUT,
     CORNERS_IN,

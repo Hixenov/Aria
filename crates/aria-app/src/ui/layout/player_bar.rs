@@ -602,7 +602,7 @@ impl Transport {
 }
 
 /// The action for a transport button: the local one, or Spotify's request.
-fn transport_action(bar: &PlayerBar<'_>, local: PlayerAction) -> PlayerAction {
+pub(crate) fn transport_action(bar: &PlayerBar<'_>, local: PlayerAction) -> PlayerAction {
     let Some(playback) = bar.spotify else {
         return local;
     };

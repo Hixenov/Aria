@@ -540,6 +540,10 @@ mod tests {
         "vinyl-finish-tinted",
         "vinyl-rpm",
         "vinyl-speed",
+        "mini-title",
+        "mini-back",
+        "mini-on-top",
+        "mini-close",
         "vinyl-finish-splatter",
         "vinyl-finish-marble",
     ];
