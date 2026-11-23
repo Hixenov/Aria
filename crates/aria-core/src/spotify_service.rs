@@ -165,6 +165,8 @@ pub struct Cover {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// Decoded for the full-screen record ([`SpotifyRequest::LargeCover`]).
+    pub large: bool,
 }
 
 impl std::fmt::Debug for Cover {
@@ -938,6 +940,7 @@ fn decode_cover(url: String, bytes: &[u8], max: u32) -> Option<Cover> {
         width: rgba.width(),
         height: rgba.height(),
         rgba: rgba.into_raw(),
+        large: max >= LARGE_COVER,
     })
 }
 
@@ -1534,6 +1537,7 @@ mod tests {
         };
         assert_eq!(cover.url, url);
         assert_eq!((cover.width, cover.height), (1024, 512));
+        assert!(cover.large);
     }
 
     #[test]

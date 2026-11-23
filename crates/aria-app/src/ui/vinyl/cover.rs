@@ -64,8 +64,7 @@ impl LocalCover {
                 let size = [image.width() as usize, image.height() as usize];
                 let colours = cover_colours(image.as_raw(), image.width(), image.height());
                 let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-                let texture =
-                    ctx.load_texture("aria-large-cover", pixels, egui::TextureOptions::LINEAR);
+                let texture = ctx.load_texture("aria-large-cover", pixels, super::draw::TURNING);
                 (arrived, texture, colours)
             });
         }

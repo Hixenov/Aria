@@ -5,6 +5,10 @@ use eframe::egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 /// From this width-to-height ratio on, the sleeve lies beside the record.
 pub const WIDE_RATIO: f32 = 1.4;
+/// The height of the control strip along the bottom.
+pub const STRIP: f32 = 96.0;
+/// How far the artist line reaches below the title block's anchor.
+pub const ARTIST_BELOW: f32 = 32.0;
 /// The margin around the title.
 const MARGIN: f32 = 48.0;
 
@@ -22,7 +26,10 @@ pub struct Layout {
 
 pub fn layout(screen: Rect) -> Layout {
     let (w, h) = (screen.width(), screen.height());
-    let title = pos2(screen.left() + MARGIN, screen.bottom() - MARGIN * 2.2);
+    let title = pos2(
+        screen.left() + MARGIN,
+        screen.bottom() - STRIP - ARTIST_BELOW - MARGIN / 3.0,
+    );
     let (sleeve, record) = if w >= WIDE_RATIO * h {
         let side = 0.62 * h;
         // The sleeve, then the record over its right edge, reaching a quarter past it.
@@ -75,6 +82,25 @@ mod tests {
             }
         }
         seen / all
+    }
+
+    #[test]
+    fn the_title_clears_the_control_strip() {
+        for (w, h) in [
+            (1920.0, 1080.0),
+            (1280.0, 1024.0),
+            (800.0, 1200.0),
+            (3440.0, 1440.0),
+        ] {
+            let s = screen(w, h);
+            let title = layout(s).title;
+            assert!(
+                title.y + ARTIST_BELOW <= s.bottom() - STRIP,
+                "{w}x{h}: the artist line ends at {} under the strip at {}",
+                title.y + ARTIST_BELOW,
+                s.bottom() - STRIP
+            );
+        }
     }
 
     #[test]

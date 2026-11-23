@@ -23,7 +23,7 @@ use self::draw::{
     ArmColours, FinishCache, Label as RecordLabel, draw_arm, draw_record, draw_sleeve,
 };
 use self::finish::{CoverColours, Finish, render, resolve};
-use self::layout::layout;
+use self::layout::{ARTIST_BELOW, STRIP, layout};
 use self::motion::Turntable;
 use crate::ui::layout::player_bar::{self, PlayerAction, PlayerBar};
 use crate::ui::pages::PageAction;
@@ -35,8 +35,6 @@ use crate::ui::widgets::IconButton;
 pub const HIDE_AFTER: f64 = 3.0;
 /// How long the controls take to fade.
 const FADE: f32 = 0.3;
-/// Height of the bottom strip of controls.
-const STRIP: f32 = 96.0;
 /// Size of a finish swatch in the panel.
 const SWATCH: f32 = 56.0;
 
@@ -75,6 +73,8 @@ pub struct VinylMode {
     local_cover: LocalCover,
     /// The panel's swatches, rendered for these colours.
     swatches: Option<(CoverColours, Vec<TextureHandle>)>,
+    /// The window's first reported state has been looked at.
+    start_checked: bool,
 }
 
 impl VinylMode {
@@ -86,6 +86,23 @@ impl VinylMode {
     /// closing that leaves full screen.
     pub fn requested_fullscreen(&self) -> Option<bool> {
         self.requested
+    }
+
+    /// Leaves an OS full screen the window starts in. Aria is full screen only in the mode, and
+    /// the window is saved as it is on quitting (or every 30 s), so a quit or a crash while the
+    /// mode was open would bring the next start back full screen, with no way out.
+    pub fn leave_restored_fullscreen(&mut self, ctx: &egui::Context) {
+        if self.start_checked {
+            return;
+        }
+        let Some(fullscreen) = ctx.input(|i| i.viewport().fullscreen) else {
+            return;
+        };
+        self.start_checked = true;
+        if fullscreen && !self.open {
+            self.requested = Some(false);
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+        }
     }
 
     pub fn open(&mut self, ctx: &egui::Context) {
@@ -323,7 +340,8 @@ impl VinylMode {
                 .selectable(false),
         );
         if !shown.artist.is_empty() {
-            let artist_rect = Rect::from_min_size(pos2(at.x, at.y + 4.0), vec2(width, 28.0));
+            let artist_rect =
+                Rect::from_min_size(pos2(at.x, at.y + 4.0), vec2(width, ARTIST_BELOW - 4.0));
             ui.put(
                 artist_rect,
                 Label::new(RichText::new(&shown.artist).size(20.0).color(p.text_muted))

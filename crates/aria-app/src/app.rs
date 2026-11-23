@@ -357,6 +357,11 @@ impl AriaApp {
         // Events first, so settings the backend replaced are styled in this very frame.
         self.drain_events(&ctx);
         self.tell_window_shown(&ctx);
+        self.vinyl.leave_restored_fullscreen(&ctx);
+        if !self.vinyl.is_open() {
+            // Only the full-screen record shows a large cover.
+            self.covers.clear_large();
+        }
         self.prepare_style(ui);
         for notice in mem::take(&mut self.pending_notices) {
             self.notify(&ctx, notice);
@@ -1729,6 +1734,7 @@ mod tests {
                     width: 1,
                     height: 1,
                     rgba: vec![0; 4],
+                    large: false,
                 },
             ))),
         );
@@ -2958,8 +2964,20 @@ mod tests {
         }
 
         #[test]
+        fn a_window_restored_full_screen_is_made_windowed() {
+            // A quit while the mode was open saves the window full screen; Aria has no other
+            // full screen, so the next start leaves it.
+            let mut h = harness();
+            report_fullscreen(&mut h, true);
+            assert!(!h.state().vinyl_open());
+            assert_eq!(h.state().vinyl_requested_fullscreen(), Some(false));
+        }
+
+        #[test]
         fn a_window_already_full_screen_stays_so() {
             let mut h = harness();
+            // Started windowed, then put in full screen by the system (macOS's green button).
+            report_fullscreen(&mut h, false);
             report_fullscreen(&mut h, true);
             key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
             key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
@@ -3062,6 +3080,28 @@ mod tests {
                     .any(|c| matches!(c, Command::Spotify(SpotifyRequest::TogglePlay))),
                 "{sent:?}"
             );
+        }
+
+        #[test]
+        fn closing_the_mode_drops_the_large_cover() {
+            let mut h = harness();
+            let ctx = h.ctx.clone();
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            h.state_mut().handle_event(
+                &ctx,
+                Event::Spotify(SpotifyEvent::Cover(std::sync::Arc::new(
+                    aria_core::spotify_service::Cover {
+                        url: "https://i.scdn.co/large".to_owned(),
+                        width: 1,
+                        height: 1,
+                        rgba: vec![0; 4],
+                        large: true,
+                    },
+                ))),
+            );
+            assert!(h.state().covers.has_large());
+            key(&mut h, egui::Key::F11, egui::Modifiers::NONE);
+            assert!(!h.state().covers.has_large());
         }
 
         #[test]

@@ -14,6 +14,13 @@ use image::RgbaImage;
 
 use super::finish::{CoverColours, Finish, LABEL_RATIO, TEXTURE_SIZE, render};
 use super::layout::Layout;
+
+/// For textures drawn smaller than they are and turning: mipmaps keep fine grooves from
+/// shimmering.
+pub(crate) const TURNING: egui::TextureOptions = egui::TextureOptions {
+    mipmap_mode: Some(egui::TextureFilter::Linear),
+    ..egui::TextureOptions::LINEAR
+};
 use crate::artwork::paint_cover;
 
 /// Segments of a circle drawn as a mesh.
@@ -306,7 +313,7 @@ impl FinishCache {
             }
             let size = [image.width() as usize, image.height() as usize];
             let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-            let texture = ctx.load_texture("aria-vinyl", pixels, egui::TextureOptions::LINEAR);
+            let texture = ctx.load_texture("aria-vinyl", pixels, TURNING);
             self.shown = Some((key, texture));
         }
         self.shown.as_ref().map(|(_, texture)| texture)
@@ -361,6 +368,34 @@ mod tests {
             Some(b),
             "the older render never replaces it"
         );
+    }
+
+    #[test]
+    fn the_record_texture_has_mipmaps() {
+        // Grooves a few pixels apart, drawn smaller and turning, shimmer without them.
+        let ctx = egui::Context::default();
+        let mut cache = FinishCache::default();
+        let neutral = CoverColours::neutral();
+        cache.want(
+            &ctx,
+            Finish::Black,
+            neutral,
+            finish_key(Finish::Black, &neutral),
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let id = loop {
+            if let Some(texture) = cache.texture(&ctx) {
+                break texture.id();
+            }
+            assert!(Instant::now() < deadline, "the render never came");
+            thread::sleep(Duration::from_millis(20));
+        };
+        let mode = ctx
+            .tex_manager()
+            .read()
+            .meta(id)
+            .map(|m| m.options.mipmap_mode);
+        assert_eq!(mode, Some(Some(egui::TextureFilter::Linear)));
     }
 
     #[test]

@@ -86,6 +86,16 @@ pub struct RemoteCovers {
     asked: HashMap<String, Instant>,
     /// Each cover's colours, for the full-screen record.
     colours: HashMap<String, CoverColours>,
+    /// The full-screen record's large cover: one, for the item it shows.
+    large: Option<LargeCover>,
+    /// The large cover asked for, and when.
+    large_asked: Option<(String, Instant)>,
+}
+
+struct LargeCover {
+    url: String,
+    texture: egui::TextureHandle,
+    colours: CoverColours,
 }
 
 impl RemoteCovers {
@@ -115,15 +125,20 @@ impl RemoteCovers {
         url: &str,
         out: &mut Vec<PageAction>,
     ) -> Option<&egui::TextureHandle> {
-        let mut asked = Vec::new();
-        let found = self.get(url, &mut asked).is_some();
-        out.extend(asked.into_iter().map(|action| match action {
-            PageAction::Spotify(SpotifyRequest::Cover(url)) => {
-                PageAction::Spotify(SpotifyRequest::LargeCover(url))
-            }
-            other => other,
-        }));
-        if found { self.textures.get(url) } else { None }
+        if self.large.as_ref().is_some_and(|large| large.url == url) {
+            return self.large.as_ref().map(|large| &large.texture);
+        }
+        let now = Instant::now();
+        let due = self.large_asked.as_ref().is_none_or(|(asked, at)| {
+            asked != url || now.saturating_duration_since(*at) >= ASK_AGAIN
+        });
+        if due {
+            self.large_asked = Some((url.to_owned(), now));
+            out.push(PageAction::Spotify(SpotifyRequest::LargeCover(
+                url.to_owned(),
+            )));
+        }
+        None
     }
 
     pub fn insert(&mut self, ctx: &egui::Context, cover: &Cover) {
@@ -135,16 +150,34 @@ impl RemoteCovers {
             return;
         }
         let image = egui::ColorImage::from_rgba_unmultiplied(size, &cover.rgba);
+        let colours = cover_colours(&cover.rgba, cover.width, cover.height);
+        if cover.large {
+            let texture = ctx.load_texture(
+                format!("spotify-large-cover:{}", cover.url),
+                image,
+                crate::ui::vinyl::draw::TURNING,
+            );
+            if self
+                .large_asked
+                .as_ref()
+                .is_some_and(|(asked, _)| *asked == cover.url)
+            {
+                self.large_asked = None;
+            }
+            self.large = Some(LargeCover {
+                url: cover.url.clone(),
+                texture,
+                colours,
+            });
+            return;
+        }
         let texture = ctx.load_texture(
             format!("spotify-cover:{}", cover.url),
             image,
             egui::TextureOptions::LINEAR,
         );
         self.asked.remove(&cover.url);
-        self.colours.insert(
-            cover.url.clone(),
-            cover_colours(&cover.rgba, cover.width, cover.height),
-        );
+        self.colours.insert(cover.url.clone(), colours);
         if self.textures.insert(cover.url.clone(), texture).is_none() {
             self.order.push_back(cover.url.clone());
         }
@@ -158,15 +191,30 @@ impl RemoteCovers {
 
     /// The colours of the cover at `url`, once it has arrived.
     pub fn colours(&self, url: &str) -> Option<CoverColours> {
-        self.colours.get(url).copied()
+        match &self.large {
+            Some(large) if large.url == url => Some(large.colours),
+            _ => self.colours.get(url).copied(),
+        }
     }
 
     /// Forgets every cover (after sign-out).
     pub fn clear(&mut self) {
+        self.clear_large();
         self.colours.clear();
         self.textures.clear();
         self.order.clear();
         self.asked.clear();
+    }
+
+    /// Whether a large cover is held.
+    pub fn has_large(&self) -> bool {
+        self.large.is_some()
+    }
+
+    /// Forgets the large cover (the full-screen record closed).
+    pub fn clear_large(&mut self) {
+        self.large = None;
+        self.large_asked = None;
     }
 
     pub fn len(&self) -> usize {
@@ -202,7 +250,60 @@ mod tests {
             width: 2,
             height: 2,
             rgba: vec![255; 16],
+            large: false,
         }
+    }
+
+    fn large(url: &str) -> Cover {
+        Cover {
+            large: true,
+            width: 4,
+            height: 4,
+            rgba: vec![255; 64],
+            ..cover(url)
+        }
+    }
+
+    #[test]
+    fn a_large_cover_is_not_the_small_one() {
+        // An item with one image: the bar's 128 px cover of the same address is not enough.
+        let ctx = egui::Context::default();
+        let mut covers = RemoteCovers::default();
+        covers.insert(&ctx, &cover("https://i.scdn.co/a"));
+        let mut out = Vec::new();
+        assert!(covers.get_large("https://i.scdn.co/a", &mut out).is_none());
+        assert_eq!(
+            out,
+            [PageAction::Spotify(SpotifyRequest::LargeCover(
+                "https://i.scdn.co/a".to_owned()
+            ))]
+        );
+        covers.insert(&ctx, &large("https://i.scdn.co/a"));
+        let got = covers
+            .get_large("https://i.scdn.co/a", &mut out)
+            .map(|t| t.size());
+        assert_eq!(got, Some([4, 4]));
+        let small = covers
+            .get("https://i.scdn.co/a", &mut out)
+            .map(|t| t.size());
+        assert_eq!(small, Some([2, 2]));
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn one_large_cover_is_kept() {
+        let ctx = egui::Context::default();
+        let mut covers = RemoteCovers::default();
+        covers.insert(&ctx, &large("https://i.scdn.co/a"));
+        covers.insert(&ctx, &large("https://i.scdn.co/b"));
+        let mut out = Vec::new();
+        assert!(covers.get_large("https://i.scdn.co/a", &mut out).is_none());
+        assert!(covers.get_large("https://i.scdn.co/b", &mut out).is_some());
+        assert!(covers.colours("https://i.scdn.co/b").is_some());
+        assert!(covers.is_empty(), "large covers are not in the small map");
+        covers.clear_large();
+        assert!(!covers.has_large());
+        assert!(covers.colours("https://i.scdn.co/b").is_none());
     }
 
     #[test]

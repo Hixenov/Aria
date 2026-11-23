@@ -7,13 +7,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [0.3.1] - 2026-11-23 (the full-screen record)
 
-Checked with 1285 automated tests on Windows and in CI on Linux and macOS. The mode has not been looked at in a real window or tried by hand yet; see `docs/testing/0.3.1-manual-check.md`.
+Checked with 1291 automated tests on Windows and in CI on Linux and macOS. The mode has not been looked at in a real window or tried by hand yet; see `docs/testing/0.3.1-manual-check.md`.
 
 ### Added
 
-- **Full-screen record.** A new button at the right of the player bar, and F11, fill the screen with what is playing. A record turns at 33⅓ rpm while the music plays, speeds up in about half a second and slows to a stop on pause; the tonearm swings onto the record and back off. On a wide screen the record comes half out of its sleeve, which shows the cover; on a narrow or tall window the record is alone. The title, the artists and the player bar's own controls (play and pause, next, previous, seek, volume, shuffle and repeat) are at the bottom and fade after 3 seconds without moving the mouse. It works for local tracks and for Spotify. Esc, F11 or the button leave it; a window that was already full screen stays so.
+- **Full-screen record.** A new button at the right of the player bar, and F11, fill the screen with what is playing. A record turns at 33⅓ rpm while the music plays, speeds up in about half a second and slows to a stop on pause; the tonearm swings onto the record and back off. On a wide screen the record comes half out of its sleeve, which shows the cover; on a narrow or tall window the record is alone. The title and the artists are at the bottom left, and the player bar's own controls (play and pause, next, previous, seek, volume, shuffle and repeat) along the bottom fade after 3 seconds without moving the mouse. It works for local tracks and for Spotify. Esc, F11 or the button leave it; a window that was already full screen stays so, and Aria closed while in the mode starts windowed again.
 - **Record finishes.** The palette button in the mode chooses how the record looks: black, tinted (see-through, in the cover's main colour), splatter or marble (in the cover's colours), or Random, which picks one for each track and keeps it for that track. The choice is kept in `settings.toml` (`vinyl_finish`). The cover sits on the record's label.
-- Sharper covers in the mode: a local track's embedded picture is read at up to 1024 pixels, and a Spotify item's largest image is fetched (PRIVACY says so).
+- Sharper covers in the mode: a local track's embedded picture is read at up to 1024 pixels, and a Spotify item's largest image is fetched and kept only while the mode shows it (PRIVACY says so).
 
 ### Changed
 
