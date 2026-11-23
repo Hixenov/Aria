@@ -12,7 +12,7 @@ pub mod motion;
 
 use std::path::Path;
 
-use aria_core::{NowItem, TrackId, settings::VinylFinish};
+use aria_core::{TrackId, settings::VinylFinish};
 use eframe::egui::{
     self, Align, Color32, CursorIcon, Id, Label, Layout as EguiLayout, Pos2, Rect, RichText, Sense,
     TextureHandle, Ui, UiBuilder, ViewportCommand, WidgetInfo, accesskit::Role, pos2, vec2,
@@ -26,7 +26,7 @@ use self::finish::{CoverColours, Finish, render, resolve};
 use self::layout::{ARTIST_BELOW, STRIP, layout, volume_rect};
 use self::motion::{RPM_MARKS, Turntable, snap_rpm};
 use crate::ui::layout::player_bar::{self, PlayerAction, PlayerBar};
-use crate::ui::pages::PageAction;
+use crate::ui::now_shown::{self, Shown};
 use crate::ui::theme::fonts::{icon_font, semibold};
 use crate::ui::theme::{Palette, icons};
 use crate::ui::widgets::IconButton;
@@ -192,7 +192,8 @@ impl VinylMode {
         ui.painter()
             .rect_filled(screen, 0.0, background(input.dark));
 
-        let shown = self.what_plays(&ctx, bar, input, &mut player);
+        let shown =
+            now_shown::what_plays(&ctx, bar, input.local, &mut self.local_cover, &mut player);
         let finish = resolve(input.finish, &shown.identity);
         let key = draw::finish_key(finish, &shown.colours);
         self.finishes.want(&ctx, finish, shown.colours, key);
@@ -264,65 +265,6 @@ impl VinylMode {
     }
 
     /// The title, the artist, and the cover the mode shows.
-    fn what_plays(
-        &mut self,
-        ctx: &egui::Context,
-        bar: &mut PlayerBar<'_>,
-        input: &VinylInput<'_>,
-        player: &mut Vec<PlayerAction>,
-    ) -> Shown {
-        let mut shown = Shown::default();
-        let mut asked = Vec::new();
-        if let Some(playback) = bar.spotify {
-            match &playback.state.item {
-                Some(NowItem::Track(track)) => {
-                    shown.title.clone_from(&track.name);
-                    shown.artist = track.artists.join(", ");
-                    shown.identity = track.uri.clone().unwrap_or_else(|| track.name.clone());
-                    if let Some(covers) = bar.covers.as_deref_mut() {
-                        if let Some(url) = &track.image_large {
-                            shown.large = covers.get_large(url, &mut asked).cloned();
-                            shown.colours = covers.colours(url).unwrap_or(shown.colours);
-                        }
-                        if let Some(url) = &track.image {
-                            shown.small = covers.get(url, &mut asked).cloned();
-                            if track.image_large.is_none() {
-                                shown.colours = covers.colours(url).unwrap_or(shown.colours);
-                            }
-                        }
-                    }
-                }
-                Some(NowItem::Other { name }) => {
-                    shown.title.clone_from(name);
-                    shown.artist = "Spotify".to_owned();
-                    shown.identity.clone_from(name);
-                }
-                None => {}
-            }
-        } else if let (Some(now), Some(id)) = (bar.now, bar.view.current) {
-            shown.title.clone_from(&now.title);
-            shown.artist.clone_from(&now.artist);
-            match input.local {
-                Some((key, path)) if key == id => {
-                    shown.identity = path.to_string_lossy().into_owned();
-                    self.local_cover.request(ctx, key, path.to_path_buf());
-                    shown.large = self.local_cover.texture(ctx, key).cloned();
-                    shown.colours = self.local_cover.colours(key).unwrap_or(shown.colours);
-                }
-                _ => shown.identity = format!("{}", id.0),
-            }
-            shown.small = now
-                .artwork
-                .as_ref()
-                .and_then(|art| bar.artwork.as_deref_mut()?.get(art).cloned());
-        }
-        player.extend(asked.into_iter().filter_map(|action| match action {
-            PageAction::Spotify(request) => Some(PlayerAction::Spotify(request)),
-            _ => None,
-        }));
-        shown
-    }
-
     fn title_block(
         &self,
         ui: &mut Ui,
@@ -603,27 +545,4 @@ struct Parts<'s, 'b, 'i> {
     shown: &'s Shown,
     player: &'s mut Vec<PlayerAction>,
     out: &'s mut Vec<VinylAction>,
-}
-
-/// What the mode shows of the playing track.
-struct Shown {
-    title: String,
-    artist: String,
-    identity: String,
-    large: Option<TextureHandle>,
-    small: Option<TextureHandle>,
-    colours: CoverColours,
-}
-
-impl Default for Shown {
-    fn default() -> Shown {
-        Shown {
-            title: String::new(),
-            artist: String::new(),
-            identity: String::new(),
-            large: None,
-            small: None,
-            colours: CoverColours::neutral(),
-        }
-    }
 }

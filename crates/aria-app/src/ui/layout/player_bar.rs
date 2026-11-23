@@ -509,13 +509,26 @@ pub(crate) fn center(
     let width = (area.width() * (1.0 - 2.0 * SIDE_SHARE)).min(CENTER_MAX_WIDTH);
     let height = PLAY_BUTTON[0] + SEEK_ROW;
     let column = Rect::from_center_size(area.center(), vec2(width, height));
+    controls(ui, column, bar, out, true);
+}
+
+/// The transport at the top of `column` and the seek bar at its bottom. Without `sides`,
+/// shuffle and repeat are left out.
+pub(crate) fn controls(
+    ui: &mut Ui,
+    column: Rect,
+    bar: &mut PlayerBar<'_>,
+    out: &mut Vec<PlayerAction>,
+    sides: bool,
+) {
+    let width = column.width();
     let buttons = Rect::from_min_size(column.min, vec2(width, PLAY_BUTTON[0]));
     let seek = Rect::from_min_size(
         pos2(column.left(), column.bottom() - SEEK_ROW),
         vec2(width, SEEK_ROW),
     );
     zone(ui, buttons, Layout::left_to_right(Align::Center), |ui| {
-        transport(ui, bar, out);
+        transport(ui, bar, out, sides);
     });
     zone(
         ui,
@@ -610,7 +623,7 @@ fn transport_action(bar: &PlayerBar<'_>, local: PlayerAction) -> PlayerAction {
 }
 
 /// The transport's buttons, centered in the row they are in.
-fn transport(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
+fn transport(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>, sides: bool) {
     let (tr, p) = (bar.tr, bar.palette);
     let shown = Transport::of(bar);
     let loaded = shown.loaded;
@@ -618,16 +631,22 @@ fn transport(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
     let [side, side_icon] = SMALL_BUTTON;
     let [button, icon] = BUTTON;
     let [play, play_icon] = PLAY_BUTTON;
-    let width = side * 2.0 + button * 2.0 + play + gap * 4.0;
+    let width = if sides {
+        side * 2.0 + button * 2.0 + play + gap * 4.0
+    } else {
+        button * 2.0 + play + gap * 2.0
+    };
     ui.spacing_mut().item_spacing.x = gap;
     ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
 
-    let shuffle = tr.tr("player-shuffle");
-    let control = IconButton::new(icons::SHUFFLE, &shuffle, p)
-        .size(side, side_icon)
-        .selected(shown.shuffle);
-    if ui.add(control).clicked() {
-        out.push(transport_action(bar, PlayerAction::ToggleShuffle));
+    if sides {
+        let shuffle = tr.tr("player-shuffle");
+        let control = IconButton::new(icons::SHUFFLE, &shuffle, p)
+            .size(side, side_icon)
+            .selected(shown.shuffle);
+        if ui.add(control).clicked() {
+            out.push(transport_action(bar, PlayerAction::ToggleShuffle));
+        }
     }
 
     let previous = tr.tr("player-previous");
@@ -655,13 +674,15 @@ fn transport(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>) {
         out.push(transport_action(bar, PlayerAction::Next));
     }
 
-    let (glyph, key, on) = shown.repeat;
-    let name = tr.tr(key);
-    let control = IconButton::new(glyph, &name, p)
-        .size(side, side_icon)
-        .selected(on);
-    if ui.add(control).clicked() {
-        out.push(transport_action(bar, PlayerAction::CycleRepeat));
+    if sides {
+        let (glyph, key, on) = shown.repeat;
+        let name = tr.tr(key);
+        let control = IconButton::new(glyph, &name, p)
+            .size(side, side_icon)
+            .selected(on);
+        if ui.add(control).clicked() {
+            out.push(transport_action(bar, PlayerAction::CycleRepeat));
+        }
     }
 }
 
@@ -1212,6 +1233,49 @@ mod tests {
         let held = view(Some(OutputPath::BitPerfect), true);
         assert_eq!(path_key(&held), Some("output-bit-perfect"));
         assert_eq!(shown_volume(&held, 0.3), 1.0);
+    }
+
+    #[test]
+    fn controls_without_sides_have_no_shuffle_or_repeat() {
+        use egui_kittest::{Harness, kittest::Queryable as _};
+        let tr = Localizer::new(aria_core::settings::Language::En).unwrap();
+        let en = |key: &str| tr.tr(key).into_owned();
+        let view = PlayerView {
+            current: Some(TrackId(1)),
+            duration_ms: 60_000,
+            ..PlayerView::default()
+        };
+        let harness = Harness::builder()
+            .with_size(vec2(260.0, 60.0))
+            .with_context_setup(crate::ui::theme::fonts::install)
+            .build_ui(|ui| {
+                let palette = Palette::dark();
+                let settings = Settings::default();
+                let collections = Collections::default();
+                let mut bar = PlayerBar {
+                    tr: &tr,
+                    palette: &palette,
+                    view: &view,
+                    now: None,
+                    position_ms: 0,
+                    settings: &settings,
+                    queue_open: false,
+                    artwork: None,
+                    collections: &collections,
+                    spotify: None,
+                    spotify_devices: None,
+                    covers: None,
+                };
+                let mut out = Vec::new();
+                let column = ui.max_rect();
+                controls(ui, column, &mut bar, &mut out, false);
+            });
+        for key in ["player-previous", "player-play", "player-next"] {
+            assert!(harness.query_by_label(&en(key)).is_some(), "{key}");
+        }
+        for key in ["player-shuffle", "player-repeat-off"] {
+            assert!(harness.query_by_label(&en(key)).is_none(), "{key}");
+        }
     }
 
     #[test]
