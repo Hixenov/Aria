@@ -1056,6 +1056,7 @@ fn spotify_track(duration_ms: u64) -> aria_core::SpTrack {
         album_uri: Some("spotify:album:a1".to_owned()),
         duration_ms,
         image: None,
+        image_large: None,
     }
 }
 

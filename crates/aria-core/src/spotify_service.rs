@@ -34,6 +34,8 @@ const SIGN_IN_THREAD: &str = "aria-spotify-sign-in";
 const COVERS_QUEUE: usize = 64;
 /// Covers are scaled down to fit in this many pixels.
 const COVER_SIZE: u32 = 128;
+/// Large covers, for the full-screen record, fit in this many pixels.
+const LARGE_COVER: u32 = 1024;
 /// A cover may claim no more than this many pixels on a side before it is decoded.
 const COVER_MAX_SIDE: u32 = 4096;
 /// A change in `progress_ms` smaller than this is drift, not news.
@@ -114,6 +116,8 @@ pub enum SpotifyRequest {
     Cadence(Cadence),
     /// Asks for a cover image by URL.
     Cover(String),
+    /// Asks for a large cover (for the full-screen record) by URL.
+    LargeCover(String),
     Shutdown,
 }
 
@@ -288,7 +292,7 @@ struct Service {
     last: Option<SpotifyPlayback>,
     /// Notice keys shown since the last request that succeeded.
     noticed: HashSet<&'static str>,
-    covers: Sender<String>,
+    covers: Sender<(String, u32)>,
     signed_in: Arc<AtomicBool>,
 }
 
@@ -586,7 +590,13 @@ impl Service {
             SpotifyRequest::Cover(url) => {
                 if self.client.is_some() {
                     // A full queue drops the request; the UI asks again.
-                    let _ = self.covers.try_send(url);
+                    let _ = self.covers.try_send((url, COVER_SIZE));
+                }
+            }
+            SpotifyRequest::LargeCover(url) => {
+                if self.client.is_some() {
+                    // A full queue drops the request; the UI asks again.
+                    let _ = self.covers.try_send((url, LARGE_COVER));
                 }
             }
             SpotifyRequest::Shutdown => {}
@@ -886,16 +896,16 @@ fn same_playback(last: &SpotifyPlayback, new: &PlaybackState, now: Instant) -> b
 fn covers(
     http: &Http,
     endpoints: &Endpoints,
-    urls: &Receiver<String>,
+    urls: &Receiver<(String, u32)>,
     decoded: &Sender<Cover>,
     signed_in: &AtomicBool,
 ) {
-    for url in urls {
+    for (url, max) in urls {
         if !signed_in.load(Ordering::SeqCst) {
             continue;
         }
         match fetch_image(http, endpoints, &url) {
-            Ok(bytes) => match decode_cover(url, &bytes) {
+            Ok(bytes) => match decode_cover(url, &bytes, max) {
                 Some(cover) => {
                     if decoded.send(cover).is_err() {
                         return;
@@ -908,7 +918,7 @@ fn covers(
     }
 }
 
-fn decode_cover(url: String, bytes: &[u8]) -> Option<Cover> {
+fn decode_cover(url: String, bytes: &[u8], max: u32) -> Option<Cover> {
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
@@ -917,8 +927,8 @@ fn decode_cover(url: String, bytes: &[u8]) -> Option<Cover> {
     limits.max_image_height = Some(COVER_MAX_SIDE);
     reader.limits(limits);
     let image = reader.decode().ok()?;
-    let image = if image.width() > COVER_SIZE || image.height() > COVER_SIZE {
-        image.thumbnail(COVER_SIZE, COVER_SIZE)
+    let image = if image.width() > max || image.height() > max {
+        image.thumbnail(max, max)
     } else {
         image
     };
@@ -1506,6 +1516,24 @@ mod tests {
         });
         h.expect(|e| matches!(e, SpotifyEvent::Account(SpotifyAccount::SigningIn)));
         h.expect(signed_out);
+    }
+
+    #[test]
+    fn a_large_cover_is_decoded_to_1024() {
+        let mut h = Harness::signed_in();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(2000, 1000, image::Rgba([20, 40, 200, 255]))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        h.fake
+            .reply("GET", "/img/large.png", Reply::bytes(200, "image/png", png));
+        let url = format!("{}/img/large.png", h.fake.base());
+        h.send(SpotifyRequest::LargeCover(url.clone()));
+        let SpotifyEvent::Cover(cover) = h.expect(|e| matches!(e, SpotifyEvent::Cover(_))) else {
+            unreachable!()
+        };
+        assert_eq!(cover.url, url);
+        assert_eq!((cover.width, cover.height), (1024, 512));
     }
 
     #[test]

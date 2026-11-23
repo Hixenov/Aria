@@ -130,6 +130,34 @@ fn reader(bytes: &[u8]) -> Option<ImageReader<Cursor<&[u8]>>> {
     }
 }
 
+/// The cover embedded in the audio file at `path`, decoded and scaled down to fit `max` pixels a
+/// side (never up). `None` for a missing file, a file without a picture, or one that cannot be
+/// decoded. The file is only read.
+pub fn large_cover(path: &Path, max: u32) -> Option<image::RgbaImage> {
+    let tags = crate::tags::read_tags(path).ok()?;
+    decode_cover(tags.picture.as_deref()?, max)
+}
+
+/// Decodes `bytes` and scales the image down to fit `max` pixels a side, with the same limits as
+/// the thumbnails, or `None` when it cannot be used.
+pub fn decode_cover(bytes: &[u8], max: u32) -> Option<image::RgbaImage> {
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let (w, h) = reader(bytes)?.into_dimensions().ok()?;
+    if w == 0 || h == 0 || w > MAX_IMAGE_SIDE || h > MAX_IMAGE_SIDE {
+        return None;
+    }
+    let decoded = reader(bytes)?.decode().ok()?;
+    let max = max.max(1);
+    let shrunk = if decoded.width() > max || decoded.height() > max {
+        decoded.thumbnail(max, max)
+    } else {
+        decoded
+    };
+    Some(shrunk.to_rgba8())
+}
+
 /// Decodes and shrinks the image to a JPEG, or `None` when it cannot be used.
 fn make_thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
     let (w, h) = reader(bytes)?

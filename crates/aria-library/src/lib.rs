@@ -15,7 +15,8 @@ mod sounds;
 mod tags;
 
 pub use artwork::{
-    ArtworkCache, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE, THUMB_QUALITY, THUMB_SIZE, find_folder_image,
+    ArtworkCache, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE, THUMB_QUALITY, THUMB_SIZE, decode_cover,
+    find_folder_image, large_cover,
 };
 pub use collections::{
     Collections, PLAYLIST_NAME_MAX, PLAYS_KEPT, Playlist, PlaylistId, PlaylistItem, RECENT_LIMIT,

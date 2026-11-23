@@ -510,3 +510,41 @@ fn every_kind_of_pcm_in_aifc_counts_as_lossless() {
     let ima = write_aifc(dir.path(), b"ima4", 16).unwrap();
     assert_eq!(&*ok(read_tags(&ima)).codec, "aiff-compressed");
 }
+
+#[test]
+fn cover_flac_gives_its_picture() {
+    let cover = aria_library::large_cover(&fixture("cover.flac"), 1024).unwrap();
+    assert!(cover.width() > 0 && cover.width() <= 1024 && cover.height() <= 1024);
+}
+
+#[test]
+fn a_missing_file_gives_none() {
+    assert!(aria_library::large_cover(&fixture("no-such-file.flac"), 1024).is_none());
+}
+
+#[test]
+fn a_large_picture_is_scaled_to_1024() {
+    let image = image::RgbaImage::from_pixel(2048, 1024, image::Rgba([10, 200, 30, 255]));
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let cover = aria_library::decode_cover(&png, 1024).unwrap();
+    assert_eq!(cover.dimensions(), (1024, 512));
+    let small = image::RgbaImage::from_pixel(100, 50, image::Rgba([1, 2, 3, 255]));
+    let mut png = Vec::new();
+    small
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    assert_eq!(
+        aria_library::decode_cover(&png, 1024).unwrap().dimensions(),
+        (100, 50),
+        "never scaled up"
+    );
+}
+
+#[test]
+fn a_broken_picture_gives_none() {
+    assert!(aria_library::decode_cover(b"not a picture at all", 1024).is_none());
+    assert!(aria_library::decode_cover(&[], 1024).is_none());
+}

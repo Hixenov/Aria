@@ -817,6 +817,39 @@ mod tests {
     }
 
     #[test]
+    fn the_largest_image_is_kept_too() {
+        let image = |url: &str, width| Image {
+            url: url.to_owned(),
+            width: Some(width),
+            height: Some(width),
+        };
+        let images = [
+            image("https://i.scdn.co/640", 640),
+            image("https://i.scdn.co/300", 300),
+            image("https://i.scdn.co/64", 64),
+            image("http://i.scdn.co/1000", 1000),
+        ];
+        assert_eq!(
+            crate::model::pick_large(&images).as_deref(),
+            Some("https://i.scdn.co/640")
+        );
+        assert_eq!(pick_image(&images).as_deref(), Some("https://i.scdn.co/64"));
+        let fake = FakeSpotify::start();
+        fake.reply("GET", "/v1/me/player", Reply::fixture(200, "player"));
+        let state = client(&fake).player().unwrap().unwrap();
+        let Some(NowItem::Track(track)) = state.item else {
+            panic!("a track");
+        };
+        assert!(
+            track
+                .image_large
+                .as_deref()
+                .is_some_and(|u| u.contains("b273")),
+            "{track:?}"
+        );
+    }
+
+    #[test]
     fn pick_image_prefers_the_smallest_over_64() {
         let image = |url: &str, width| Image {
             url: url.to_owned(),

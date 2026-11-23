@@ -106,6 +106,23 @@ impl RemoteCovers {
         None
     }
 
+    /// The large cover at `url` (for the full-screen record), asked for like [`Self::get`].
+    pub fn get_large(
+        &mut self,
+        url: &str,
+        out: &mut Vec<PageAction>,
+    ) -> Option<&egui::TextureHandle> {
+        let mut asked = Vec::new();
+        let found = self.get(url, &mut asked).is_some();
+        out.extend(asked.into_iter().map(|action| match action {
+            PageAction::Spotify(SpotifyRequest::Cover(url)) => {
+                PageAction::Spotify(SpotifyRequest::LargeCover(url))
+            }
+            other => other,
+        }));
+        if found { self.textures.get(url) } else { None }
+    }
+
     pub fn insert(&mut self, ctx: &egui::Context, cover: &Cover) {
         let size = [
             usize::try_from(cover.width).unwrap_or(0),

@@ -23,6 +23,8 @@ pub struct SpTrack {
     pub album_uri: Option<String>,
     pub duration_ms: u64,
     pub image: Option<String>,
+    /// The largest cover there is (`https://` only), for the full-screen record.
+    pub image_large: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +153,15 @@ pub fn pick_image(images: &[Image]) -> Option<String> {
         .map(|i| i.url.clone())
 }
 
+/// The widest image, `https://` only.
+pub fn pick_large(images: &[Image]) -> Option<String> {
+    images
+        .iter()
+        .filter(|i| i.url.starts_with("https://"))
+        .max_by_key(|i| i.width.unwrap_or(0))
+        .map(|i| i.url.clone())
+}
+
 // --- Spotify's JSON ---
 
 #[derive(Deserialize)]
@@ -224,9 +235,12 @@ pub(crate) struct RawTrack {
 
 impl From<RawTrack> for SpTrack {
     fn from(raw: RawTrack) -> SpTrack {
-        let (album, album_uri, image) = match raw.album {
-            Some(a) => (a.name, a.uri, image_of(a.images)),
-            None => (String::new(), None, None),
+        let (album, album_uri, image, image_large) = match raw.album {
+            Some(a) => {
+                let large = a.images.as_deref().and_then(pick_large);
+                (a.name, a.uri, image_of(a.images), large)
+            }
+            None => (String::new(), None, None, None),
         };
         let local = raw.is_local;
         SpTrack {
@@ -237,6 +251,7 @@ impl From<RawTrack> for SpTrack {
             album_uri: album_uri.filter(|_| !local),
             duration_ms: raw.duration_ms,
             image,
+            image_large,
         }
     }
 }

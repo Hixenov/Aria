@@ -96,6 +96,7 @@ fn track(n: usize, uri: bool) -> SpTrack {
         album_uri: uri.then(|| "spotify:album:a1".to_owned()),
         duration_ms: 180_000,
         image: None,
+        image_large: None,
     }
 }
 
