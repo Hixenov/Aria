@@ -2005,6 +2005,7 @@ mod tests {
             &ctx,
             Event::Spotify(SpotifyEvent::Account(SpotifyAccount::SignedIn {
                 name: "Ann".to_owned(),
+                can_edit: true,
             })),
         );
         app.handle_event(&ctx, Event::ActivePlayer(ActivePlayer::Spotify));

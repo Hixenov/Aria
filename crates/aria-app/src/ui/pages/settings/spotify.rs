@@ -41,7 +41,7 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
                     }
                 });
             }
-            SpotifyAccount::SignedIn { name } => {
+            SpotifyAccount::SignedIn { name, .. } => {
                 let mut args = FluentArgs::new();
                 args.set("name", name.as_str());
                 let connected = tr.tr_args("settings-spotify-connected", &args);
@@ -232,6 +232,7 @@ mod tests {
     fn signed_in() -> SpotifyAccount {
         SpotifyAccount::SignedIn {
             name: "Ann".to_owned(),
+            can_edit: true,
         }
     }
 

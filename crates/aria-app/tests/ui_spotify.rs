@@ -104,6 +104,7 @@ fn signed_in() -> SpotifyUi {
     SpotifyUi {
         account: SpotifyAccount::SignedIn {
             name: "Ann".to_owned(),
+            can_edit: true,
         },
         ..SpotifyUi::default()
     }
@@ -218,6 +219,11 @@ fn an_album_artist_or_playlist_plays_as_a_context() {
             name: "Road Trip".to_owned(),
             owner: "Ann".to_owned(),
             image: None,
+            id: "z".to_owned(),
+            owner_id: "ann".to_owned(),
+            collaborative: false,
+            snapshot: None,
+            editable: true,
         }],
         ..SearchResults::default()
     };

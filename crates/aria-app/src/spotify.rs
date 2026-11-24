@@ -73,7 +73,7 @@ impl SpotifyUi {
             SpotifyEvent::Playback(playback) => self.playback = playback,
             SpotifyEvent::Devices(devices) => self.devices = devices,
             SpotifyEvent::Player(status) => self.player = status,
-            SpotifyEvent::Cover(_) | SpotifyEvent::Notice(_) => {}
+            SpotifyEvent::Playlist(_) | SpotifyEvent::Cover(_) | SpotifyEvent::Notice(_) => {}
         }
     }
 
@@ -385,6 +385,7 @@ mod tests {
         assert!(!ui.keyring);
         ui.apply(SpotifyEvent::Account(SpotifyAccount::SignedIn {
             name: "Ann".to_owned(),
+            can_edit: true,
         }));
         assert!(ui.signed_in());
         assert!(!ui.keyring, "kept from the signed-out state");

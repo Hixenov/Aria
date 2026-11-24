@@ -128,6 +128,30 @@ pub enum SpotifyRequest {
         strings: String,
     },
     ListDevices,
+    /// Saves the track to Liked Songs (`liked`) or removes it. Liked Songs change at once and
+    /// change back if Spotify refuses.
+    Like {
+        track: SpTrack,
+        liked: bool,
+    },
+    /// Loads the tracks of the playlist with this id (one the user owns or collaborates on).
+    OpenPlaylist(String),
+    /// Adds the track `uri` at the end of the playlist `playlist` (an id) called `name`.
+    AddToPlaylist {
+        playlist: String,
+        name: String,
+        uri: String,
+    },
+    /// Removes every copy of the track `uri` from the playlist `playlist` (an id).
+    RemoveFromPlaylist {
+        playlist: String,
+        uri: String,
+    },
+    /// Creates a private playlist, starting with the track `first` if given.
+    CreatePlaylist {
+        name: String,
+        first: Option<String>,
+    },
     Cadence(Cadence),
     /// Asks for a cover image by URL.
     Cover(String),
@@ -145,7 +169,21 @@ pub enum SpotifyAccount {
     SigningIn,
     SignedIn {
         name: String,
+        /// Whether the session may like tracks and edit playlists (it has the permissions).
+        can_edit: bool,
     },
+}
+
+/// The playlist the user opened: its tracks as last loaded.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpotifyPlaylist {
+    pub id: String,
+    pub tracks: Vec<SpTrack>,
+    /// The version last known, sent along with a removal.
+    pub snapshot: Option<String>,
+    pub loading: bool,
+    /// The last load failed (Spotify refused, or no network).
+    pub failed: bool,
 }
 
 /// The Spotify library, kept in memory only.
@@ -199,6 +237,8 @@ pub enum SpotifyEvent {
     /// Spotify's devices, without Aria's own player (the UI lists that itself).
     Devices(Vec<SpDevice>),
     Player(AriaPlayerStatus),
+    /// The open playlist; `None` once nothing is open (after signing out).
+    Playlist(Option<Arc<SpotifyPlaylist>>),
     Cover(Arc<Cover>),
     Notice(Notice),
 }
@@ -271,6 +311,8 @@ impl SpotifyService {
             player,
             player_shown: None,
             needs_reconnect: false,
+            me_id: None,
+            playlist: None,
         };
         let thread = thread::Builder::new()
             .name(THREAD_NAME.to_owned())
@@ -326,6 +368,10 @@ struct Service {
     player_shown: Option<AriaPlayerStatus>,
     /// A play wanted the player but the session lacks `streaming`.
     needs_reconnect: bool,
+    /// The signed-in user's id, for which playlists are theirs.
+    me_id: Option<String>,
+    /// The playlist the user opened.
+    playlist: Option<SpotifyPlaylist>,
 }
 
 impl Service {
@@ -465,7 +511,13 @@ impl Service {
         self.signed_in.store(true, Ordering::SeqCst);
         self.needs_reconnect = false;
         self.sync_player();
-        self.set_account(SpotifyAccount::SignedIn { name: me.name });
+        self.close_playlist();
+        self.me_id = Some(me.id);
+        let can_edit = self.client.as_ref().is_some_and(|c| c.tokens().can_edit());
+        self.set_account(SpotifyAccount::SignedIn {
+            name: me.name,
+            can_edit,
+        });
         self.list_devices();
         self.load_library();
         if self.client.is_some() {
@@ -591,6 +643,8 @@ impl Service {
         self.needs_reconnect = false;
         self.sync_player();
         self.library = Arc::default();
+        self.me_id = None;
+        self.close_playlist();
         let account = self.signed_out();
         self.set_account(account);
         self.emit(SpotifyEvent::Library(Arc::new(SpotifyLibrary::default())));
@@ -638,6 +692,17 @@ impl Service {
                 self.sync_player();
             }
             SpotifyRequest::ListDevices => self.list_devices(),
+            SpotifyRequest::Like { track, liked } => self.like(track, liked),
+            SpotifyRequest::OpenPlaylist(id) => self.open_playlist(id),
+            SpotifyRequest::AddToPlaylist {
+                playlist,
+                name,
+                uri,
+            } => self.add_to_playlist(&playlist, name, &uri),
+            SpotifyRequest::RemoveFromPlaylist { playlist, uri } => {
+                self.remove_from_playlist(&playlist, &uri);
+            }
+            SpotifyRequest::CreatePlaylist { name, first } => self.create_playlist(&name, first),
             SpotifyRequest::Cadence(cadence) => self.set_cadence(cadence),
             SpotifyRequest::Cover(url) => {
                 if self.client.is_some() {
@@ -938,7 +1003,10 @@ impl Service {
         };
         self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
         match self.call(Client::playlists) {
-            Some(playlists) => {
+            Some(mut playlists) => {
+                for playlist in &mut playlists {
+                    playlist.editable = self.is_editable(playlist);
+                }
                 library.playlists = playlists;
                 self.emit(SpotifyEvent::Library(Arc::new(library.clone())));
             }
@@ -967,6 +1035,191 @@ impl Service {
             let library = Arc::new(library);
             self.library = Arc::clone(&library);
             self.emit(SpotifyEvent::Library(library));
+        }
+    }
+
+    // --- likes and playlists ---
+
+    /// Whether the user may open and change `playlist`: theirs, or collaborative.
+    fn is_editable(&self, playlist: &SpPlaylist) -> bool {
+        playlist.collaborative || self.me_id.as_deref() == Some(playlist.owner_id.as_str())
+    }
+
+    /// Whether the session may edit; if signed in without the permissions, says to reconnect.
+    fn may_edit(&mut self) -> bool {
+        let Some(client) = self.client.as_ref() else {
+            return false;
+        };
+        if client.tokens().can_edit() {
+            return true;
+        }
+        self.notice(NoticeLevel::Warning, "spotify-reconnect-to-edit", vec![]);
+        false
+    }
+
+    fn set_library(&mut self, library: SpotifyLibrary) {
+        let library = Arc::new(library);
+        self.library = Arc::clone(&library);
+        self.emit(SpotifyEvent::Library(library));
+    }
+
+    fn like(&mut self, track: SpTrack, liked: bool) {
+        let Some(uri) = track.uri.clone() else {
+            return;
+        };
+        if !self.may_edit() {
+            return;
+        }
+        let before = Arc::clone(&self.library);
+        let mut library = (*self.library).clone();
+        let is = |t: &SpTrack| t.uri.as_deref() == Some(uri.as_str());
+        if liked {
+            if !library.tracks.iter().any(is) {
+                library.tracks.insert(0, track);
+            }
+        } else {
+            library.tracks.retain(|t| !is(t));
+        }
+        self.set_library(library);
+        let done = self.call(|c| {
+            if liked {
+                c.save_track(&uri)
+            } else {
+                c.unsave_track(&uri)
+            }
+        });
+        // Signed out by the failure: there is nothing to put back.
+        if done.is_none() && self.client.is_some() {
+            self.library = Arc::clone(&before);
+            self.emit(SpotifyEvent::Library(before));
+        }
+    }
+
+    fn emit_playlist(&self) {
+        let open = self.playlist.clone().map(Arc::new);
+        self.emit(SpotifyEvent::Playlist(open));
+    }
+
+    /// Forgets the open playlist, telling the UI if one was open.
+    fn close_playlist(&mut self) {
+        if self.playlist.take().is_some() {
+            self.emit(SpotifyEvent::Playlist(None));
+        }
+    }
+
+    fn open_playlist(&mut self, id: String) {
+        if self.client.is_none() {
+            return;
+        }
+        let snapshot = self
+            .library
+            .playlists
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.snapshot.clone());
+        self.playlist = Some(SpotifyPlaylist {
+            id,
+            tracks: Vec::new(),
+            snapshot,
+            loading: true,
+            failed: false,
+        });
+        self.emit_playlist();
+        self.load_playlist();
+    }
+
+    /// Loads the open playlist's tracks again; what it had stays if that fails.
+    fn load_playlist(&mut self) {
+        let Some(id) = self.playlist.as_ref().map(|p| p.id.clone()) else {
+            return;
+        };
+        let tracks = self.call(|c| c.playlist_tracks(&id));
+        let Some(open) = self.playlist.as_mut().filter(|p| p.id == id) else {
+            return;
+        };
+        open.loading = false;
+        match tracks {
+            Some(tracks) => {
+                open.tracks = tracks;
+                open.failed = false;
+            }
+            None => open.failed = true,
+        }
+        self.emit_playlist();
+    }
+
+    /// After a change to playlist `id`: keeps its new snapshot and reloads it if it is open.
+    fn changed(&mut self, id: &str, snapshot: Option<String>) {
+        if let Some(snapshot) = snapshot {
+            if let Some(playlist) = Arc::make_mut(&mut self.library)
+                .playlists
+                .iter_mut()
+                .find(|p| p.id == id)
+            {
+                playlist.snapshot = Some(snapshot.clone());
+            }
+            if let Some(open) = self.playlist.as_mut().filter(|p| p.id == id) {
+                open.snapshot = Some(snapshot);
+            }
+        }
+        if self.playlist.as_ref().is_some_and(|p| p.id == id) {
+            self.load_playlist();
+        }
+    }
+
+    fn add_to_playlist(&mut self, id: &str, name: String, uri: &str) {
+        if !self.may_edit() {
+            return;
+        }
+        let Some(snapshot) = self.call(|c| c.add_to_playlist(id, uri)) else {
+            return;
+        };
+        self.notice(NoticeLevel::Info, "spotify-added", vec![("playlist", name)]);
+        self.changed(id, snapshot);
+    }
+
+    fn remove_from_playlist(&mut self, id: &str, uri: &str) {
+        if !self.may_edit() {
+            return;
+        }
+        let snapshot = match self.playlist.as_ref().filter(|p| p.id == id) {
+            Some(open) => open.snapshot.clone(),
+            None => self
+                .library
+                .playlists
+                .iter()
+                .find(|p| p.id == id)
+                .and_then(|p| p.snapshot.clone()),
+        };
+        let Some(snapshot) = self.call(|c| c.remove_from_playlist(id, uri, snapshot.as_deref()))
+        else {
+            return;
+        };
+        self.changed(id, snapshot);
+    }
+
+    fn create_playlist(&mut self, name: &str, first: Option<String>) {
+        if !self.may_edit() {
+            return;
+        }
+        let Some(mut playlist) = self.call(|c| c.create_playlist(name)) else {
+            return;
+        };
+        playlist.editable = true;
+        let id = playlist.id.clone();
+        let shown = playlist.name.clone();
+        let mut library = (*self.library).clone();
+        library.playlists.insert(0, playlist);
+        self.set_library(library);
+        self.notice(
+            NoticeLevel::Info,
+            "spotify-created",
+            vec![("playlist", shown)],
+        );
+        if let Some(uri) = first
+            && let Some(snapshot) = self.call(|c| c.add_to_playlist(&id, &uri))
+        {
+            self.changed(&id, snapshot);
         }
     }
 
@@ -1392,6 +1645,62 @@ mod tests {
         fake.reply("GET", "/v1/me/player", Reply::empty(204));
     }
 
+    /// A token whose session may like tracks and edit playlists.
+    const EDIT_TOKEN: &str = r#"{"access_token":"edit-access","token_type":"Bearer","scope":"user-read-private user-library-read user-library-modify playlist-modify-public playlist-modify-private","expires_in":3600,"refresh_token":"edit-refresh"}"#;
+
+    impl Harness {
+        /// Signed in with the edit permissions; `setup` scripts answers before the library's.
+        fn editor_with(setup: impl FnOnce(&FakeSpotify)) -> Harness {
+            let fake = FakeSpotify::start();
+            fake.reply("POST", "/api/token", Reply::json(200, EDIT_TOKEN));
+            setup(&fake);
+            script_library(&fake);
+            let mut h = Harness::start(fake, MemoryStore::holding("stored"), no_browser(), 0);
+            h.expect(|e| matches!(e, SpotifyEvent::Library(l) if !l.loading));
+            h
+        }
+
+        /// Opens `plA` and waits for its tracks.
+        fn open_pl_a(&mut self) {
+            self.send(SpotifyRequest::OpenPlaylist("plA".to_owned()));
+            self.expect(
+                |e| matches!(e, SpotifyEvent::Playlist(Some(p)) if p.id == "plA" && !p.loading),
+            );
+        }
+    }
+
+    fn script_pl_a(fake: &FakeSpotify, times: usize) {
+        for _ in 0..times {
+            for page in ["playlist-items", "playlist-items-2"] {
+                fake.reply("GET", "/v1/playlists/plA/items", Reply::fixture(200, page));
+            }
+        }
+    }
+
+    fn sp_track(uri: &str, name: &str) -> SpTrack {
+        SpTrack {
+            uri: Some(uri.to_owned()),
+            name: name.to_owned(),
+            artists: vec!["Someone".to_owned()],
+            album: String::new(),
+            album_uri: None,
+            duration_ms: 1000,
+            image: None,
+            image_large: None,
+        }
+    }
+
+    fn first_is(event: &SpotifyEvent, uri: &str) -> bool {
+        matches!(event, SpotifyEvent::Library(l)
+            if l.tracks.first().and_then(|t| t.uri.as_deref()) == Some(uri))
+    }
+
+    fn has(library: &SpotifyLibrary, uri: &str) -> bool {
+        library.tracks.iter().any(|t| t.uri.as_deref() == Some(uri))
+    }
+
+    const BOOM: &str = r#"{"error":{"status":500,"message":"boom"}}"#;
+
     fn is_notice(event: &SpotifyEvent, key: &str) -> bool {
         matches!(event, SpotifyEvent::Notice(n) if n.key == key)
     }
@@ -1429,7 +1738,7 @@ mod tests {
         let h = Harness::signed_in();
         assert!(h.seen.iter().any(|e| matches!(
             e,
-            SpotifyEvent::Account(SpotifyAccount::SignedIn { name }) if name == "Aria Tester"
+            SpotifyEvent::Account(SpotifyAccount::SignedIn { name, .. }) if name == "Aria Tester"
         )));
         let Some(SpotifyEvent::Library(library)) = h
             .seen
@@ -2207,5 +2516,323 @@ mod tests {
             );
             assert_eq!(l.killed.load(Ordering::SeqCst), 1);
         }
+    }
+
+    #[test]
+    fn signed_in_says_whether_the_session_can_edit() {
+        let h = Harness::signed_in();
+        assert!(h.seen.iter().any(|e| matches!(
+            e,
+            SpotifyEvent::Account(SpotifyAccount::SignedIn {
+                can_edit: false,
+                ..
+            })
+        )));
+        let h = Harness::editor_with(|_| {});
+        assert!(h.seen.iter().any(|e| matches!(
+            e,
+            SpotifyEvent::Account(SpotifyAccount::SignedIn { can_edit: true, .. })
+        )));
+    }
+
+    #[test]
+    fn own_and_collaborative_playlists_are_editable() {
+        let h = Harness::editor_with(|fake| {
+            fake.reply(
+                "GET",
+                "/v1/me/playlists",
+                Reply::json(
+                    200,
+                    r#"{"next":null,"items":[
+                        {"id":"own","uri":"spotify:playlist:own","name":"Mine","owner":{"id":"aria-tester"},"collaborative":false},
+                        {"id":"col","uri":"spotify:playlist:col","name":"Ours","owner":{"id":"friend"},"collaborative":true},
+                        {"id":"fol","uri":"spotify:playlist:fol","name":"Theirs","owner":{"id":"friend"},"collaborative":false}
+                    ]}"#,
+                ),
+            );
+        });
+        let Some(SpotifyEvent::Library(library)) = h
+            .seen
+            .iter()
+            .rev()
+            .find(|e| matches!(e, SpotifyEvent::Library(l) if !l.loading))
+        else {
+            panic!("no library");
+        };
+        let editable: Vec<bool> = library.playlists.iter().map(|p| p.editable).collect();
+        assert_eq!(editable, [true, true, false]);
+    }
+
+    #[test]
+    fn a_like_shows_at_once_then_is_sent() {
+        let mut h =
+            Harness::editor_with(|fake| fake.reply("PUT", "/v1/me/library", Reply::empty(200)));
+        h.send(SpotifyRequest::Like {
+            track: sp_track("spotify:track:new1", "New"),
+            liked: true,
+        });
+        let SpotifyEvent::Library(library) = h.expect(|e| first_is(e, "spotify:track:new1")) else {
+            unreachable!()
+        };
+        assert_eq!(library.tracks.len(), 108);
+        let later = h.during(Duration::from_millis(300));
+        assert_eq!(h.count("PUT", "/v1/me/library"), 1);
+        let put = h
+            .fake
+            .requests()
+            .into_iter()
+            .find(|s| s.method == "PUT")
+            .unwrap();
+        assert_eq!(put.param("uris"), Some("spotify:track:new1"));
+        assert!(
+            !later.iter().any(|e| matches!(e, SpotifyEvent::Library(_))),
+            "kept as it is"
+        );
+    }
+
+    #[test]
+    fn a_refused_like_is_undone_and_reported() {
+        let mut h = Harness::editor_with(|fake| {
+            fake.reply("PUT", "/v1/me/library", Reply::json(500, BOOM))
+        });
+        h.send(SpotifyRequest::Like {
+            track: sp_track("spotify:track:new1", "New"),
+            liked: true,
+        });
+        h.expect(|e| first_is(e, "spotify:track:new1"));
+        let SpotifyEvent::Library(library) = h.expect(|e| matches!(e, SpotifyEvent::Library(_)))
+        else {
+            unreachable!()
+        };
+        assert!(!has(&library, "spotify:track:new1"));
+        assert_eq!(library.tracks.len(), 107);
+        assert_eq!(notices(&h.seen, "spotify-error"), 1);
+    }
+
+    #[test]
+    fn a_second_refused_like_keeps_the_first() {
+        let mut h = Harness::editor_with(|fake| {
+            fake.reply("PUT", "/v1/me/library", Reply::empty(200));
+            fake.reply("PUT", "/v1/me/library", Reply::json(500, BOOM));
+        });
+        for uri in ["spotify:track:a", "spotify:track:b"] {
+            h.send(SpotifyRequest::Like {
+                track: sp_track(uri, "x"),
+                liked: true,
+            });
+        }
+        h.expect(|e| first_is(e, "spotify:track:b"));
+        let SpotifyEvent::Library(library) = h.expect(|e| matches!(e, SpotifyEvent::Library(_)))
+        else {
+            unreachable!()
+        };
+        assert!(has(&library, "spotify:track:a"));
+        assert!(!has(&library, "spotify:track:b"));
+        assert_eq!(library.tracks.len(), 108);
+    }
+
+    #[test]
+    fn an_unlike_takes_the_track_out_at_once() {
+        let mut h = Harness::editor_with(|fake| {
+            fake.reply("DELETE", "/v1/me/library", Reply::empty(200));
+        });
+        h.send(SpotifyRequest::Like {
+            track: sp_track("spotify:track:track0000", "Song 0"),
+            liked: false,
+        });
+        let SpotifyEvent::Library(library) = h.expect(|e| matches!(e, SpotifyEvent::Library(_)))
+        else {
+            unreachable!()
+        };
+        assert!(!has(&library, "spotify:track:track0000"));
+        assert_eq!(library.tracks.len(), 106);
+        h.during(Duration::from_millis(300));
+        assert_eq!(h.count("DELETE", "/v1/me/library"), 1);
+    }
+
+    #[test]
+    fn opening_a_playlist_loads_its_tracks() {
+        let fake = FakeSpotify::start();
+        script_pl_a(&fake, 1);
+        script_library(&fake);
+        let mut h = Harness::start(fake, MemoryStore::holding("stored"), no_browser(), 0);
+        h.expect(|e| matches!(e, SpotifyEvent::Library(l) if !l.loading));
+        h.send(SpotifyRequest::OpenPlaylist("plA".to_owned()));
+        let SpotifyEvent::Playlist(Some(first)) =
+            h.expect(|e| matches!(e, SpotifyEvent::Playlist(_)))
+        else {
+            panic!("closed");
+        };
+        assert!(first.loading);
+        assert!(first.tracks.is_empty());
+        assert_eq!(first.snapshot.as_deref(), Some("snapA"));
+        let SpotifyEvent::Playlist(Some(loaded)) =
+            h.expect(|e| matches!(e, SpotifyEvent::Playlist(_)))
+        else {
+            panic!("closed");
+        };
+        assert!(!loaded.loading);
+        assert!(!loaded.failed);
+        assert_eq!(loaded.id, "plA");
+        let names: Vec<&str> = loaded.tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["One", "Two", "Home Song", "Three"]);
+    }
+
+    #[test]
+    fn a_playlist_spotify_refuses_shows_failed() {
+        let mut h = Harness::editor_with(|fake| {
+            fake.reply(
+                "GET",
+                "/v1/playlists/plB/items",
+                Reply::json(403, r#"{"error":{"status":403,"message":"Forbidden"}}"#),
+            );
+        });
+        h.send(SpotifyRequest::OpenPlaylist("plB".to_owned()));
+        let SpotifyEvent::Playlist(Some(p)) =
+            h.expect(|e| matches!(e, SpotifyEvent::Playlist(Some(p)) if !p.loading))
+        else {
+            unreachable!()
+        };
+        assert!(p.failed);
+        assert!(p.tracks.is_empty());
+    }
+
+    #[test]
+    fn adding_says_added_and_reloads_the_open_playlist() {
+        let mut h = Harness::editor_with(|fake| {
+            script_pl_a(fake, 2);
+            fake.reply(
+                "POST",
+                "/v1/playlists/plA/items",
+                Reply::fixture(201, "snapshot"),
+            );
+        });
+        h.open_pl_a();
+        h.send(SpotifyRequest::AddToPlaylist {
+            playlist: "plA".to_owned(),
+            name: "Road Trip".to_owned(),
+            uri: "spotify:track:t1".to_owned(),
+        });
+        let SpotifyEvent::Notice(notice) = h.expect(|e| is_notice(e, "spotify-added")) else {
+            unreachable!()
+        };
+        assert_eq!(notice.level, NoticeLevel::Info);
+        assert_eq!(notice.args, vec![("playlist", "Road Trip".to_owned())]);
+        let SpotifyEvent::Playlist(Some(p)) = h.expect(|e| matches!(e, SpotifyEvent::Playlist(_)))
+        else {
+            panic!("closed");
+        };
+        assert_eq!(p.snapshot.as_deref(), Some("snap2"));
+        assert_eq!(p.tracks.len(), 4);
+        assert_eq!(h.count("GET", "/v1/playlists/plA/items"), 4);
+    }
+
+    #[test]
+    fn removing_sends_the_snapshot_and_reloads() {
+        let mut h = Harness::editor_with(|fake| {
+            script_pl_a(fake, 2);
+            fake.reply(
+                "DELETE",
+                "/v1/playlists/plA/items",
+                Reply::fixture(200, "snapshot"),
+            );
+        });
+        h.open_pl_a();
+        h.send(SpotifyRequest::RemoveFromPlaylist {
+            playlist: "plA".to_owned(),
+            uri: "spotify:track:t1".to_owned(),
+        });
+        let SpotifyEvent::Playlist(Some(p)) = h.expect(|e| matches!(e, SpotifyEvent::Playlist(_)))
+        else {
+            panic!("closed");
+        };
+        assert_eq!(p.snapshot.as_deref(), Some("snap2"));
+        let delete = h
+            .fake
+            .requests()
+            .into_iter()
+            .find(|s| s.method == "DELETE")
+            .unwrap();
+        let body: String = delete.body.split_whitespace().collect();
+        assert!(body.contains(r#""snapshot_id":"snapA""#), "{body}");
+        assert!(body.contains(r#"{"uri":"spotify:track:t1"}"#), "{body}");
+        assert_eq!(h.count("GET", "/v1/playlists/plA/items"), 4);
+    }
+
+    #[test]
+    fn creating_a_playlist_adds_the_first_track_and_lists_it_first() {
+        let mut h = Harness::editor_with(|fake| {
+            fake.reply(
+                "POST",
+                "/v1/me/playlists",
+                Reply::fixture(201, "created-playlist"),
+            );
+            fake.reply(
+                "POST",
+                "/v1/playlists/plNew/items",
+                Reply::fixture(201, "snapshot"),
+            );
+        });
+        h.send(SpotifyRequest::CreatePlaylist {
+            name: "Mix".to_owned(),
+            first: Some("spotify:track:t1".to_owned()),
+        });
+        let SpotifyEvent::Library(library) = h.expect(|e| matches!(e, SpotifyEvent::Library(_)))
+        else {
+            unreachable!()
+        };
+        assert_eq!(library.playlists[0].id, "plNew");
+        assert!(library.playlists[0].editable);
+        assert_eq!(library.playlists.len(), 3);
+        let SpotifyEvent::Notice(notice) = h.expect(|e| is_notice(e, "spotify-created")) else {
+            unreachable!()
+        };
+        assert_eq!(notice.args, vec![("playlist", "Mix".to_owned())]);
+        h.during(Duration::from_millis(300));
+        assert_eq!(h.count("POST", "/v1/playlists/plNew/items"), 1);
+    }
+
+    #[test]
+    fn edits_without_the_permissions_send_nothing_and_say_reconnect() {
+        let mut h = Harness::signed_in();
+        h.send(SpotifyRequest::Like {
+            track: sp_track("spotify:track:t1", "x"),
+            liked: true,
+        });
+        h.send(SpotifyRequest::AddToPlaylist {
+            playlist: "plA".to_owned(),
+            name: "Road Trip".to_owned(),
+            uri: "spotify:track:t1".to_owned(),
+        });
+        h.send(SpotifyRequest::RemoveFromPlaylist {
+            playlist: "plA".to_owned(),
+            uri: "spotify:track:t1".to_owned(),
+        });
+        h.send(SpotifyRequest::CreatePlaylist {
+            name: "Mix".to_owned(),
+            first: None,
+        });
+        let events = h.during(Duration::from_millis(400));
+        assert_eq!(notices(&events, "spotify-reconnect-to-edit"), 4);
+        assert!(!events.iter().any(|e| matches!(e, SpotifyEvent::Library(_))));
+        let edits = h
+            .fake
+            .requests()
+            .into_iter()
+            .filter(|s| {
+                s.path.contains("/library")
+                    || s.path.contains("/items")
+                    || s.method == "POST" && s.path == "/v1/me/playlists"
+            })
+            .count();
+        assert_eq!(edits, 0);
+    }
+
+    #[test]
+    fn signing_out_closes_the_open_playlist() {
+        let mut h = Harness::editor_with(|fake| script_pl_a(fake, 1));
+        h.open_pl_a();
+        h.send(SpotifyRequest::SignOut);
+        h.expect(|e| matches!(e, SpotifyEvent::Playlist(None)));
     }
 }
