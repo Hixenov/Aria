@@ -271,6 +271,7 @@ fn overlay(ui: &mut Ui, rect: Rect, parts: &mut Parts<'_, '_, '_>) {
                 spotify: bar.spotify,
                 spotify_devices: bar.spotify_devices,
                 covers: bar.covers.as_deref_mut(),
+                spotify_ui: bar.spotify_ui,
             };
             player_bar::controls(ui, controls, &mut over, player, false);
         }
@@ -543,6 +544,7 @@ mod tests {
                         spotify: s.spotify.as_ref(),
                         spotify_devices: None,
                         covers: None,
+                        spotify_ui: None,
                     };
                     let input = MiniInput {
                         local: None,
@@ -673,6 +675,7 @@ mod tests {
                         spotify: s.spotify.as_ref(),
                         spotify_devices: None,
                         covers: None,
+                        spotify_ui: None,
                     };
                     let input = MiniInput {
                         local: None,

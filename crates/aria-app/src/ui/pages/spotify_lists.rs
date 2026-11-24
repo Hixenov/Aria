@@ -5,13 +5,17 @@ use aria_core::i18n::FluentArgs;
 use aria_core::spotify_service::{SpotifyAccount, SpotifyRequest};
 use aria_core::{PlayRequest, SpAlbum, SpArtist, SpPlaylist, SpTrack};
 use eframe::egui::{
-    Align2, Button, ScrollArea, Sense, TextStyle, Ui, WidgetInfo, accesskit::Role, vec2,
+    Align2, Button, Id, Rect, Response, ScrollArea, Sense, TextStyle, Ui, UiBuilder, Vec2,
+    WidgetInfo, accesskit::Role, pos2, vec2,
 };
 
 use super::{PageAction, PageCtx};
 use crate::nav::Route;
 use crate::ui::theme::fonts::semibold;
-use crate::ui::widgets::spotify_row::{SPOTIFY_ROW, spotify_row};
+use crate::ui::theme::visuals::SPACE;
+use crate::ui::widgets::spotify_row::{SPOTIFY_ROW, spotify_row, spotify_row_with_room};
+use crate::ui::widgets::spotify_track_menu;
+use crate::ui::widgets::track_menu::HEART_BUTTON;
 use crate::ui::widgets::{empty_state, empty_state_with, section_header};
 
 /// The most tracks a Liked Songs click hands Spotify.
@@ -30,7 +34,35 @@ pub enum Row<'a> {
     },
     Album(&'a SpAlbum),
     Artist(&'a SpArtist),
+    /// A playlist that plays when clicked.
     Playlist(&'a SpPlaylist),
+    /// One of the user's playlists on Your Library: it opens when the user may change it, and
+    /// otherwise plays, saying why it does not open.
+    LibraryPlaylist(&'a SpPlaylist),
+    /// A track of the opened playlist: it plays the playlist from there.
+    PlaylistTrack {
+        track: &'a SpTrack,
+        playlist: &'a SpPlaylist,
+    },
+}
+
+/// Where Your Library keeps the id of the playlist it shows, in egui's memory.
+const OPEN_PLAYLIST: &str = "aria_spotify_open_playlist";
+
+/// The id of the playlist Your Library shows, if one is open.
+pub fn open_playlist(ui: &Ui) -> Option<String> {
+    ui.data(|d| d.get_temp::<String>(Id::unique(OPEN_PLAYLIST)))
+}
+
+/// Opens the playlist `id` on Your Library, or (`None`) goes back to the list.
+pub fn set_open_playlist(ui: &Ui, id: Option<String>) {
+    let key = Id::unique(OPEN_PLAYLIST);
+    ui.data_mut(|d| match id {
+        Some(id) => {
+            d.insert_temp(key, id);
+        }
+        None => d.remove::<String>(key),
+    });
 }
 
 /// The page's heading, then, unless signed in, the state that offers to connect. Returns
@@ -134,24 +166,19 @@ fn draw_row(ui: &mut Ui, ctx: &mut PageCtx<'_>, row: &Row<'_>, list: &[SpTrack])
             track,
             from_list,
         } => {
-            let mut subtitle = track.artists.join(", ");
-            if !track.album.is_empty() {
-                if !subtitle.is_empty() {
-                    subtitle.push_str(" · ");
-                }
-                subtitle.push_str(&track.album);
-            }
+            let subtitle = track_subtitle(track);
             let playable = track.uri.is_some();
-            let clicked = spotify_row(
+            let row = spotify_row_with_room(
                 ui,
                 ctx,
                 track.image.as_deref(),
                 &track.name,
                 &subtitle,
                 playable,
-            )
-            .clicked();
-            clicked
+                HEART_ROOM,
+            );
+            track_extras(ui, ctx, &row, track, None);
+            row.clicked()
                 .then(|| play_track(track, *index, from_list.then_some(list)))
                 .flatten()
         }
@@ -169,18 +196,103 @@ fn draw_row(ui: &mut Ui, ctx: &mut PageCtx<'_>, row: &Row<'_>, list: &[SpTrack])
                 .then(|| context(&artist.uri))
         }
         Row::Playlist(playlist) => {
-            let mut args = FluentArgs::new();
-            args.set("owner", playlist.owner.as_str());
-            let by = ctx.tr.tr_args("spotify-by", &args).into_owned();
+            let by = by_line(ctx, playlist);
             let image = playlist.image.as_deref();
             spotify_row(ui, ctx, image, &playlist.name, &by, true)
                 .clicked()
                 .then(|| context(&playlist.uri))
         }
+        Row::LibraryPlaylist(playlist) => {
+            let by = by_line(ctx, playlist);
+            let image = playlist.image.as_deref();
+            let row = spotify_row(ui, ctx, image, &playlist.name, &by, true);
+            if playlist.editable {
+                if row.clicked() {
+                    set_open_playlist(ui, Some(playlist.id.clone()));
+                    ctx.out
+                        .push(PageAction::Spotify(SpotifyRequest::OpenPlaylist(
+                            playlist.id.clone(),
+                        )));
+                }
+                None
+            } else {
+                let row = row.on_hover_text(ctx.tr.tr("spotify-follow-only"));
+                row.clicked().then(|| context(&playlist.uri))
+            }
+        }
+        Row::PlaylistTrack { track, playlist } => {
+            let subtitle = track_subtitle(track);
+            let playable = track.uri.is_some();
+            let row = spotify_row_with_room(
+                ui,
+                ctx,
+                track.image.as_deref(),
+                &track.name,
+                &subtitle,
+                playable,
+                HEART_ROOM,
+            );
+            track_extras(ui, ctx, &row, track, Some(playlist));
+            row.clicked()
+                .then(|| PlayRequest::Context {
+                    uri: playlist.uri.clone(),
+                    offset_uri: track.uri.clone(),
+                })
+                .filter(|_| playable)
+        }
     };
     if let Some(play) = play {
         ctx.out
             .push(PageAction::Spotify(SpotifyRequest::Play(play)));
+    }
+}
+
+/// A track's artists, then its album.
+fn track_subtitle(track: &SpTrack) -> String {
+    let mut subtitle = track.artists.join(", ");
+    if !track.album.is_empty() {
+        if !subtitle.is_empty() {
+            subtitle.push_str(" · ");
+        }
+        subtitle.push_str(&track.album);
+    }
+    subtitle
+}
+
+/// "by <owner>" for a playlist row.
+fn by_line(ctx: &PageCtx<'_>, playlist: &SpPlaylist) -> String {
+    let mut args = FluentArgs::new();
+    args.set("owner", playlist.owner.as_str());
+    ctx.tr.tr_args("spotify-by", &args).into_owned()
+}
+
+/// Room kept at a track row's right end for its heart.
+const HEART_ROOM: f32 = HEART_BUTTON[0] + SPACE[1];
+
+/// The heart at the right end of a track's `row`, and the row's context menu; `open` is the
+/// opened playlist the row belongs to.
+pub fn track_extras(
+    ui: &mut Ui,
+    ctx: &mut PageCtx<'_>,
+    row: &Response,
+    track: &SpTrack,
+    open: Option<&SpPlaylist>,
+) {
+    let size = HEART_BUTTON[0];
+    let center = pos2(
+        row.rect.right() - SPACE[1] - size / 2.0,
+        row.rect.center().y,
+    );
+    let rect = Rect::from_center_size(center, Vec2::splat(size));
+    let (tr, palette, spotify) = (ctx.tr, ctx.palette, ctx.spotify);
+    // A child that takes no room from the list, drawn after the row so it gets the clicks.
+    let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
+    if let Some(action) = spotify_track_menu::heart(&mut child, tr, &palette, spotify, track) {
+        ctx.out.push(action);
+    }
+    if track.uri.is_some() {
+        let out = &mut *ctx.out;
+        row.context_menu(|ui| spotify_track_menu::items(ui, tr, spotify, track, open, out));
     }
 }
 

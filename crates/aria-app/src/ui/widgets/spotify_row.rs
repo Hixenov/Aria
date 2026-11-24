@@ -33,6 +33,19 @@ pub fn spotify_row(
     subtitle: &str,
     enabled: bool,
 ) -> Response {
+    spotify_row_with_room(ui, ctx, image, title, subtitle, enabled, 0.0)
+}
+
+/// [`spotify_row`] whose text stops `room` points short of the right end, for a button there.
+pub fn spotify_row_with_room(
+    ui: &mut Ui,
+    ctx: &mut PageCtx<'_>,
+    image: Option<&str>,
+    title: &str,
+    subtitle: &str,
+    enabled: bool,
+    room: f32,
+) -> Response {
     let p = ctx.palette;
     let size = vec2(ui.available_width(), SPOTIFY_ROW);
     let sense = if enabled {
@@ -69,7 +82,7 @@ pub fn spotify_row(
         }
     }
     let left = cover.right() + SPACE[2];
-    let width = (rect.right() - left - SPACE[1]).max(0.0);
+    let width = (rect.right() - left - SPACE[1] - room).max(0.0);
     let body = TextStyle::Body.resolve(ui.style()).size;
     let title_color = if enabled { p.text } else { p.text_muted };
     let title = one_line(ui, title, semibold(body), title_color, width);

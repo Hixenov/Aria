@@ -14,7 +14,10 @@ use aria_core::{
     PlayRequest, SearchResults, SpAlbum, SpArtist, SpPlaylist, SpTrack,
     i18n::{FluentArgs, Localizer},
     settings::{Language, Settings},
-    spotify_service::{SpotifyAccount, SpotifyLibrary, SpotifyRequest, SpotifySearch},
+    spotify_service::{
+        SpotifyAccount, SpotifyEvent, SpotifyLibrary, SpotifyPlaylist, SpotifyRequest,
+        SpotifySearch,
+    },
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable as _};
@@ -111,10 +114,9 @@ fn signed_in() -> SpotifyUi {
 }
 
 fn with_library(library: SpotifyLibrary) -> SpotifyUi {
-    SpotifyUi {
-        library: Arc::new(library),
-        ..signed_in()
-    }
+    let mut ui = signed_in();
+    ui.apply(SpotifyEvent::Library(Arc::new(library)));
+    ui
 }
 
 fn plays(harness: &Harness<'_, Page>) -> Vec<PlayRequest> {
@@ -351,4 +353,214 @@ fn the_four_routes_are_no_longer_pending() {
     for route in [Route::Search, Route::Library, Route::Albums, Route::Artists] {
         assert_eq!(route.phase(), None, "{route:?}");
     }
+}
+
+fn likes(harness: &Harness<'_, Page>) -> Vec<(Option<String>, bool)> {
+    harness
+        .state()
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            PageAction::Spotify(SpotifyRequest::Like { track, liked }) => {
+                Some((track.uri.clone(), *liked))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn liked_songs_rows_have_hearts_that_unlike() {
+    let mut harness = harness(
+        Route::Library,
+        with_library(SpotifyLibrary {
+            tracks: vec![track(1, true), track(2, true)],
+            ..SpotifyLibrary::default()
+        }),
+    );
+    harness.run();
+    let unlike = en("spotify-unlike");
+    let hearts = harness.get_all_by_role_and_label(Role::Button, &unlike);
+    assert_eq!(hearts.count(), 2);
+    harness
+        .get_all_by_role_and_label(Role::Button, &unlike)
+        .next()
+        .unwrap()
+        .click();
+    harness.run();
+    assert_eq!(
+        likes(&harness),
+        [(Some("spotify:track:t1".to_owned()), false)]
+    );
+    assert!(
+        plays(&harness).is_empty(),
+        "the heart does not play the row"
+    );
+}
+
+#[test]
+fn right_clicking_a_spotify_track_offers_the_playlist_menu() {
+    let mut harness = harness(
+        Route::Library,
+        with_library(SpotifyLibrary {
+            tracks: vec![track(1, true)],
+            ..SpotifyLibrary::default()
+        }),
+    );
+    harness.run();
+    harness.get_by_label("Song 1").click_secondary();
+    harness.run();
+    harness.get_by_label(&en("track-add-to-playlist"));
+    let unlike = en("spotify-unlike");
+    assert_eq!(
+        harness.get_all_by_label(&unlike).count(),
+        2,
+        "the heart and the menu's item"
+    );
+}
+
+fn sp_playlist(id: &str, name: &str, editable: bool) -> SpPlaylist {
+    SpPlaylist {
+        uri: format!("spotify:playlist:{id}"),
+        name: name.to_owned(),
+        owner: "Ann".to_owned(),
+        image: None,
+        id: id.to_owned(),
+        owner_id: if editable { "ann" } else { "friend" }.to_owned(),
+        collaborative: false,
+        snapshot: None,
+        editable,
+    }
+}
+
+fn two_playlists() -> Harness<'static, Page> {
+    let mut harness = harness(
+        Route::Library,
+        with_library(SpotifyLibrary {
+            playlists: vec![
+                sp_playlist("mine", "Mine", true),
+                sp_playlist("theirs", "Theirs", false),
+            ],
+            ..SpotifyLibrary::default()
+        }),
+    );
+    harness.run();
+    harness
+}
+
+fn opens(harness: &Harness<'_, Page>) -> Vec<String> {
+    harness
+        .state()
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            PageAction::Spotify(SpotifyRequest::OpenPlaylist(id)) => Some(id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Opens "Mine" and gives it `tracks` as loaded.
+fn opened_mine(tracks: Vec<SpTrack>, failed: bool) -> Harness<'static, Page> {
+    let mut harness = two_playlists();
+    click(&mut harness, "Mine");
+    harness
+        .state_mut()
+        .spotify
+        .apply(SpotifyEvent::Playlist(Some(Arc::new(SpotifyPlaylist {
+            id: "mine".to_owned(),
+            tracks,
+            snapshot: None,
+            loading: false,
+            failed,
+        }))));
+    harness.run();
+    harness
+}
+
+#[test]
+fn clicking_an_own_playlist_opens_it_and_asks_for_its_tracks() {
+    let mut harness = two_playlists();
+    click(&mut harness, "Mine");
+    assert_eq!(opens(&harness), ["mine"]);
+    assert!(plays(&harness).is_empty());
+    harness.get_by_role_and_label(Role::Button, &en("spotify-playlist-back"));
+    harness.get_by_label(&en("spotify-playlist-loading"));
+}
+
+#[test]
+fn a_followed_playlist_still_plays_on_click() {
+    let mut harness = two_playlists();
+    click(&mut harness, "Theirs");
+    assert!(opens(&harness).is_empty());
+    assert_eq!(
+        plays(&harness),
+        [PlayRequest::Context {
+            uri: "spotify:playlist:theirs".to_owned(),
+            offset_uri: None,
+        }]
+    );
+}
+
+#[test]
+fn the_open_playlist_shows_back_play_and_its_tracks() {
+    let mut harness = opened_mine(vec![track(1, true), track(2, true)], false);
+    harness.get_by_label("Song 1");
+    harness.get_by_label("Song 2");
+    assert!(harness.query_by_label("Theirs").is_none());
+    click(&mut harness, &en("spotify-playlist-play"));
+    assert_eq!(
+        plays(&harness),
+        [PlayRequest::Context {
+            uri: "spotify:playlist:mine".to_owned(),
+            offset_uri: None,
+        }]
+    );
+}
+
+#[test]
+fn back_returns_to_the_library() {
+    let mut harness = opened_mine(vec![track(1, true)], false);
+    click(&mut harness, &en("spotify-playlist-back"));
+    harness.get_by_label("Theirs");
+    assert!(harness.query_by_label("Song 1").is_none());
+}
+
+#[test]
+fn a_track_in_an_open_playlist_plays_the_playlist_from_it() {
+    let mut harness = opened_mine(vec![track(1, true), track(2, true)], false);
+    click(&mut harness, "Song 2");
+    assert_eq!(
+        plays(&harness),
+        [PlayRequest::Context {
+            uri: "spotify:playlist:mine".to_owned(),
+            offset_uri: Some("spotify:track:t2".to_owned()),
+        }]
+    );
+}
+
+#[test]
+fn a_track_in_an_open_playlist_can_be_removed() {
+    let mut harness = opened_mine(vec![track(1, true)], false);
+    harness.get_by_label("Song 1").click_secondary();
+    harness.run();
+    click(&mut harness, &en("spotify-remove-from-playlist"));
+    assert!(harness.state().actions.contains(&PageAction::Spotify(
+        SpotifyRequest::RemoveFromPlaylist {
+            playlist: "mine".to_owned(),
+            uri: "spotify:track:t1".to_owned(),
+        }
+    )));
+}
+
+#[test]
+fn an_open_playlist_that_failed_says_so() {
+    let harness = opened_mine(Vec::new(), true);
+    harness.get_by_label(&en("spotify-playlist-failed"));
+}
+
+#[test]
+fn an_empty_open_playlist_says_so() {
+    let harness = opened_mine(Vec::new(), false);
+    harness.get_by_label(&en("spotify-playlist-empty"));
 }

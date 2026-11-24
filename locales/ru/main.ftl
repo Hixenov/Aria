@@ -482,3 +482,18 @@ player-page-ready = Готово
 player-page-failed = Spotify не смог здесь запуститься. Причину покажет Aria.
 player-page-start = Старт
 player-page-reload = Закройте это окно и нажмите «Играть» в Aria.
+
+## Spotify: likes and playlists
+spotify-like = Добавить в «Любимые треки»
+spotify-unlike = Убрать из «Любимых треков»
+spotify-remove-from-playlist = Убрать из этого плейлиста
+spotify-remove-every-copy = Spotify убирает из плейлиста все копии этого трека.
+spotify-reconnect-to-edit = Переподключитесь в «Настройки» → Spotify, чтобы отмечать треки и менять плейлисты.
+spotify-added = Добавлено в «{ $playlist }»
+spotify-created = Создан плейлист «{ $playlist }»
+spotify-follow-only = Spotify не показывает, что внутри плейлистов, на которые вы только подписаны. Нажмите, чтобы включить его.
+spotify-playlist-back = Назад
+spotify-playlist-play = Играть
+spotify-playlist-empty = В этом плейлисте пусто.
+spotify-playlist-failed = Aria не удалось загрузить этот плейлист из Spotify.
+spotify-playlist-loading = Загрузка плейлиста…

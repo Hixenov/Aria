@@ -10,6 +10,7 @@ use std::{
 
 use aria_app::{
     app::{AppDeps, AriaApp},
+    spotify::SpotifyUi,
     ui::{
         layout::{
             player_bar::{self, NowPlaying, PlayerAction, PlayerBar},
@@ -103,6 +104,7 @@ struct Bar {
     actions: Vec<PlayerAction>,
     spotify: Option<SpotifyPlayback>,
     devices: Option<Vec<SpDevice>>,
+    spotify_ui: Option<SpotifyUi>,
 }
 
 fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
@@ -119,6 +121,7 @@ fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
         actions: Vec::new(),
         spotify: None,
         devices: None,
+        spotify_ui: None,
     };
     Harness::builder()
         .with_size(SIZE)
@@ -140,6 +143,7 @@ fn bar_harness(view: PlayerView, position_ms: u64) -> Harness<'static, Bar> {
                     spotify: bar.spotify.as_ref(),
                     spotify_devices: bar.devices.as_deref(),
                     covers: None,
+                    spotify_ui: bar.spotify_ui.as_ref(),
                 };
                 let actions = player_bar::show(ui, &mut shown);
                 bar.actions.extend(actions);
@@ -1237,6 +1241,33 @@ fn volume_is_sent_on_release_only() {
             .iter()
             .any(|a| matches!(a, PlayerAction::SetVolume(_))),
         "the local volume is left alone"
+    );
+}
+
+#[test]
+fn the_player_bar_heart_likes_the_spotify_track() {
+    use aria_core::spotify_service::{SpotifyAccount, SpotifyEvent, SpotifyRequest};
+    let mut harness = spotify_bar(spotify_playback(
+        Some(aria_core::NowItem::Track(spotify_track(200_000))),
+        false,
+    ));
+    let mut spotify = SpotifyUi::default();
+    spotify.apply(SpotifyEvent::Account(SpotifyAccount::SignedIn {
+        name: "Ann".to_owned(),
+        can_edit: true,
+    }));
+    harness.state_mut().spotify_ui = Some(spotify);
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, &en("spotify-like"))
+        .click();
+    harness.run();
+    assert_eq!(
+        spotify_actions(&harness),
+        [SpotifyRequest::Like {
+            track: spotify_track(200_000),
+            liked: true,
+        }]
     );
 }
 

@@ -76,6 +76,8 @@ pub enum PageAction {
     UpdateSettings(Settings),
     /// A request for Spotify. For a sign-in the app fills in the page the browser shows.
     Spotify(SpotifyRequest),
+    /// Ask for the name of a new Spotify playlist, which starts with the track `first`.
+    AskSpotifyPlaylistName { first: Option<String> },
     /// Restore the default settings.
     ResetSettings,
     /// Open the settings folder in the file manager.
@@ -182,6 +184,8 @@ pub enum NameFor {
     Rename(PlaylistId),
     /// A new name for this sound.
     Sound(SoundId),
+    /// A new Spotify playlist (its first track is kept by the app).
+    SpotifyPlaylist,
 }
 
 /// Draws the page for `route`.

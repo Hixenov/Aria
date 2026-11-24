@@ -1,7 +1,7 @@
 //! What the UI knows of Spotify: the account, the library, the search, what is playing and the
 //! devices, as the backend last reported them; and the covers fetched for it.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,8 +10,8 @@ use aria_core::event::ActivePlayer;
 use aria_core::i18n::Localizer;
 use aria_core::spotify_player::AriaPlayerStatus;
 use aria_core::spotify_service::{
-    Cover, SpotifyAccount, SpotifyEvent, SpotifyLibrary, SpotifyPlayback, SpotifyRequest,
-    SpotifySearch,
+    Cover, SpotifyAccount, SpotifyEvent, SpotifyLibrary, SpotifyPlayback, SpotifyPlaylist,
+    SpotifyRequest, SpotifySearch,
 };
 use eframe::egui;
 
@@ -40,6 +40,10 @@ pub struct SpotifyUi {
     pub active: ActivePlayer,
     /// Aria's own Spotify player window.
     pub player: AriaPlayerStatus,
+    /// The URIs of Liked Songs, for the hearts. Follows `library`.
+    pub liked: Arc<HashSet<String>>,
+    /// The playlist the user opened, as last loaded.
+    pub playlist: Option<Arc<SpotifyPlaylist>>,
 }
 
 impl Default for SpotifyUi {
@@ -54,6 +58,8 @@ impl Default for SpotifyUi {
             devices: Vec::new(),
             active: ActivePlayer::Local,
             player: AriaPlayerStatus::Off,
+            liked: Arc::default(),
+            playlist: None,
         }
     }
 }
@@ -68,17 +74,39 @@ impl SpotifyUi {
                 }
                 self.account = account;
             }
-            SpotifyEvent::Library(library) => self.library = library,
+            SpotifyEvent::Library(library) => {
+                let liked: HashSet<String> = library
+                    .tracks
+                    .iter()
+                    .filter_map(|t| t.uri.clone())
+                    .collect();
+                self.liked = Arc::new(liked);
+                self.library = library;
+            }
+            SpotifyEvent::Playlist(playlist) => self.playlist = playlist,
             SpotifyEvent::Search(search) => self.search = search,
             SpotifyEvent::Playback(playback) => self.playback = playback,
             SpotifyEvent::Devices(devices) => self.devices = devices,
             SpotifyEvent::Player(status) => self.player = status,
-            SpotifyEvent::Playlist(_) | SpotifyEvent::Cover(_) | SpotifyEvent::Notice(_) => {}
+            SpotifyEvent::Cover(_) | SpotifyEvent::Notice(_) => {}
         }
     }
 
     pub fn signed_in(&self) -> bool {
         matches!(self.account, SpotifyAccount::SignedIn { .. })
+    }
+
+    /// Whether the session may like tracks and edit playlists.
+    pub fn can_edit(&self) -> bool {
+        matches!(
+            self.account,
+            SpotifyAccount::SignedIn { can_edit: true, .. }
+        )
+    }
+
+    /// Whether the track `uri` is in Liked Songs.
+    pub fn is_liked(&self, uri: &str) -> bool {
+        self.liked.contains(uri)
     }
 }
 
@@ -424,5 +452,41 @@ mod tests {
         let page = signed_in_page("a <b> & c");
         assert!(page.contains("a &lt;b&gt; &amp; c"));
         assert!(page.contains("charset=\"utf-8\""));
+    }
+
+    #[test]
+    fn the_liked_set_follows_the_library() {
+        use aria_core::SpTrack;
+        let song = |uri: &str| SpTrack {
+            uri: Some(uri.to_owned()),
+            name: String::new(),
+            artists: Vec::new(),
+            album: String::new(),
+            album_uri: None,
+            duration_ms: 0,
+            image: None,
+            image_large: None,
+        };
+        let mut ui = SpotifyUi::default();
+        assert!(!ui.is_liked("spotify:track:a"));
+        ui.apply(SpotifyEvent::Library(Arc::new(SpotifyLibrary {
+            tracks: vec![song("spotify:track:a")],
+            ..SpotifyLibrary::default()
+        })));
+        assert!(ui.is_liked("spotify:track:a"));
+        assert!(!ui.is_liked("spotify:track:b"));
+        ui.apply(SpotifyEvent::Library(Arc::default()));
+        assert!(!ui.is_liked("spotify:track:a"));
+    }
+
+    #[test]
+    fn can_edit_comes_from_the_account() {
+        let mut ui = SpotifyUi::default();
+        assert!(!ui.can_edit());
+        ui.apply(SpotifyEvent::Account(SpotifyAccount::SignedIn {
+            name: "Ann".to_owned(),
+            can_edit: true,
+        }));
+        assert!(ui.can_edit());
     }
 }

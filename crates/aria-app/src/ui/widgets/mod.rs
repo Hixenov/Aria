@@ -10,6 +10,7 @@ pub mod reorder;
 mod scrub;
 mod section_header;
 pub mod spotify_row;
+pub mod spotify_track_menu;
 mod toast;
 pub mod track_menu;
 

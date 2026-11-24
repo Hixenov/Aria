@@ -30,7 +30,7 @@ use eframe::egui::{
 use super::surface_frame;
 use crate::{
     artwork::{ArtworkTextures, paint_cover},
-    spotify::RemoteCovers,
+    spotify::{RemoteCovers, SpotifyUi},
     ui::{
         pages::PageAction,
         theme::{
@@ -40,7 +40,7 @@ use crate::{
             visuals::SPACE,
         },
         widgets::{
-            IconButton, Scrub,
+            IconButton, Scrub, spotify_track_menu,
             track_menu::{self, HEART_BUTTON},
         },
     },
@@ -226,6 +226,8 @@ pub struct PlayerBar<'a> {
     pub spotify_devices: Option<&'a [SpDevice]>,
     /// Spotify's covers.
     pub covers: Option<&'a mut RemoteCovers>,
+    /// Spotify's state, for the heart of a Spotify track. Without it the heart is disabled.
+    pub spotify_ui: Option<&'a SpotifyUi>,
 }
 
 /// Shows the bar and returns what the user did on it this frame.
@@ -408,9 +410,20 @@ fn spotify_now_playing(
             }
         });
     });
-    let heart = IconButton::new(icons::HEART, &heart_label, p).size(heart_size, heart_icon);
-    ui.add_enabled(false, heart)
-        .on_disabled_hover_text(&*not_here);
+    match (bar.spotify_ui, &playback.state.item) {
+        (Some(spotify), Some(NowItem::Track(track))) => {
+            if let Some(PageAction::Spotify(request)) =
+                spotify_track_menu::heart(ui, bar.tr, p, spotify, track)
+            {
+                out.push(PlayerAction::Spotify(request));
+            }
+        }
+        _ => {
+            let heart = IconButton::new(icons::HEART, &heart_label, p).size(heart_size, heart_icon);
+            ui.add_enabled(false, heart)
+                .on_disabled_hover_text(&*not_here);
+        }
+    }
 }
 
 /// Between the format and the path on the bar's line.
@@ -1285,6 +1298,7 @@ mod tests {
                     spotify: None,
                     spotify_devices: None,
                     covers: None,
+                    spotify_ui: None,
                 };
                 let mut out = Vec::new();
                 let column = ui.max_rect();

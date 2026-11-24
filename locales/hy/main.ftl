@@ -470,3 +470,18 @@ player-page-ready = Պատրաստ է
 player-page-failed = Spotify-ը չկարողացավ այստեղ գործարկվել։ Aria-ն կասի պատճառը։
 player-page-start = Սկսել
 player-page-reload = Փակեք այս պատուհանը և սեղմեք նվագարկել Aria-ում։
+
+## Spotify: likes and playlists
+spotify-like = Ավելացնել հավանած երգերին
+spotify-unlike = Հեռացնել հավանած երգերից
+spotify-remove-from-playlist = Հեռացնել այս երգացանկից
+spotify-remove-every-copy = Spotify-ը երգացանկից հեռացնում է այս երգի բոլոր օրինակները։
+spotify-reconnect-to-edit = Վերամիացեք Կարգավորումներ → Spotify բաժնում՝ երգեր հավանելու և երգացանկեր փոխելու համար։
+spotify-added = Ավելացվեց «{ $playlist }» երգացանկին
+spotify-created = Ստեղծվեց «{ $playlist }» երգացանկը
+spotify-follow-only = Spotify-ը ցույց չի տալիս այն երգացանկերի բովանդակությունը, որոնց միայն հետևում եք։ Սեղմեք՝ նվագարկելու համար։
+spotify-playlist-back = Հետ
+spotify-playlist-play = Նվագարկել
+spotify-playlist-empty = Այս երգացանկը դատարկ է։
+spotify-playlist-failed = Aria-ն չկարողացավ բեռնել այս երգացանկը Spotify-ից։
+spotify-playlist-loading = Երգացանկը բեռնվում է…

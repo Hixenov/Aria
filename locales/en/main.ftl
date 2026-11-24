@@ -471,3 +471,20 @@ player-page-ready = Ready
 player-page-failed = Spotify couldn't start here. Aria says why.
 player-page-start = Start
 player-page-reload = Close this window and press play in Aria.
+
+## Spotify: likes and playlists
+spotify-like = Add to Liked Songs
+spotify-unlike = Remove from Liked Songs
+spotify-remove-from-playlist = Remove from this playlist
+spotify-remove-every-copy = Spotify removes every copy of this track from the playlist.
+spotify-reconnect-to-edit = Reconnect in Settings → Spotify to like tracks and edit playlists.
+# $playlist (String) - the playlist's name
+spotify-added = Added to { $playlist }
+# $playlist (String) - the playlist's name
+spotify-created = Created { $playlist }
+spotify-follow-only = Spotify doesn't show what's in playlists you only follow. Click to play it.
+spotify-playlist-back = Back
+spotify-playlist-play = Play
+spotify-playlist-empty = This playlist is empty.
+spotify-playlist-failed = Aria couldn't load this playlist from Spotify.
+spotify-playlist-loading = Loading the playlist…

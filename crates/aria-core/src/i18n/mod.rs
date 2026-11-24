@@ -569,6 +569,19 @@ mod tests {
         "player-page-reload",
         "vinyl-finish-splatter",
         "vinyl-finish-marble",
+        "spotify-like",
+        "spotify-unlike",
+        "spotify-remove-from-playlist",
+        "spotify-remove-every-copy",
+        "spotify-reconnect-to-edit",
+        "spotify-added",
+        "spotify-created",
+        "spotify-follow-only",
+        "spotify-playlist-back",
+        "spotify-playlist-play",
+        "spotify-playlist-empty",
+        "spotify-playlist-failed",
+        "spotify-playlist-loading",
     ];
 
     // The six tests below are the Task 4 brief's, verbatim except for the

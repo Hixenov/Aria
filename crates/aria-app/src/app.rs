@@ -186,6 +186,8 @@ pub struct AriaApp {
     soundboard: Arc<SoundboardState>,
     /// The playlist name dialog, while it is open: what it is for and the text typed so far.
     name_dialog: Option<(NameFor, String)>,
+    /// The track a new Spotify playlist starts with, while its name dialog is open.
+    spotify_new_first: Option<String>,
     /// The hotkey dialog, while it is open: what it is for and the combination pressed so far.
     hotkey_dialog: Option<(HotkeyFor, HotkeyCapture)>,
     /// The global hotkeys registered with the system.
@@ -304,6 +306,7 @@ impl AriaApp {
             collections: Arc::default(),
             soundboard: Arc::default(),
             name_dialog: None,
+            spotify_new_first: None,
             hotkey_dialog: None,
             hotkeys: Hotkeys::new(hotkeys),
             hotkeys_available,
@@ -590,6 +593,7 @@ impl AriaApp {
                 .signed_in()
                 .then_some(self.spotify.devices.as_slice()),
             covers: Some(&mut self.covers),
+            spotify_ui: Some(&self.spotify),
         };
         let actions = player_bar::show(ui, &mut bar);
         let now = ctx.input(|input| input.time);
@@ -724,6 +728,7 @@ impl AriaApp {
                 spotify,
                 spotify_devices: None,
                 covers: Some(&mut self.covers),
+                spotify_ui: Some(&self.spotify),
             };
             let mini = &mut self.mini;
             ctx.show_viewport_immediate(mini::viewport_id(), builder, |ui, class| {
@@ -880,6 +885,7 @@ impl AriaApp {
                     .signed_in()
                     .then_some(self.spotify.devices.as_slice()),
                 covers: Some(&mut self.covers),
+                spotify_ui: Some(&self.spotify),
             };
             let vinyl = &mut self.vinyl;
             egui::CentralPanel::default()
@@ -1292,6 +1298,10 @@ impl AriaApp {
             PageAction::DeletePlaylist(id) => self.send(Command::DeletePlaylist(id)),
             PageAction::ClearHistory => self.send(Command::ClearHistory),
             PageAction::AskPlaylistName(purpose) => self.open_name_dialog(purpose),
+            PageAction::AskSpotifyPlaylistName { first } => {
+                self.spotify_new_first = first;
+                self.open_name_dialog(NameFor::SpotifyPlaylist);
+            }
             PageAction::AddSounds => self.pick_sounds(ctx),
             PageAction::AskSoundName(id) => self.open_name_dialog(NameFor::Sound(id)),
             PageAction::SetSoundVolume { id, volume } => {
@@ -1309,7 +1319,7 @@ impl AriaApp {
     /// Opens the name dialog for `purpose`, with the playlist's current name when renaming.
     fn open_name_dialog(&mut self, purpose: NameFor) {
         let text = match purpose {
-            NameFor::New { .. } => String::new(),
+            NameFor::New { .. } | NameFor::SpotifyPlaylist => String::new(),
             NameFor::Rename(id) => match self.playlist_name(id) {
                 Some(name) => name.to_owned(),
                 None => {
@@ -1521,7 +1531,9 @@ impl AriaApp {
             return;
         }
         let (title, confirm, max_chars) = match purpose {
-            NameFor::New { .. } => ("playlist-new", "playlist-create", PLAYLIST_NAME_MAX),
+            NameFor::New { .. } | NameFor::SpotifyPlaylist => {
+                ("playlist-new", "playlist-create", PLAYLIST_NAME_MAX)
+            }
             NameFor::Rename(_) => ("playlist-rename", "playlist-rename", PLAYLIST_NAME_MAX),
             NameFor::Sound(_) => ("sound-rename", "sound-rename", SOUND_NAME_MAX),
         };
@@ -1535,13 +1547,18 @@ impl AriaApp {
             NameAnswer::Open => {
                 self.name_dialog = Some((purpose, text));
             }
-            NameAnswer::Cancelled => {}
+            NameAnswer::Cancelled => self.spotify_new_first = None,
             NameAnswer::Confirmed(name) => {
-                self.send(match purpose {
+                let command = match purpose {
                     NameFor::New { first } => Command::CreatePlaylist { name, first },
                     NameFor::Rename(id) => Command::RenamePlaylist { id, name },
                     NameFor::Sound(id) => Command::RenameSound { id, name },
-                });
+                    NameFor::SpotifyPlaylist => Command::Spotify(SpotifyRequest::CreatePlaylist {
+                        name,
+                        first: self.spotify_new_first.take(),
+                    }),
+                };
+                self.send(command);
             }
         }
     }
@@ -2632,6 +2649,37 @@ mod tests {
             "the dialog stayed open"
         );
         assert!(!harness.state().modal_open());
+    }
+
+    #[test]
+    fn the_spotify_name_dialog_creates_on_spotify() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut harness = dialog_harness(aria_library::Collections::default());
+        let ctx = harness.ctx.clone();
+        harness.state_mut().handle_page_action(
+            &ctx,
+            PageAction::AskSpotifyPlaylistName {
+                first: Some("spotify:track:t1".to_owned()),
+            },
+        );
+        harness.run();
+        let label = english("playlist-name-label");
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, &label)
+            .focus();
+        harness.run();
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, &label)
+            .type_text("Mix");
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        let command = Command::Spotify(SpotifyRequest::CreatePlaylist {
+            name: "Mix".to_owned(),
+            first: Some("spotify:track:t1".to_owned()),
+        });
+        assert_eq!(sent_like(harness.state(), &command), 1);
+        assert!(harness.state().name_dialog.is_none());
     }
 
     fn sound_view(id: i64, name: &str) -> aria_core::soundboard::SoundView {
