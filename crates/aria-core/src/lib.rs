@@ -19,6 +19,7 @@ pub mod redact;
 pub mod runtime;
 pub mod settings;
 pub mod soundboard;
+pub mod spotify_player;
 pub mod spotify_service;
 pub mod watch;
 

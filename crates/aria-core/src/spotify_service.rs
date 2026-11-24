@@ -11,11 +11,13 @@
 
 use std::collections::HashSet;
 use std::io::{self, Cursor};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use aria_spotify::player_page::{PageError, PageEvent, PageMsg};
 use aria_spotify::{
     Callback, Client, Endpoints, Http, Pkce, PlayRequest, PlaybackState, RepeatState,
     SearchResults, Secret, SpAlbum, SpArtist, SpDevice, SpPlaylist, SpTrack, SpotifyError,
@@ -26,6 +28,7 @@ use crossbeam_channel::{Receiver, Sender, bounded, never, select, unbounded};
 
 use crate::notice::{Notice, NoticeLevel};
 use crate::runtime::{DoneGuard, join_bounded};
+use crate::spotify_player::{ARIA_DEVICE, AriaPlayerStatus, Due, Launch, Player, PlayerDeps};
 
 const THREAD_NAME: &str = "aria-spotify";
 const COVERS_THREAD: &str = "aria-spotify-covers";
@@ -42,6 +45,8 @@ const COVER_MAX_SIDE: u32 = 4096;
 const DRIFT_MS: u64 = 1500;
 /// How long the loop sleeps when nothing is due.
 const IDLE: Duration = Duration::from_secs(3600);
+/// The page's token is refreshed first when it would expire within this.
+const PAGE_TOKEN_MARGIN: Duration = Duration::from_secs(60);
 
 /// Opens a URL in the user's browser.
 pub type OpenBrowser = Box<dyn Fn(&str) -> io::Result<()> + Send>;
@@ -57,11 +62,14 @@ pub struct SpotifyDeps {
     pub fast: Duration,
     pub slow: Duration,
     pub after_command: Duration,
+    /// Aria's own player window.
+    pub player: PlayerDeps,
 }
 
 impl SpotifyDeps {
-    /// Spotify itself, the system keyring and the default browser.
-    pub fn system() -> SpotifyDeps {
+    /// Spotify itself, the system keyring and the default browser. Aria's player keeps its
+    /// browser profile in `cache_dir/spotify-player`; without a cache folder there is no player.
+    pub fn system(cache_dir: Option<PathBuf>) -> SpotifyDeps {
         SpotifyDeps {
             endpoints: Endpoints::spotify(),
             store: system_store(),
@@ -72,6 +80,7 @@ impl SpotifyDeps {
             fast: Duration::from_secs(2),
             slow: Duration::from_secs(15),
             after_command: Duration::from_millis(400),
+            player: PlayerDeps::system(cache_dir.map(|dir| dir.join("spotify-player"))),
         }
     }
 }
@@ -110,8 +119,14 @@ pub enum SpotifyRequest {
     SetVolume(u8),
     SetShuffle(bool),
     SetRepeat(RepeatState),
-    /// The device to play on; `None` is Spotify's active one.
+    /// The device to play on; `None` is Spotify's active one, [`ARIA_DEVICE`] Aria's player.
     Device(Option<String>),
+    /// Whether Spotify may play in Aria's own player window; `strings` are its page's texts
+    /// (a JSON object), used from the next launch on.
+    PlayInAria {
+        on: bool,
+        strings: String,
+    },
     ListDevices,
     Cadence(Cadence),
     /// Asks for a cover image by URL.
@@ -181,7 +196,9 @@ pub enum SpotifyEvent {
     Library(Arc<SpotifyLibrary>),
     Search(Arc<SpotifySearch>),
     Playback(Option<Arc<SpotifyPlayback>>),
+    /// Spotify's devices, without Aria's own player (the UI lists that itself).
     Devices(Vec<SpDevice>),
+    Player(AriaPlayerStatus),
     Cover(Arc<Cover>),
     Notice(Notice),
 }
@@ -219,6 +236,11 @@ impl SpotifyService {
         let (decoded_tx, decoded_rx) = unbounded();
         let signed_in = Arc::new(AtomicBool::new(false));
         let http = Http::new();
+        let mut deps = deps;
+        let player = Player::new(std::mem::replace(
+            &mut deps.player,
+            PlayerDeps::unavailable(),
+        ));
         {
             let (http, endpoints, signed_in) =
                 (http.clone(), deps.endpoints.clone(), Arc::clone(&signed_in));
@@ -246,6 +268,9 @@ impl SpotifyService {
             noticed: HashSet::new(),
             covers: covers_tx,
             signed_in,
+            player,
+            player_shown: None,
+            needs_reconnect: false,
         };
         let thread = thread::Builder::new()
             .name(THREAD_NAME.to_owned())
@@ -296,16 +321,23 @@ struct Service {
     noticed: HashSet<&'static str>,
     covers: Sender<(String, u32)>,
     signed_in: Arc<AtomicBool>,
+    player: Player,
+    /// The player's status last sent.
+    player_shown: Option<AriaPlayerStatus>,
+    /// A play wanted the player but the session lacks `streaming`.
+    needs_reconnect: bool,
 }
 
 impl Service {
     fn run(mut self, requests: &Receiver<SpotifyRequest>, decoded: &Receiver<Cover>) {
         self.start();
         let mut covers_alive = true;
+        let page = self.player.messages();
         loop {
             let deadline = [
                 self.poll_deadline(),
                 self.search.as_ref().map(|(_, at)| *at),
+                self.player.deadline(),
             ]
             .into_iter()
             .flatten()
@@ -328,6 +360,11 @@ impl Service {
                 recv(sign_in) -> result => {
                     self.finish_sign_in(result.unwrap_or(Err(SpotifyError::SignInCancelled)));
                 }
+                recv(page) -> msg => {
+                    if let Ok(msg) = msg {
+                        self.page_message(msg);
+                    }
+                }
                 recv(covers) -> cover => match cover {
                     Ok(cover) => self.emit(SpotifyEvent::Cover(Arc::new(cover))),
                     Err(_) => covers_alive = false,
@@ -339,6 +376,7 @@ impl Service {
         if let Some(sign_in) = self.sign_in.take() {
             sign_in.cancel.store(true, Ordering::SeqCst);
         }
+        self.player.close();
         self.signed_in.store(false, Ordering::SeqCst);
     }
 
@@ -425,6 +463,8 @@ impl Service {
             return;
         };
         self.signed_in.store(true, Ordering::SeqCst);
+        self.needs_reconnect = false;
+        self.sync_player();
         self.set_account(SpotifyAccount::SignedIn { name: me.name });
         self.list_devices();
         self.load_library();
@@ -547,6 +587,9 @@ impl Service {
         self.paused_until = None;
         self.last = None;
         self.devices.clear();
+        self.player.close();
+        self.needs_reconnect = false;
+        self.sync_player();
         self.library = Arc::default();
         let account = self.signed_out();
         self.set_account(account);
@@ -571,12 +614,12 @@ impl Service {
                 self.load_library();
             }
             SpotifyRequest::Search(query) => self.queue_search(query),
-            SpotifyRequest::Play(request) => self.command(|c, d| c.play(d, &request)),
+            SpotifyRequest::Play(request) => self.play(request),
             SpotifyRequest::TogglePlay => {
                 if self.last.as_ref().is_some_and(|p| p.state.playing) {
                     self.command(Client::pause);
                 } else {
-                    self.command(|c, d| c.play(d, &PlayRequest::Resume));
+                    self.play(PlayRequest::Resume);
                 }
             }
             SpotifyRequest::Pause => self.command(Client::pause),
@@ -587,6 +630,13 @@ impl Service {
             SpotifyRequest::SetShuffle(on) => self.command(|c, d| c.shuffle(d, on)),
             SpotifyRequest::SetRepeat(state) => self.command(|c, d| c.repeat(d, state)),
             SpotifyRequest::Device(id) => self.chosen = id,
+            SpotifyRequest::PlayInAria { on, strings } => {
+                self.player.set(on, strings);
+                if !on {
+                    self.player.close();
+                }
+                self.sync_player();
+            }
             SpotifyRequest::ListDevices => self.list_devices(),
             SpotifyRequest::Cadence(cadence) => self.set_cadence(cadence),
             SpotifyRequest::Cover(url) => {
@@ -637,8 +687,12 @@ impl Service {
         }
     }
 
-    /// The chosen device, if Spotify still lists it; else `None` (the active device).
+    /// The chosen device, if Spotify still lists it; else `None` (the active device). Aria's
+    /// player, when chosen, is its page's device while that is ready.
     fn target(&self) -> Option<String> {
+        if self.chosen.as_deref() == Some(ARIA_DEVICE) {
+            return self.player.ready_device().map(str::to_owned);
+        }
         self.chosen
             .as_ref()
             .filter(|id| self.devices.iter().any(|d| d.id.as_ref() == Some(*id)))
@@ -659,9 +713,188 @@ impl Service {
                 (result, _) => result,
             },
         );
+        self.poll_soon();
+    }
+
+    /// Asks what is playing soon after a command.
+    fn poll_soon(&mut self) {
         if self.client.is_some() {
             let at = Instant::now() + self.deps.after_command;
             self.next_poll = Some(self.next_poll.map_or(at, |t| t.min(at)));
+        }
+    }
+
+    // --- Aria's own player ---
+
+    /// Plays `request`. With nothing chosen and no device active, or with Aria's player chosen,
+    /// it goes to Aria's player, which is opened when needed.
+    fn play(&mut self, request: PlayRequest) {
+        if self.client.is_none() {
+            return;
+        }
+        let aria_chosen = self.chosen.as_deref() == Some(ARIA_DEVICE);
+        let may_use_aria = self.player.available() && (aria_chosen || self.chosen.is_none());
+        if !may_use_aria {
+            return self.command(|c, d| c.play(d, &request));
+        }
+        let waiting = self.player.is_starting() || self.player.lost_device().is_some();
+        if self.player.ready_device().is_none() && (aria_chosen || waiting) {
+            return self.play_in_aria(request);
+        }
+        let target = self.target();
+        let outcome = self
+            .client
+            .as_mut()
+            .map(|client| client.play(target.as_deref(), &request));
+        self.keep_refresh_token();
+        match outcome {
+            Some(Err(SpotifyError::NoActiveDevice)) => self.play_in_aria(request),
+            Some(Ok(())) => self.noticed.clear(),
+            Some(Err(e)) => self.fail(e),
+            None => {}
+        }
+        self.poll_soon();
+    }
+
+    /// Plays `request` in Aria's player: on its page's device when ready, on a quiet page's
+    /// device that Spotify still lists, or in a window opened now.
+    fn play_in_aria(&mut self, request: PlayRequest) {
+        if !self
+            .client
+            .as_ref()
+            .is_some_and(|c| c.tokens().can_stream())
+        {
+            self.needs_reconnect = true;
+            self.notice_once(NoticeLevel::Warning, "spotify-player-reconnect", vec![]);
+            return self.sync_player();
+        }
+        if let Some(id) = self.player.ready_device().map(str::to_owned) {
+            self.play_on(&id, &request);
+            return self.sync_player();
+        }
+        if let Some(id) = self.player.lost_device().map(str::to_owned) {
+            self.list_devices();
+            if self
+                .devices
+                .iter()
+                .any(|d| d.id.as_deref() == Some(id.as_str()))
+            {
+                self.player.revive();
+                self.play_on(&id, &request);
+                return self.sync_player();
+            }
+        }
+        if self.player.is_starting() {
+            return self.player.wait_with(request);
+        }
+        match self.player.launch(request) {
+            Launch::Window => {
+                self.notice(NoticeLevel::Info, "spotify-player-starting", vec![]);
+            }
+            Launch::Tab => self.notice(NoticeLevel::Info, "spotify-player-tab", vec![]),
+            Launch::Failed(e) => {
+                tracing::warn!("couldn't start Aria's Spotify player: {e}");
+                self.notice(NoticeLevel::Warning, "spotify-player-launch-failed", vec![]);
+            }
+        }
+        self.sync_player();
+    }
+
+    /// Plays on the player's device `id`, moving playback there first if Spotify asks.
+    fn play_on(&mut self, id: &str, request: &PlayRequest) {
+        self.call(|c| match c.play(Some(id), request) {
+            Err(SpotifyError::NoActiveDevice) => {
+                c.transfer(id, true)?;
+                c.play(Some(id), request)
+            }
+            result => result,
+        });
+        self.poll_soon();
+    }
+
+    fn page_message(&mut self, msg: PageMsg) {
+        self.player.heard();
+        match msg {
+            PageMsg::Token(reply) => {
+                let token = self
+                    .client
+                    .as_mut()
+                    .map(|c| c.fresh_access(PAGE_TOKEN_MARGIN));
+                self.keep_refresh_token();
+                match token {
+                    Some(Ok(token)) => {
+                        // The page may have gone; then nobody needs it.
+                        let _ = reply.send(Some(token));
+                    }
+                    Some(Err(e)) => {
+                        let _ = reply.send(None);
+                        self.fail(e);
+                    }
+                    None => {
+                        let _ = reply.send(None);
+                    }
+                }
+            }
+            PageMsg::Event(PageEvent::Ready { device_id }) => {
+                let pending = self.player.ready(device_id.clone());
+                self.sync_player();
+                if let Some(request) = pending {
+                    self.call(|c| {
+                        c.transfer(&device_id, true)?;
+                        if matches!(request, PlayRequest::Resume) {
+                            Ok(())
+                        } else {
+                            c.play(Some(&device_id), &request)
+                        }
+                    });
+                    self.poll_soon();
+                }
+                self.list_devices();
+            }
+            PageMsg::Event(PageEvent::NotReady { .. }) => {
+                tracing::debug!("Aria's Spotify player went offline");
+            }
+            PageMsg::Event(PageEvent::Error { kind, message }) => {
+                tracing::debug!("Aria's Spotify player: {kind:?}: {message}");
+                let key = match kind {
+                    PageError::Authentication => "spotify-player-reconnect",
+                    PageError::Account => "spotify-player-premium",
+                    PageError::Initialization => "spotify-player-no-drm",
+                    PageError::Playback => "spotify-player-failed",
+                };
+                self.notice_once(NoticeLevel::Warning, key, vec![]);
+            }
+            PageMsg::Event(PageEvent::AutoplayFailed) => {
+                self.notice_once(NoticeLevel::Warning, "spotify-player-autoplay", vec![]);
+            }
+            PageMsg::Event(PageEvent::Alive) => {}
+        }
+        self.sync_player();
+    }
+
+    fn player_due(&mut self, now: Instant) {
+        match self.player.due(now) {
+            Some(Due::TimedOut) => {
+                self.notice(NoticeLevel::Warning, "spotify-player-timeout", vec![]);
+                self.player.close();
+            }
+            Some(Due::Lost { exited: true }) => {
+                self.notice(NoticeLevel::Info, "spotify-player-closed", vec![]);
+            }
+            Some(Due::Lost { exited: false }) | None => {}
+        }
+        self.sync_player();
+    }
+
+    /// Tells the UI the player's status when it changed.
+    fn sync_player(&mut self) {
+        let status = match self.player.status() {
+            AriaPlayerStatus::Off if self.needs_reconnect => AriaPlayerStatus::NeedsReconnect,
+            status => status,
+        };
+        if self.player_shown.as_ref() != Some(&status) {
+            self.player_shown = Some(status.clone());
+            self.emit(SpotifyEvent::Player(status));
         }
     }
 
@@ -681,7 +914,12 @@ impl Service {
     fn list_devices(&mut self) {
         if let Some(devices) = self.call(Client::devices) {
             self.devices.clone_from(&devices);
-            self.emit(SpotifyEvent::Devices(devices));
+            let own = self.player.own_device().map(str::to_owned);
+            let shown = devices
+                .into_iter()
+                .filter(|d| d.id.is_none() || d.id != own)
+                .collect();
+            self.emit(SpotifyEvent::Devices(shown));
         }
     }
 
@@ -771,6 +1009,9 @@ impl Service {
         }
         if self.poll_deadline().is_some_and(|d| d <= now) {
             self.poll();
+        }
+        if self.player.deadline().is_some_and(|d| d <= now) {
+            self.player_due(now);
         }
     }
 
@@ -1019,6 +1260,16 @@ mod tests {
 
     impl Harness {
         fn start(fake: FakeSpotify, store: MemoryStore, browser: Browser, port: u16) -> Harness {
+            Harness::start_with(fake, store, browser, port, PlayerDeps::unavailable())
+        }
+
+        fn start_with(
+            fake: FakeSpotify,
+            store: MemoryStore,
+            browser: Browser,
+            port: u16,
+            player: PlayerDeps,
+        ) -> Harness {
             let store = Arc::new(store);
             let deps = SpotifyDeps {
                 endpoints: fake.endpoints(),
@@ -1030,6 +1281,7 @@ mod tests {
                 fast: Duration::from_millis(100),
                 slow: Duration::from_secs(1),
                 after_command: Duration::from_millis(20),
+                player,
             };
             let (tx, events) = unbounded();
             let tx = Mutex::new(tx);
@@ -1567,5 +1819,357 @@ mod tests {
             cover_request.authorization, None,
             "covers go without the token"
         );
+    }
+
+    mod player {
+        use super::*;
+        use crate::spotify_player::{ARIA_DEVICE, AriaPlayerStatus, PlayerDeps};
+        use aria_spotify::browser::{Launched, Launcher, Running};
+        use aria_spotify::fake::Seen;
+        use aria_spotify::player_page::PageClient;
+        use std::path::Path;
+        use std::sync::atomic::AtomicUsize;
+
+        /// What the fake launcher saw: the pages it opened, and its window's fate.
+        #[derive(Clone, Default)]
+        struct Launches {
+            urls: Arc<Mutex<Vec<String>>>,
+            exited: Arc<AtomicBool>,
+            killed: Arc<AtomicUsize>,
+        }
+
+        struct FakeLauncher(Launches);
+        struct FakeRunning(Launches);
+
+        impl Running for FakeRunning {
+            fn exited(&mut self) -> bool {
+                self.0.exited.load(Ordering::SeqCst)
+            }
+            fn kill(&mut self) {
+                self.0.killed.fetch_add(1, Ordering::SeqCst);
+                self.0.exited.store(true, Ordering::SeqCst);
+            }
+        }
+
+        impl Launcher for FakeLauncher {
+            fn launch(&mut self, url: &str, _profile: &Path) -> io::Result<Launched> {
+                self.0.urls.lock().unwrap().push(url.to_owned());
+                Ok(Launched::Window(Box::new(FakeRunning(self.0.clone()))))
+            }
+        }
+
+        const STREAMING: &str = r#"{"access_token":"a1","refresh_token":"r1","expires_in":3600,"scope":"streaming user-read-private"}"#;
+        const NOT_STREAMING: &str = r#"{"access_token":"a1","refresh_token":"r1","expires_in":3600,"scope":"user-read-private"}"#;
+
+        fn harness(l: &Launches, token: &str, ready: Duration, lost: Duration) -> Harness {
+            let fake = FakeSpotify::start();
+            fake.reply("POST", "/api/token", Reply::json(200, token));
+            script_library(&fake);
+            let deps = PlayerDeps {
+                launcher: Box::new(FakeLauncher(l.clone())),
+                profile_dir: Some(std::env::temp_dir().join("aria-test-player-profile-none")),
+                ready,
+                first_ready: ready,
+                lost,
+                close_grace: Duration::from_millis(200),
+            };
+            let mut h =
+                Harness::start_with(fake, MemoryStore::holding("stored"), no_browser(), 0, deps);
+            h.expect(|e| matches!(e, SpotifyEvent::Library(l) if !l.loading));
+            h.send(SpotifyRequest::Cadence(Cadence::Off));
+            h.send(SpotifyRequest::PlayInAria {
+                on: true,
+                strings: "{}".to_owned(),
+            });
+            h
+        }
+
+        fn launched(l: &Launches) -> Vec<String> {
+            l.urls.lock().unwrap().clone()
+        }
+
+        /// The page of the last launch, once there is one, with its session taken.
+        fn page_of(l: &Launches) -> PageClient {
+            let deadline = Instant::now() + WAIT;
+            loop {
+                if let Some(url) = launched(l).last() {
+                    let mut page = PageClient::new(url);
+                    page.session().unwrap();
+                    return page;
+                }
+                assert!(Instant::now() < deadline, "never launched");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn album(id: &str) -> PlayRequest {
+            PlayRequest::Context {
+                uri: format!("spotify:album:{id}"),
+                offset_uri: None,
+            }
+        }
+
+        fn no_device_then_ok(fake: &FakeSpotify) {
+            fake.reply(
+                "PUT",
+                "/v1/me/player/play",
+                Reply::fixture(404, "error-no-device"),
+            );
+            fake.reply("PUT", "/v1/me/player/play", Reply::empty(204));
+            fake.reply("PUT", "/v1/me/player", Reply::empty(204));
+        }
+
+        fn is_status(event: &SpotifyEvent, wanted: &AriaPlayerStatus) -> bool {
+            matches!(event, SpotifyEvent::Player(status) if status == wanted)
+        }
+
+        fn ready(id: &str) -> AriaPlayerStatus {
+            AriaPlayerStatus::Ready {
+                device_id: id.to_owned(),
+            }
+        }
+
+        fn puts(h: &Harness) -> Vec<Seen> {
+            h.fake
+                .requests()
+                .into_iter()
+                .filter(|s| s.method == "PUT")
+                .collect()
+        }
+
+        /// Plays an album with no device active, and has the page say it is ready as `web1`.
+        fn started(l: &Launches, lost: Duration) -> (Harness, PageClient) {
+            let mut h = harness(l, STREAMING, WAIT, lost);
+            no_device_then_ok(&h.fake);
+            h.send(SpotifyRequest::Play(album("albumA")));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Starting));
+            let page = page_of(l);
+            assert_eq!(page.event(r#"{"type":"ready","device_id":"web1"}"#).0, 200);
+            h.expect(|e| is_status(e, &ready("web1")));
+            (h, page)
+        }
+
+        #[test]
+        fn play_with_no_device_starts_the_player() {
+            let l = Launches::default();
+            let (mut h, _page) = started(&l, WAIT);
+            h.during(Duration::from_millis(200));
+            assert_eq!(launched(&l).len(), 1);
+            let puts = puts(&h);
+            assert_eq!(puts.len(), 3, "{puts:?}");
+            assert_eq!(puts[0].param("device_id"), None);
+            assert_eq!(puts[1].path, "/v1/me/player");
+            assert!(puts[1].body.contains("web1"), "{}", puts[1].body);
+            assert_eq!(puts[2].path, "/v1/me/player/play");
+            assert_eq!(puts[2].param("device_id"), Some("web1"));
+            assert!(puts[2].body.contains("albumA"));
+        }
+
+        #[test]
+        fn choosing_aria_starts_the_player_on_play() {
+            let l = Launches::default();
+            let mut h = harness(&l, STREAMING, WAIT, WAIT);
+            h.send(SpotifyRequest::Device(Some(ARIA_DEVICE.to_owned())));
+            h.send(SpotifyRequest::Play(album("albumA")));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Starting));
+            assert_eq!(launched(&l).len(), 1);
+            assert!(
+                puts(&h).is_empty(),
+                "nothing is played before the player is ready"
+            );
+        }
+
+        #[test]
+        fn a_chosen_phone_does_not_start_the_player() {
+            let l = Launches::default();
+            let mut h = harness(&l, STREAMING, WAIT, WAIT);
+            no_device_then_ok(&h.fake);
+            h.send(SpotifyRequest::Device(Some("device-phone".to_owned())));
+            h.send(SpotifyRequest::Play(album("albumA")));
+            h.during(Duration::from_millis(400));
+            assert!(launched(&l).is_empty());
+            let puts = puts(&h);
+            assert_eq!(puts.len(), 3, "{puts:?}");
+            assert!(puts[1].body.contains("device-phone"));
+        }
+
+        #[test]
+        fn turning_it_off_closes_the_window() {
+            let l = Launches::default();
+            let (mut h, page) = started(&l, WAIT);
+            let waiting = {
+                let page = page.clone();
+                thread::spawn(move || page.wait())
+            };
+            thread::sleep(Duration::from_millis(100));
+            h.send(SpotifyRequest::PlayInAria {
+                on: false,
+                strings: "{}".to_owned(),
+            });
+            assert_eq!(waiting.join().unwrap().1, r#"{"close":true}"#);
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Off));
+            assert_eq!(l.killed.load(Ordering::SeqCst), 1, "killed after the grace");
+        }
+
+        #[test]
+        fn play_in_aria_off_is_0_3_2() {
+            let l = Launches::default();
+            let mut h = harness(&l, STREAMING, WAIT, WAIT);
+            h.send(SpotifyRequest::PlayInAria {
+                on: false,
+                strings: "{}".to_owned(),
+            });
+            h.fake.reply(
+                "PUT",
+                "/v1/me/player/play",
+                Reply::fixture(404, "error-no-device"),
+            );
+            h.send(SpotifyRequest::Play(album("albumA")));
+            h.expect(|e| is_notice(e, "spotify-no-device"));
+            assert!(launched(&l).is_empty());
+        }
+
+        #[test]
+        fn without_streaming_it_asks_to_reconnect() {
+            let l = Launches::default();
+            let mut h = harness(&l, NOT_STREAMING, WAIT, WAIT);
+            no_device_then_ok(&h.fake);
+            h.send(SpotifyRequest::Play(album("albumA")));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::NeedsReconnect));
+            assert_eq!(notices(&h.seen, "spotify-player-reconnect"), 1);
+            assert!(launched(&l).is_empty());
+        }
+
+        #[test]
+        fn plays_while_starting_launch_once() {
+            let l = Launches::default();
+            let mut h = harness(&l, STREAMING, WAIT, WAIT);
+            no_device_then_ok(&h.fake);
+            h.send(SpotifyRequest::Play(album("albumA")));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Starting));
+            h.send(SpotifyRequest::Play(album("albumB")));
+            h.during(Duration::from_millis(100));
+            let page = page_of(&l);
+            page.event(r#"{"type":"ready","device_id":"web1"}"#);
+            h.expect(|e| is_status(e, &ready("web1")));
+            h.during(Duration::from_millis(200));
+            assert_eq!(launched(&l).len(), 1);
+            let plays: Vec<Seen> = puts(&h)
+                .into_iter()
+                .filter(|s| s.path == "/v1/me/player/play")
+                .collect();
+            assert_eq!(plays.len(), 2, "{plays:?}");
+            assert!(plays[1].body.contains("albumB"), "{}", plays[1].body);
+        }
+
+        #[test]
+        fn no_ready_in_time_is_a_timeout() {
+            let l = Launches::default();
+            let mut h = harness(&l, STREAMING, Duration::from_millis(150), WAIT);
+            no_device_then_ok(&h.fake);
+            h.send(SpotifyRequest::Play(album("albumA")));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Starting));
+            h.expect(|e| is_notice(e, "spotify-player-timeout"));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Off));
+        }
+
+        #[test]
+        fn a_quiet_page_is_lost() {
+            let l = Launches::default();
+            let (mut h, _page) = started(&l, Duration::from_millis(300));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Lost));
+        }
+
+        #[test]
+        fn a_lost_player_still_listed_is_reused() {
+            let l = Launches::default();
+            let (mut h, _page) = started(&l, Duration::from_millis(300));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Lost));
+            h.fake.clear();
+            h.fake.reply(
+                "GET",
+                "/v1/me/player/devices",
+                Reply::json(
+                    200,
+                    r#"{"devices":[{"id":"web1","is_active":true,"is_restricted":false,"name":"Aria","type":"Computer","volume_percent":50,"supports_volume":true}]}"#,
+                ),
+            );
+            h.fake.reply("PUT", "/v1/me/player/play", Reply::empty(204));
+            let before = puts(&h).len();
+            h.send(SpotifyRequest::Play(album("albumC")));
+            h.expect(|e| is_status(e, &ready("web1")));
+            h.during(Duration::from_millis(200));
+            assert_eq!(launched(&l).len(), 1, "no second window");
+            let after = puts(&h);
+            assert!(after.len() > before);
+            let last = after.last().unwrap();
+            assert_eq!(last.param("device_id"), Some("web1"));
+            assert!(last.body.contains("albumC"));
+        }
+
+        #[test]
+        fn the_ready_device_is_not_listed_twice() {
+            let l = Launches::default();
+            let mut h = harness(&l, STREAMING, WAIT, WAIT);
+            h.fake.clear();
+            no_device_then_ok(&h.fake);
+            h.fake.reply("GET", "/v1/me/player", Reply::empty(204));
+            h.fake.reply(
+                "GET",
+                "/v1/me/player/devices",
+                Reply::json(
+                    200,
+                    r#"{"devices":[{"id":"web1","is_active":true,"is_restricted":false,"name":"Aria","type":"Computer","volume_percent":50,"supports_volume":true},{"id":"device-phone","is_active":false,"is_restricted":false,"name":"My Phone","type":"Smartphone","volume_percent":60,"supports_volume":true}]}"#,
+                ),
+            );
+            h.send(SpotifyRequest::Play(album("albumA")));
+            let page = page_of(&l);
+            page.event(r#"{"type":"ready","device_id":"web1"}"#);
+            h.expect(|e| is_status(e, &ready("web1")));
+            let listed = h.expect(|e| matches!(e, SpotifyEvent::Devices(d) if !d.is_empty()));
+            let SpotifyEvent::Devices(devices) = listed else {
+                unreachable!()
+            };
+            let ids: Vec<_> = devices.iter().filter_map(|d| d.id.clone()).collect();
+            assert_eq!(ids, ["device-phone"]);
+        }
+
+        #[test]
+        fn a_token_that_cannot_be_had_answers_503() {
+            let l = Launches::default();
+            // Expires in 70 s: fresh enough for the API, not for the page (60 s).
+            let token =
+                r#"{"access_token":"a1","refresh_token":"r1","expires_in":70,"scope":"streaming"}"#;
+            let mut h = harness(&l, token, WAIT, WAIT);
+            no_device_then_ok(&h.fake);
+            h.send(SpotifyRequest::Play(album("albumA")));
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Starting));
+            let page = page_of(&l);
+            h.fake.set_offline(true);
+            let asked = Instant::now();
+            let (status, body) = page.token();
+            assert_eq!(status, 503);
+            assert!(!body.contains("a1"));
+            assert!(asked.elapsed() < Duration::from_secs(11));
+        }
+
+        #[test]
+        fn a_fresh_token_reaches_the_page() {
+            let l = Launches::default();
+            let (_h, page) = started(&l, WAIT);
+            assert_eq!(page.token(), (200, r#"{"access_token":"a1"}"#.to_owned()));
+        }
+
+        #[test]
+        fn shutdown_closes_the_window() {
+            let l = Launches::default();
+            let (mut h, _page) = started(&l, WAIT);
+            let handle = h.handle.take().unwrap();
+            assert!(
+                handle.join(Duration::from_secs(1)),
+                "ended within the runtime's join"
+            );
+            assert_eq!(l.killed.load(Ordering::SeqCst), 1);
+        }
     }
 }

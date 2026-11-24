@@ -67,7 +67,7 @@ impl SpotifyUi {
             SpotifyEvent::Search(search) => self.search = search,
             SpotifyEvent::Playback(playback) => self.playback = playback,
             SpotifyEvent::Devices(devices) => self.devices = devices,
-            SpotifyEvent::Cover(_) | SpotifyEvent::Notice(_) => {}
+            SpotifyEvent::Cover(_) | SpotifyEvent::Notice(_) | SpotifyEvent::Player(_) => {}
         }
     }
 

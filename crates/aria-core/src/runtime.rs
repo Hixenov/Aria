@@ -786,6 +786,10 @@ impl Worker {
                 self.to_spotify(SpotifyRequest::Device(id.clone()));
                 self.set_spotify_device(id);
             }
+            SpotifyRequest::PlayInAria { on, strings } => {
+                self.to_spotify(SpotifyRequest::PlayInAria { on, strings });
+                self.set_play_in_aria(on);
+            }
             SpotifyRequest::SignOut => {
                 self.to_spotify(SpotifyRequest::SignOut);
                 self.set_spotify_device(None);
@@ -793,6 +797,18 @@ impl Worker {
                 self.show(ActivePlayer::Local);
             }
             other => self.to_spotify(other),
+        }
+    }
+
+    /// Keeps "Play in Aria" in the settings, and tells the UI.
+    fn set_play_in_aria(&mut self, on: bool) {
+        if self.settings.spotify_play_in_aria != on {
+            let settings = Settings {
+                spotify_play_in_aria: on,
+                ..self.settings.clone()
+            };
+            self.emit([Event::SettingsReplaced(settings.clone())]);
+            self.apply(settings);
         }
     }
 
@@ -2817,6 +2833,7 @@ music/two.flac
                 fast: Duration::from_millis(100),
                 slow: Duration::from_secs(1),
                 after_command: Duration::from_millis(20),
+                player: crate::spotify_player::PlayerDeps::unavailable(),
             });
             let (waker, _) = counting_waker();
             let handle = Backend::start(None, services, waker, SLOW).unwrap();

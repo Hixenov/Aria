@@ -177,7 +177,9 @@ fn main() -> anyhow::Result<()> {
         capture: Box::new(CpalCapture),
         settings: settings.clone().sanitized(),
         // Makes no request until the user connects Spotify in Settings.
-        spotify: Some(aria_core::spotify_service::SpotifyDeps::system()),
+        spotify: Some(aria_core::spotify_service::SpotifyDeps::system(
+            paths.as_ref().map(|p| p.cache_dir.clone()),
+        )),
     };
     let backend = match Backend::start(
         sink,
