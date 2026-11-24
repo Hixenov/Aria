@@ -18,6 +18,7 @@ pub const SIDEBAR_MAX: f32 = 320.0;
 const SIDEBAR_DEFAULT: f32 = 220.0;
 const VOLUME_DEFAULT: f32 = 1.0;
 const GAPLESS_DEFAULT: bool = true;
+const SPOTIFY_PLAY_IN_ARIA_DEFAULT: bool = true;
 const HISTORY_ENABLED_DEFAULT: bool = true;
 const WATCH_FOLDERS_DEFAULT: bool = true;
 const EXCLUSIVE_OUTPUT_DEFAULT: bool = false;
@@ -268,6 +269,11 @@ fn lenient_gapless<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     lenient(d, GAPLESS_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::spotify_play_in_aria`].
+fn lenient_play_in_aria<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, SPOTIFY_PLAY_IN_ARIA_DEFAULT)
+}
+
 /// [`lenient`] for [`Settings::history_enabled`].
 fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     lenient(d, HISTORY_ENABLED_DEFAULT)
@@ -485,6 +491,10 @@ pub struct Settings {
     /// The Spotify device Aria plays on, by Spotify's device id; `None` is the active one.
     #[serde(deserialize_with = "lenient_or_default")]
     pub spotify_device: Option<String>,
+    /// Whether Spotify plays in Aria's own player window (Spotify's Web Playback SDK in a
+    /// browser window Aria opens) when no other device is chosen or active.
+    #[serde(deserialize_with = "lenient_play_in_aria")]
+    pub spotify_play_in_aria: bool,
     /// The record's finish in the full-screen mode.
     #[serde(deserialize_with = "lenient_or_default")]
     pub vinyl_finish: VinylFinish,
@@ -530,6 +540,7 @@ impl Default for Settings {
             mic_volume: MIC_VOLUME_DEFAULT,
             mic_toggle_hotkey: None,
             spotify_device: None,
+            spotify_play_in_aria: SPOTIFY_PLAY_IN_ARIA_DEFAULT,
             vinyl_finish: VinylFinish::Black,
             vinyl_rpm: VINYL_RPM_DEFAULT,
             mini_player: MiniPlayerSettings::default(),
@@ -641,6 +652,30 @@ size = [nan, 300.0]",
         assert!(text.contains("[mini_player]"), "{text}");
         let back: Settings = toml::from_str(&text).unwrap();
         assert_eq!(back.mini_player, settings.mini_player);
+    }
+
+    #[test]
+    fn spotify_play_in_aria_defaults_on_and_reads_leniently() {
+        assert!(Settings::default().spotify_play_in_aria);
+        let read: Settings = toml::from_str("spotify_play_in_aria = false").unwrap();
+        assert!(!read.spotify_play_in_aria);
+        let read: Settings = toml::from_str("spotify_play_in_aria = \"x\"").unwrap();
+        assert!(read.spotify_play_in_aria);
+        let off = Settings {
+            spotify_play_in_aria: false,
+            ..Settings::default()
+        };
+        let back: Settings = toml::from_str(&toml::to_string(&off).unwrap()).unwrap();
+        assert!(!back.spotify_play_in_aria);
+    }
+
+    #[test]
+    fn the_aria_marker_survives_sanitizing() {
+        let settings = Settings {
+            spotify_device: Some("aria".to_owned()),
+            ..Settings::default()
+        };
+        assert_eq!(settings.sanitized().spotify_device.as_deref(), Some("aria"));
     }
 
     #[test]
