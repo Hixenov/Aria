@@ -564,3 +564,59 @@ fn an_empty_open_playlist_says_so() {
     let harness = opened_mine(Vec::new(), false);
     harness.get_by_label(&en("spotify-playlist-empty"));
 }
+
+#[test]
+fn an_open_playlist_asks_again_after_a_reconnect() {
+    let mut harness = opened_mine(vec![track(1, true)], false);
+    assert_eq!(opens(&harness), ["mine"]);
+    // Reconnecting closes the service's open playlist while the page keeps it open.
+    harness
+        .state_mut()
+        .spotify
+        .apply(SpotifyEvent::Playlist(None));
+    harness.run();
+    harness.run();
+    assert_eq!(
+        opens(&harness),
+        ["mine", "mine"],
+        "asked once more, not every frame"
+    );
+}
+
+#[test]
+fn clicking_a_greyed_heart_does_not_play_the_row() {
+    let mut spotify = with_library(SpotifyLibrary {
+        tracks: vec![track(1, true)],
+        ..SpotifyLibrary::default()
+    });
+    spotify.account = SpotifyAccount::SignedIn {
+        name: "Ann".to_owned(),
+        can_edit: false,
+    };
+    let mut harness = harness(Route::Library, spotify);
+    harness.run();
+    let unlike = en("spotify-unlike");
+    let center = harness
+        .get_by_role_and_label(Role::Button, &unlike)
+        .rect()
+        .center();
+    let center = egui::pos2(center.x, center.y);
+    harness.input_mut().events.extend([
+        egui::Event::PointerMoved(center),
+        egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        },
+        egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        },
+    ]);
+    harness.run();
+    assert!(plays(&harness).is_empty(), "{:?}", harness.state().actions);
+    assert!(likes(&harness).is_empty());
+}

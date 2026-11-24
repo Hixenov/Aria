@@ -101,6 +101,11 @@ fn playlist_view(ui: &mut Ui, ctx: &mut PageCtx<'_>, playlist: &SpPlaylist) {
         .playlist
         .clone()
         .filter(|open| open.id == playlist.id);
+    // The service forgets the open playlist on a reconnect while this page keeps it open.
+    match loaded {
+        Some(_) => spotify_lists::playlist_answered(ui),
+        None => spotify_lists::ask_for_playlist(ui, ctx.out, &playlist.id),
+    }
     let key = match loaded.as_deref() {
         None => Some("spotify-playlist-loading"),
         Some(open) if open.tracks.is_empty() => Some(if open.loading {

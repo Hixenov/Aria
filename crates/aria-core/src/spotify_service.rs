@@ -1182,17 +1182,9 @@ impl Service {
         if !self.may_edit() {
             return;
         }
-        let snapshot = match self.playlist.as_ref().filter(|p| p.id == id) {
-            Some(open) => open.snapshot.clone(),
-            None => self
-                .library
-                .playlists
-                .iter()
-                .find(|p| p.id == id)
-                .and_then(|p| p.snapshot.clone()),
-        };
-        let Some(snapshot) = self.call(|c| c.remove_from_playlist(id, uri, snapshot.as_deref()))
-        else {
+        // No snapshot: Spotify checks one against the items, and the one Aria knows comes from
+        // the playlist list, which may be older than the tracks shown.
+        let Some(snapshot) = self.call(|c| c.remove_from_playlist(id, uri, None)) else {
             return;
         };
         self.changed(id, snapshot);
@@ -2728,7 +2720,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_sends_the_snapshot_and_reloads() {
+    fn removing_sends_no_snapshot_and_reloads() {
         let mut h = Harness::editor_with(|fake| {
             script_pl_a(fake, 2);
             fake.reply(
@@ -2754,7 +2746,8 @@ mod tests {
             .find(|s| s.method == "DELETE")
             .unwrap();
         let body: String = delete.body.split_whitespace().collect();
-        assert!(body.contains(r#""snapshot_id":"snapA""#), "{body}");
+        // Spotify checks a snapshot against the items; the one Aria has may predate them.
+        assert!(!body.contains("snapshot_id"), "{body}");
         assert!(body.contains(r#"{"uri":"spotify:track:t1"}"#), "{body}");
         assert_eq!(h.count("GET", "/v1/playlists/plA/items"), 4);
     }

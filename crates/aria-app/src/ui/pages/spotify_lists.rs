@@ -54,6 +54,27 @@ pub fn open_playlist(ui: &Ui) -> Option<String> {
     ui.data(|d| d.get_temp::<String>(Id::unique(OPEN_PLAYLIST)))
 }
 
+/// Where Your Library keeps the id of the playlist whose tracks it last asked for and has not
+/// received yet, so it asks once, not every frame.
+const ASKED_PLAYLIST: &str = "aria_spotify_open_asked";
+
+/// Asks Spotify for the tracks of playlist `id`, unless that is already asked and unanswered.
+pub fn ask_for_playlist(ui: &Ui, out: &mut Vec<PageAction>, id: &str) {
+    let key = Id::unique(ASKED_PLAYLIST);
+    if ui.data(|d| d.get_temp::<String>(key)).as_deref() == Some(id) {
+        return;
+    }
+    ui.data_mut(|d| d.insert_temp(key, id.to_owned()));
+    out.push(PageAction::Spotify(SpotifyRequest::OpenPlaylist(
+        id.to_owned(),
+    )));
+}
+
+/// The asked playlist's tracks arrived: a later loss of them (a reconnect) asks again.
+pub fn playlist_answered(ui: &Ui) {
+    ui.data_mut(|d| d.remove::<String>(Id::unique(ASKED_PLAYLIST)));
+}
+
 /// Opens the playlist `id` on Your Library, or (`None`) goes back to the list.
 pub fn set_open_playlist(ui: &Ui, id: Option<String>) {
     let key = Id::unique(OPEN_PLAYLIST);
@@ -209,10 +230,8 @@ fn draw_row(ui: &mut Ui, ctx: &mut PageCtx<'_>, row: &Row<'_>, list: &[SpTrack])
             if playlist.editable {
                 if row.clicked() {
                     set_open_playlist(ui, Some(playlist.id.clone()));
-                    ctx.out
-                        .push(PageAction::Spotify(SpotifyRequest::OpenPlaylist(
-                            playlist.id.clone(),
-                        )));
+                    playlist_answered(ui);
+                    ask_for_playlist(ui, ctx.out, &playlist.id);
                 }
                 None
             } else {
@@ -287,6 +306,8 @@ pub fn track_extras(
     let (tr, palette, spotify) = (ctx.tr, ctx.palette, ctx.spotify);
     // A child that takes no room from the list, drawn after the row so it gets the clicks.
     let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
+    // A greyed-out heart senses no click; this keeps that click from playing the row below.
+    child.interact(rect, row.id.with("aria_heart_block"), Sense::click());
     if let Some(action) = spotify_track_menu::heart(&mut child, tr, &palette, spotify, track) {
         ctx.out.push(action);
     }
