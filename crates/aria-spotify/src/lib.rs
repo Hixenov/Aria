@@ -3,6 +3,7 @@
 //! controls Spotify's own devices through the public Web API.
 
 pub mod auth;
+pub mod browser;
 pub mod callback;
 pub mod client;
 pub mod error;
