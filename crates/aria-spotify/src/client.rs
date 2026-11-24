@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 
 use crate::http::{self, Answer};
 use crate::model::{
-    Account, Devices, ErrorBody, Following, Page, PlayRequest, PlaybackState, RawAlbum, RawMe,
-    RawPlayer, RawPlaylist, RawSearch, RepeatState, SavedAlbum, SavedTrack, SearchResults, SpAlbum,
-    SpArtist, SpDevice, SpPlaylist, SpTrack,
+    Account, Devices, ErrorBody, Following, Page, PlayRequest, PlaybackState, PlaylistEntry,
+    RawAlbum, RawMe, RawPlayer, RawPlaylist, RawSearch, RepeatState, SavedAlbum, SavedTrack,
+    SearchResults, SnapshotAnswer, SpAlbum, SpArtist, SpDevice, SpPlaylist, SpTrack,
 };
 use crate::{Endpoints, Http, Secret, SpotifyError, Tokens, token};
 
@@ -31,6 +31,7 @@ enum Method {
     Get,
     Put,
     Post,
+    Delete,
 }
 
 /// A signed-in session's client. `Debug` shows no token.
@@ -97,6 +98,65 @@ impl Client {
         let first = self.url("/me/following", &[("type", "artist"), ("limit", "50")]);
         let artists = self.all_pages(first, |following: Following| following.artists)?;
         Ok(artists.into_iter().map(SpArtist::from).collect())
+    }
+
+    /// Saves a track to the user's Liked Songs.
+    pub fn save_track(&mut self, uri: &str) -> Result<(), SpotifyError> {
+        let url = self.url("/me/library", &[("uris", uri)]);
+        self.send(Method::Put, &url, None).map(|_| ())
+    }
+
+    /// Removes a track from the user's Liked Songs.
+    pub fn unsave_track(&mut self, uri: &str) -> Result<(), SpotifyError> {
+        let url = self.url("/me/library", &[("uris", uri)]);
+        self.send(Method::Delete, &url, None).map(|_| ())
+    }
+
+    /// The tracks of a playlist the user owns or collaborates on (Spotify refuses others).
+    /// Episodes are left out; a local file has no URI.
+    pub fn playlist_tracks(&mut self, id: &str) -> Result<Vec<SpTrack>, SpotifyError> {
+        let path = items_path(id)?;
+        let first = self.url(&path, &[("limit", "50")]);
+        let entries: Vec<PlaylistEntry> = self.all_pages(first, |page| page)?;
+        Ok(entries
+            .into_iter()
+            .filter_map(PlaylistEntry::into_track)
+            .collect())
+    }
+
+    /// Adds a track at the end of a playlist. Returns the playlist's new snapshot.
+    pub fn add_to_playlist(&mut self, id: &str, uri: &str) -> Result<Option<String>, SpotifyError> {
+        let path = items_path(id)?;
+        let url = self.url(&path, &[]);
+        let answer = self.send(Method::Post, &url, Some(json!({ "uris": [uri] })))?;
+        Ok(snapshot_of(&answer.body))
+    }
+
+    /// Removes every copy of a track from a playlist, against `snapshot` when given. Returns the
+    /// playlist's new snapshot.
+    pub fn remove_from_playlist(
+        &mut self,
+        id: &str,
+        uri: &str,
+        snapshot: Option<&str>,
+    ) -> Result<Option<String>, SpotifyError> {
+        let path = items_path(id)?;
+        let url = self.url(&path, &[]);
+        let body = match snapshot {
+            Some(snapshot) => json!({ "items": [{ "uri": uri }], "snapshot_id": snapshot }),
+            None => json!({ "items": [{ "uri": uri }] }),
+        };
+        let answer = self.send(Method::Delete, &url, Some(body))?;
+        Ok(snapshot_of(&answer.body))
+    }
+
+    /// Creates a private playlist named `name`.
+    pub fn create_playlist(&mut self, name: &str) -> Result<SpPlaylist, SpotifyError> {
+        let url = self.url("/me/playlists", &[]);
+        let body = json!({ "name": name, "public": false });
+        let answer = self.send(Method::Post, &url, Some(body))?;
+        let raw: RawPlaylist = parse(&answer.body)?;
+        Ok(raw.into())
     }
 
     pub fn playlists(&mut self) -> Result<Vec<SpPlaylist>, SpotifyError> {
@@ -330,6 +390,13 @@ impl Client {
                     None => request.send_empty(),
                 }
             }
+            Method::Delete => {
+                let request = agent.delete(url).header("Authorization", &bearer);
+                match body {
+                    Some(body) => request.force_send_body().send_json(body),
+                    None => request.call(),
+                }
+            }
         };
         http::read(result)
     }
@@ -381,6 +448,26 @@ fn error_of(body: &str) -> (String, Option<String>) {
 fn is_not_registered(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("not registered") || message.contains("not be registered")
+}
+
+/// The path of a playlist's items. Spotify's ids are base62; anything else is refused, so an id
+/// can never reach another path.
+fn items_path(id: &str) -> Result<String, SpotifyError> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(SpotifyError::BadAnswer("an odd playlist id".to_owned()));
+    }
+    Ok(format!("/playlists/{id}/items"))
+}
+
+/// The snapshot a playlist change answered with, if it said one.
+fn snapshot_of(body: &str) -> Option<String> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str::<SnapshotAnswer>(body)
+        .ok()
+        .and_then(|a| a.snapshot_id)
+        .filter(|s| !s.is_empty())
 }
 
 fn api_error(status: u16, body: &str) -> SpotifyError {
@@ -921,5 +1008,155 @@ mod tests {
         let small = [image("https://a/32", 32), image("https://a/48", 48)];
         assert_eq!(pick_image(&small).as_deref(), Some("https://a/48"));
         assert_eq!(pick_image(&[image("http://a/640", 640)]), None);
+    }
+
+    #[test]
+    fn playlists_carry_their_id_owner_and_snapshot() {
+        let fake = FakeSpotify::start();
+        fake.reply("GET", "/v1/me/playlists", Reply::fixture(200, "playlists"));
+        let playlists = client(&fake).playlists().unwrap();
+        assert_eq!(playlists[0].id, "plA");
+        assert_eq!(playlists[0].owner_id, "aria-tester");
+        assert!(!playlists[0].collaborative);
+        assert_eq!(playlists[0].snapshot.as_deref(), Some("snapA"));
+        assert!(!playlists[0].editable, "the service decides");
+        assert_eq!(playlists[1].id, "plB");
+        assert_eq!(playlists[1].owner_id, "friend");
+        assert!(playlists[1].collaborative);
+    }
+
+    #[test]
+    fn liking_and_unliking_go_to_me_library() {
+        let fake = FakeSpotify::start();
+        fake.reply("PUT", "/v1/me/library", Reply::empty(200));
+        fake.reply("DELETE", "/v1/me/library", Reply::empty(200));
+        let mut c = client(&fake);
+        c.save_track("spotify:track:t1").unwrap();
+        c.unsave_track("spotify:track:t1").unwrap();
+        let seen = fake.requests();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].method, "PUT");
+        assert_eq!(seen[0].path, "/v1/me/library");
+        assert_eq!(seen[0].param("uris"), Some("spotify:track:t1"));
+        assert_eq!(seen[1].method, "DELETE");
+        assert_eq!(seen[1].path, "/v1/me/library");
+        assert_eq!(seen[1].param("uris"), Some("spotify:track:t1"));
+    }
+
+    #[test]
+    fn playlist_tracks_read_item_then_track_and_skip_the_rest() {
+        let fake = FakeSpotify::start();
+        fake.reply(
+            "GET",
+            "/v1/playlists/plA/items",
+            Reply::fixture(200, "playlist-items"),
+        );
+        fake.reply(
+            "GET",
+            "/v1/playlists/plA/items",
+            Reply::fixture(200, "playlist-items-2"),
+        );
+        let tracks = client(&fake).playlist_tracks("plA").unwrap();
+        let names: Vec<&str> = tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["One", "Two", "Home Song", "Three"]);
+        assert_eq!(tracks[0].uri.as_deref(), Some("spotify:track:t1"));
+        assert_eq!(
+            tracks[2].uri, None,
+            "a local file cannot be played or edited"
+        );
+        assert_eq!(tracks[3].uri.as_deref(), Some("spotify:track:t3"));
+        let seen = fake.requests();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].param("limit"), Some("50"));
+        assert_eq!(seen[1].param("offset"), Some("5"));
+    }
+
+    #[test]
+    fn adding_posts_the_uri_and_returns_the_snapshot() {
+        let fake = FakeSpotify::start();
+        fake.reply(
+            "POST",
+            "/v1/playlists/plA/items",
+            Reply::fixture(201, "snapshot"),
+        );
+        let snapshot = client(&fake)
+            .add_to_playlist("plA", "spotify:track:t1")
+            .unwrap();
+        assert_eq!(snapshot.as_deref(), Some("snap2"));
+        let seen = fake.requests();
+        assert_eq!(seen[0].method, "POST");
+        assert_eq!(
+            json(&seen[0].body),
+            json(r#"{"uris":["spotify:track:t1"]}"#)
+        );
+    }
+
+    #[test]
+    fn removing_sends_the_items_and_the_snapshot() {
+        let fake = FakeSpotify::start();
+        fake.reply(
+            "DELETE",
+            "/v1/playlists/plA/items",
+            Reply::fixture(200, "snapshot"),
+        );
+        let mut c = client(&fake);
+        let snapshot = c
+            .remove_from_playlist("plA", "spotify:track:t1", Some("snapA"))
+            .unwrap();
+        assert_eq!(snapshot.as_deref(), Some("snap2"));
+        c.remove_from_playlist("plA", "spotify:track:t1", None)
+            .unwrap();
+        let seen = fake.requests();
+        assert_eq!(seen[0].method, "DELETE");
+        assert_eq!(
+            json(&seen[0].body),
+            json(r#"{"items":[{"uri":"spotify:track:t1"}],"snapshot_id":"snapA"}"#)
+        );
+        assert_eq!(
+            json(&seen[1].body),
+            json(r#"{"items":[{"uri":"spotify:track:t1"}]}"#)
+        );
+    }
+
+    #[test]
+    fn creating_posts_a_private_playlist() {
+        let fake = FakeSpotify::start();
+        fake.reply(
+            "POST",
+            "/v1/me/playlists",
+            Reply::fixture(201, "created-playlist"),
+        );
+        let playlist = client(&fake).create_playlist("Mix").unwrap();
+        assert_eq!(playlist.id, "plNew");
+        assert_eq!(playlist.uri, "spotify:playlist:plNew");
+        assert_eq!(playlist.name, "Mix");
+        assert_eq!(playlist.owner_id, "aria-tester");
+        assert_eq!(playlist.snapshot.as_deref(), Some("snapNew"));
+        let seen = fake.requests();
+        assert_eq!(
+            json(&seen[0].body),
+            json(r#"{"name":"Mix","public":false}"#)
+        );
+    }
+
+    #[test]
+    fn an_odd_playlist_id_is_refused_without_a_request() {
+        let fake = FakeSpotify::start();
+        let mut c = client(&fake);
+        for id in ["../me", "a/b", "", "pl?x=1", "pl%2F"] {
+            assert!(
+                matches!(c.playlist_tracks(id), Err(SpotifyError::BadAnswer(_))),
+                "{id}"
+            );
+            assert!(matches!(
+                c.add_to_playlist(id, "spotify:track:t1"),
+                Err(SpotifyError::BadAnswer(_))
+            ));
+            assert!(matches!(
+                c.remove_from_playlist(id, "spotify:track:t1", None),
+                Err(SpotifyError::BadAnswer(_))
+            ));
+        }
+        assert!(fake.requests().is_empty());
     }
 }

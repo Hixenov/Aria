@@ -46,8 +46,19 @@ pub struct SpArtist {
 pub struct SpPlaylist {
     pub uri: String,
     pub name: String,
+    /// The owner's display name (or id), for showing.
     pub owner: String,
     pub image: Option<String>,
+    /// The playlist's id, for the playlist endpoints.
+    pub id: String,
+    pub owner_id: String,
+    /// Whether the owner lets others change it.
+    pub collaborative: bool,
+    /// The version Spotify last reported, sent along with a removal.
+    pub snapshot: Option<String>,
+    /// Whether this user may open and change it (owns it, or it is collaborative). Set by
+    /// whoever knows the user; `false` as read.
+    pub editable: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -288,26 +299,76 @@ pub(crate) struct RawOwner {
 pub(crate) struct RawPlaylist {
     pub uri: String,
     #[serde(default)]
+    pub id: String,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub owner: Option<RawOwner>,
     #[serde(default)]
     pub images: Option<Vec<Image>>,
+    #[serde(default)]
+    pub collaborative: Option<bool>,
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
 }
 
 impl From<RawPlaylist> for SpPlaylist {
     fn from(raw: RawPlaylist) -> SpPlaylist {
+        let owner_id = raw.owner.as_ref().map(|o| o.id.clone()).unwrap_or_default();
         let owner = raw
             .owner
             .map(|o| o.display_name.filter(|n| !n.is_empty()).unwrap_or(o.id))
             .unwrap_or_default();
+        let id = if raw.id.is_empty() {
+            raw.uri
+                .strip_prefix("spotify:playlist:")
+                .unwrap_or_default()
+                .to_owned()
+        } else {
+            raw.id
+        };
         SpPlaylist {
             uri: raw.uri,
             name: raw.name,
             owner,
             image: image_of(raw.images),
+            id,
+            owner_id,
+            collaborative: raw.collaborative.unwrap_or(false),
+            snapshot: raw.snapshot_id.filter(|s| !s.is_empty()),
+            editable: false,
         }
     }
+}
+
+/// One entry of a playlist's items: the track is in `item` since 2026, in `track` before.
+#[derive(Deserialize)]
+pub(crate) struct PlaylistEntry {
+    #[serde(default)]
+    pub item: Option<RawTrack>,
+    #[serde(default)]
+    pub track: Option<RawTrack>,
+}
+
+impl PlaylistEntry {
+    /// The track, if it is one: episodes and empty entries give `None`. A local file is kept
+    /// (without a URI).
+    pub fn into_track(self) -> Option<SpTrack> {
+        let raw = self.item.or(self.track)?;
+        let track = raw.is_local
+            || raw
+                .uri
+                .as_deref()
+                .is_some_and(|uri| uri.starts_with("spotify:track:"));
+        track.then(|| SpTrack::from(raw))
+    }
+}
+
+/// What a playlist change answers.
+#[derive(Deserialize)]
+pub(crate) struct SnapshotAnswer {
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
 }
 
 /// An entry of a list that never fails its page: one Spotify cannot describe as Aria expects

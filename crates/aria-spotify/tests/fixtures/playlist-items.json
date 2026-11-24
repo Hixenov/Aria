@@ -1,0 +1,85 @@
+{
+ "limit": 50,
+ "offset": 0,
+ "total": 7,
+ "next": "{base}/v1/playlists/plA/items?offset=5&limit=50",
+ "items": [
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "is_local": false,
+   "item": {
+    "type": "track",
+    "id": "t1",
+    "uri": "spotify:track:t1",
+    "name": "One",
+    "duration_ms": 180000,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist0",
+      "uri": "spotify:artist:artist0",
+      "name": "Artist 0"
+     }
+    ],
+    "album": {
+     "id": "album0",
+     "uri": "spotify:album:album0",
+     "name": "Album 0",
+     "artists": [
+      {
+       "name": "Artist 0"
+      }
+     ],
+     "images": []
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "is_local": false,
+   "track": {
+    "type": "track",
+    "id": "t2",
+    "uri": "spotify:track:t2",
+    "name": "Two",
+    "duration_ms": 180000,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist0",
+      "uri": "spotify:artist:artist0",
+      "name": "Artist 0"
+     }
+    ],
+    "album": {
+     "id": "album0",
+     "uri": "spotify:album:album0",
+     "name": "Album 0",
+     "artists": [
+      {
+       "name": "Artist 0"
+      }
+     ],
+     "images": []
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "is_local": false,
+   "item": {
+    "type": "episode",
+    "id": "e1",
+    "uri": "spotify:episode:e1",
+    "name": "Episode",
+    "duration_ms": 1000
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "is_local": false,
+   "item": null
+  },
+  "not an entry"
+ ]
+}

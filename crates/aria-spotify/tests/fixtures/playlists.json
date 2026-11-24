@@ -32,7 +32,9 @@
    "items": {
     "href": "{base}/v1/playlists/plA/items",
     "total": 12
-   }
+   },
+   "collaborative": false,
+   "snapshot_id": "snapA"
   },
   {
    "id": "plB",
@@ -46,7 +48,9 @@
    "tracks": {
     "href": "{base}/v1/playlists/plB/tracks",
     "total": 4
-   }
+   },
+   "collaborative": true,
+   "snapshot_id": "snapB"
   }
  ]
 }

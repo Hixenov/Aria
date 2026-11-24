@@ -27,7 +27,22 @@ impl Tokens {
             .as_deref()
             .is_some_and(|s| s.split_whitespace().any(|scope| scope == "streaming"))
     }
+
+    /// Whether Spotify granted what liking tracks and editing playlists need.
+    pub fn can_edit(&self) -> bool {
+        self.scopes.as_deref().is_some_and(|s| {
+            let granted: Vec<&str> = s.split_whitespace().collect();
+            EDIT_SCOPES.iter().all(|scope| granted.contains(scope))
+        })
+    }
 }
+
+/// The scopes liking tracks and editing playlists need.
+const EDIT_SCOPES: [&str; 3] = [
+    "user-library-modify",
+    "playlist-modify-public",
+    "playlist-modify-private",
+];
 
 #[derive(Deserialize)]
 struct TokenAnswer {
@@ -224,6 +239,27 @@ mod tests {
         assert!(!tokens.can_stream());
         tokens.scopes = Some("streamingx user-read-private".to_owned());
         assert!(!tokens.can_stream());
+    }
+
+    #[test]
+    fn editing_needs_all_three_scopes() {
+        let mut tokens = Tokens {
+            access: Secret::new("a".to_owned()),
+            refresh: Secret::new("r".to_owned()),
+            expires_at: Instant::now(),
+            scopes: None,
+        };
+        assert!(!tokens.can_edit());
+        tokens.scopes = Some("streaming user-library-modify".to_owned());
+        assert!(!tokens.can_edit());
+        tokens.scopes = Some(
+            "streaming playlist-modify-private user-library-modify playlist-modify-public"
+                .to_owned(),
+        );
+        assert!(tokens.can_edit());
+        tokens.scopes =
+            Some("user-library-modifyx playlist-modify-private playlist-modify-public".to_owned());
+        assert!(!tokens.can_edit());
     }
 
     #[test]

@@ -1,0 +1,17 @@
+{
+ "id": "plNew",
+ "uri": "spotify:playlist:plNew",
+ "name": "Mix",
+ "owner": {
+  "id": "aria-tester",
+  "display_name": "Aria Tester"
+ },
+ "collaborative": false,
+ "public": false,
+ "snapshot_id": "snapNew",
+ "images": [],
+ "items": {
+  "href": "{base}/v1/playlists/plNew/items",
+  "total": 0
+ }
+}

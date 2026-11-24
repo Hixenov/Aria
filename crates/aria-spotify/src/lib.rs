@@ -38,7 +38,8 @@ pub const REDIRECT_PORT: u16 = 43819;
 /// The scopes Aria asks for, space-separated.
 pub const SCOPES: &str = "user-read-private user-library-read user-follow-read \
 playlist-read-private playlist-read-collaborative user-read-playback-state \
-user-modify-playback-state user-read-currently-playing streaming user-read-email";
+user-modify-playback-state user-read-currently-playing streaming user-read-email \
+user-library-modify playlist-modify-public playlist-modify-private";
 
 /// The redirect URI for a loopback port: `http://127.0.0.1:{port}/callback`.
 pub fn redirect_uri(port: u16) -> String {
@@ -71,5 +72,17 @@ mod tests {
         assert!(scopes.contains(&"streaming"));
         assert!(scopes.contains(&"user-read-email"));
         assert!(scopes.contains(&"user-read-private"));
+    }
+
+    #[test]
+    fn the_scopes_include_the_edit_permissions() {
+        let scopes: Vec<&str> = SCOPES.split_whitespace().collect();
+        for scope in [
+            "user-library-modify",
+            "playlist-modify-public",
+            "playlist-modify-private",
+        ] {
+            assert!(scopes.contains(&scope), "{scope}");
+        }
     }
 }

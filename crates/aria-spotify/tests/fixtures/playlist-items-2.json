@@ -1,0 +1,85 @@
+{
+ "limit": 50,
+ "offset": 5,
+ "total": 7,
+ "next": null,
+ "items": [
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "is_local": true,
+   "item": {
+    "type": "track",
+    "id": null,
+    "uri": "spotify:local:Someone:Album:Home+Song:200",
+    "name": "Home Song",
+    "duration_ms": 200000,
+    "is_local": true,
+    "artists": [
+     {
+      "name": "Someone"
+     }
+    ],
+    "album": {
+     "name": "Album",
+     "images": []
+    }
+   }
+  },
+  {
+   "added_at": "2026-01-01T00:00:00Z",
+   "is_local": false,
+   "item": {
+    "type": "track",
+    "id": "t3",
+    "uri": "spotify:track:t3",
+    "name": "Three",
+    "duration_ms": 180000,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist0",
+      "uri": "spotify:artist:artist0",
+      "name": "Artist 0"
+     }
+    ],
+    "album": {
+     "id": "album0",
+     "uri": "spotify:album:album0",
+     "name": "Album 0",
+     "artists": [
+      {
+       "name": "Artist 0"
+      }
+     ],
+     "images": []
+    }
+   },
+   "track": {
+    "type": "track",
+    "id": "t9",
+    "uri": "spotify:track:t9",
+    "name": "Old Key",
+    "duration_ms": 180000,
+    "is_local": false,
+    "artists": [
+     {
+      "id": "artist0",
+      "uri": "spotify:artist:artist0",
+      "name": "Artist 0"
+     }
+    ],
+    "album": {
+     "id": "album0",
+     "uri": "spotify:album:album0",
+     "name": "Album 0",
+     "artists": [
+      {
+       "name": "Artist 0"
+      }
+     ],
+     "images": []
+    }
+   }
+  }
+ ]
+}
