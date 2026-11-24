@@ -796,6 +796,19 @@ mod tests {
             assert!(!SCRIPT.contains(word), "{word}");
         }
         assert!(SCRIPT.contains("onSpotifyWebPlaybackSDKReady"));
+    }
+
+    #[test]
+    fn the_page_says_what_is_wrong_without_its_strings() {
+        // Shown when the texts or the session can't be had (a page opened from disk, a
+        // reloaded page): English built in, so the window never stays blank.
+        for text in [
+            "Aria is playing Spotify in this window.",
+            "Close this window and press play in Aria.",
+            "Spotify couldn't start here. Aria says why.",
+        ] {
+            assert!(SCRIPT.contains(text), "{text}");
+        }
         assert!(SCRIPT.contains(r#"name: "Aria""#));
     }
 }

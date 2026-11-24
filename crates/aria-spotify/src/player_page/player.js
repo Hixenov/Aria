@@ -9,8 +9,20 @@
   let player = null;
   let closing = false;
 
+  // Used when Aria's texts can't be had (a page opened from disk, a reloaded page), so the
+  // window always says what is going on.
+  const english = {
+    "player-page-title": "Aria — Spotify",
+    "player-page-playing":
+      "Aria is playing Spotify in this window. You can minimize it; closing it stops Spotify in Aria.",
+    "player-page-starting": "Starting…",
+    "player-page-ready": "Ready",
+    "player-page-failed": "Spotify couldn't start here. Aria says why.",
+    "player-page-start": "Start",
+    "player-page-reload": "Close this window and press play in Aria.",
+  };
   const byId = (id) => document.getElementById(id);
-  const text = (key, fallback) => strings[key] || fallback || "";
+  const text = (key) => strings[key] || english[key] || "";
   const say = (key) => {
     byId("status").textContent = text(key);
   };
@@ -63,7 +75,7 @@
     } catch (e) {
       strings = {};
     }
-    const title = text("player-page-title", "Aria");
+    const title = text("player-page-title");
     document.title = title;
     byId("title").textContent = title;
     byId("playing").textContent = text("player-page-playing");
@@ -125,7 +137,7 @@
     });
     if (tab) {
       const start = byId("start");
-      start.textContent = text("player-page-start", "Start");
+      start.textContent = text("player-page-start");
       start.hidden = false;
       start.addEventListener("click", () => {
         start.hidden = true;
