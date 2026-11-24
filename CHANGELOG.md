@@ -5,6 +5,28 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-24 (Spotify plays in Aria)
+
+Checked with 1372 automated tests on Windows, and the player page served by Aria in a browser (its texts, session, Spotify's player loading and its messages back). Nobody has played Spotify in Aria's window yet: that needs Edge or Chrome, a Premium account and the "Web Playback SDK" ticked for Aria's app in Spotify's developer dashboard. See `docs/testing/0.3.3-manual-check.md`.
+
+### Added
+
+- **Spotify plays in Aria, without the Spotify app.** With no Spotify device open, pressing play on a Spotify item opens a small Edge or Chrome window of Aria's own (no tabs, no address bar, a browser profile of its own, so your browser and its tabs are untouched). It runs Spotify's own Web Playback SDK, shows up in Spotify as the device "Aria", and the music starts there with no click. The player bar, the mini-player and the full-screen record control it like any Spotify device. You can minimize the window; Aria closes it when it quits or Spotify is disconnected; closed by hand, the next play opens it again. Needs Spotify Premium.
+- Settings, Spotify: "Play in Aria" (on by default), and "Aria (this computer)" in the device choice of Settings and of the player bar. Choosing it plays there from the next play on.
+- A session connected before 0.3.3 lacks the permission Spotify's player needs: playing in Aria then asks to reconnect once, and Settings shows a Reconnect button.
+- Without Edge or Chrome (Chromium on Linux), the same page opens in a tab of your browser, with a Start button to click.
+
+### Changed
+
+- Version 0.3.3. `settings.toml` gains `spotify_play_in_aria`; `spotify_device` may be `aria`. No database change.
+- Aria asks Spotify for two more permissions: `streaming` (for Spotify's player in Aria's window) and `user-read-email` (Spotify's player requires it; Aria never reads the address).
+
+### Limits
+
+- Spotify's sound comes from the browser and goes to the system's default output: Aria's output device, exclusive mode, volume levelling, the soundboard and the voice-chat sharing don't apply to it. Aria itself still decodes, captures and stores no Spotify audio.
+- The window must stay open while you listen (minimized is fine).
+- macOS and Linux: built, but not tried by anyone; Chromium builds of Linux distributions often lack the copy-protection part Spotify needs, and then the window says so.
+
 ## [0.3.2] - 2026-11-24 (the mini-player)
 
 Checked with 1322 automated tests on Windows. The mini-player has been drawn only in a simulated window; nobody has opened it as a real second window yet. See `docs/testing/0.3.2-manual-check.md`.

@@ -119,8 +119,10 @@ disconnect, it makes no request to Spotify or anyone else.
   (`user-read-private`), your saved tracks and albums (`user-library-read`), the artists you
   follow (`user-follow-read`), your playlists (`playlist-read-private`,
   `playlist-read-collaborative`), and to see and control playback on your Spotify devices
-  (`user-read-playback-state`, `user-modify-playback-state`, `user-read-currently-playing`). It
-  changes nothing in your Spotify library or playlists.
+  (`user-read-playback-state`, `user-modify-playback-state`, `user-read-currently-playing`). Since
+  0.3.3 also `streaming`, for Spotify's own player in Aria's window, and `user-read-email`, which
+  that player requires; Aria never reads, keeps or sends your email address. It changes nothing
+  in your Spotify library or playlists.
 - **What is sent, and to whom.** Requests go to Spotify only: `accounts.spotify.com` (sign-in and
   token refresh) and `api.spotify.com` (your library, search, playback), with your access token.
   Covers are fetched from the image addresses Spotify's answers give (Spotify's image servers,
@@ -137,6 +139,18 @@ disconnect, it makes no request to Spotify or anyone else.
   The chosen Spotify device's id is kept in `settings.toml` (`spotify_device`). A system without
   a protected store keeps nothing, and you connect again each time. Tokens are never written to
   the logs; at debug level the logs name Spotify's errors, not your data.
+- **Aria's player window (since 0.3.3).** With "Play in Aria" on (Settings, Spotify), playing
+  with no Spotify device open starts Edge or Chrome with a browser profile of Aria's own, kept
+  in Aria's cache folder under `spotify-player` (cookies and cache of that window only; your own
+  browser profile is not touched). The window shows a page that Aria serves on `127.0.0.1`
+  only, under an address with a random key that changes at each launch; the page takes a second
+  random secret once, keeps it in memory, and only with it gets the access token from Aria, so a
+  program that reads the window's address learns nothing useful. The page writes nothing to the
+  browser's storage and logs nothing. It loads Spotify's player from `sdk.scdn.co`, and that
+  player talks to Spotify as Spotify's own code decides (it is Spotify's, not Aria's). The
+  access token is handed only to that page; Aria keeps no copy on disk. Turning "Play in Aria"
+  off, disconnecting or quitting closes the window; deleting the `spotify-player` folder removes
+  the profile.
 - **Removing it.** Settings, Spotify, "Disconnect" deletes the stored token and forgets your
   Spotify library. You can also delete the `Aria` / `spotify` entry from the system store, and
   remove Aria's access on your Spotify account page (Apps).

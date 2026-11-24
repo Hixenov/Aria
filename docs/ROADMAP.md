@@ -8,7 +8,9 @@ Spotify audio is not streamed or decoded inside Aria. Spotify integration (Phase
 library, search and playlist access through the Web API, plus remote control of the user's
 existing Spotify Connect devices. No compliant in-process streaming path exists for a native
 desktop Rust app: librespot-style streaming uses private protocols and conflicts with
-Spotify's developer terms. Local files get the full audio engine (Phase 2).
+Spotify's developer terms. Local files get the full audio engine (Phase 2). Aria itself still
+plays no Spotify audio; since 0.3.3 Spotify's own Web Playback SDK plays it in a browser window
+Aria opens, the one route Spotify allows for other apps.
 
 ## Phases
 
