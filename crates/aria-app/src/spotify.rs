@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use aria_core::SpDevice;
 use aria_core::event::ActivePlayer;
+use aria_core::i18n::Localizer;
+use aria_core::spotify_player::AriaPlayerStatus;
 use aria_core::spotify_service::{
     Cover, SpotifyAccount, SpotifyEvent, SpotifyLibrary, SpotifyPlayback, SpotifyRequest,
     SpotifySearch,
@@ -36,6 +38,8 @@ pub struct SpotifyUi {
     pub devices: Vec<SpDevice>,
     /// The player the bar shows.
     pub active: ActivePlayer,
+    /// Aria's own Spotify player window.
+    pub player: AriaPlayerStatus,
 }
 
 impl Default for SpotifyUi {
@@ -49,6 +53,7 @@ impl Default for SpotifyUi {
             playback: None,
             devices: Vec::new(),
             active: ActivePlayer::Local,
+            player: AriaPlayerStatus::Off,
         }
     }
 }
@@ -67,7 +72,8 @@ impl SpotifyUi {
             SpotifyEvent::Search(search) => self.search = search,
             SpotifyEvent::Playback(playback) => self.playback = playback,
             SpotifyEvent::Devices(devices) => self.devices = devices,
-            SpotifyEvent::Cover(_) | SpotifyEvent::Notice(_) | SpotifyEvent::Player(_) => {}
+            SpotifyEvent::Player(status) => self.player = status,
+            SpotifyEvent::Cover(_) | SpotifyEvent::Notice(_) => {}
         }
     }
 
@@ -227,6 +233,29 @@ impl RemoteCovers {
 }
 
 /// The page the browser shows after the sign-in, with `text` in it.
+/// The texts of Aria's Spotify player page, in the interface's language, as a JSON object.
+pub fn player_page_strings(tr: &Localizer) -> String {
+    let keys = [
+        "player-page-title",
+        "player-page-playing",
+        "player-page-starting",
+        "player-page-ready",
+        "player-page-failed",
+        "player-page-start",
+        "player-page-reload",
+    ];
+    let texts: serde_json::Map<String, serde_json::Value> = keys
+        .into_iter()
+        .map(|key| {
+            (
+                key.to_owned(),
+                serde_json::Value::from(tr.tr(key).into_owned()),
+            )
+        })
+        .collect();
+    serde_json::Value::Object(texts).to_string()
+}
+
 pub fn signed_in_page(text: &str) -> String {
     let escaped = text
         .replace('&', "&amp;")
@@ -361,6 +390,32 @@ mod tests {
         assert!(!ui.keyring, "kept from the signed-out state");
         ui.apply(SpotifyEvent::Devices(vec![]));
         assert!(ui.devices.is_empty());
+    }
+
+    #[test]
+    fn page_strings_are_json_with_every_key() {
+        let tr = Localizer::new(aria_core::settings::Language::En).unwrap();
+        let strings: serde_json::Value = serde_json::from_str(&player_page_strings(&tr)).unwrap();
+        for key in [
+            "player-page-title",
+            "player-page-playing",
+            "player-page-starting",
+            "player-page-ready",
+            "player-page-failed",
+            "player-page-start",
+            "player-page-reload",
+        ] {
+            let text = strings.get(key).and_then(|v| v.as_str()).unwrap_or("");
+            assert!(!text.is_empty(), "{key}");
+        }
+    }
+
+    #[test]
+    fn the_player_status_is_kept() {
+        let mut ui = SpotifyUi::default();
+        assert_eq!(ui.player, AriaPlayerStatus::Off);
+        ui.apply(SpotifyEvent::Player(AriaPlayerStatus::Starting));
+        assert_eq!(ui.player, AriaPlayerStatus::Starting);
     }
 
     #[test]

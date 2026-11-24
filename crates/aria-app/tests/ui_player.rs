@@ -1278,6 +1278,27 @@ fn the_devices_popup_lists_devices_and_sends_the_choice() {
 }
 
 #[test]
+fn the_devices_popup_offers_aria() {
+    let mut harness = spotify_bar(spotify_playback(None, false));
+    harness
+        .get_by_role_and_label(Role::Button, &en("player-devices"))
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, &en("spotify-device-aria"))
+        .click();
+    harness.run();
+    assert!(
+        harness
+            .state()
+            .actions
+            .contains(&PlayerAction::SpotifyDevice(Some("aria".to_owned()))),
+        "{:?}",
+        harness.state().actions
+    );
+}
+
+#[test]
 fn signed_out_the_devices_button_says_where_to_connect() {
     let harness = bar_harness(view(None, false, 0), 0);
     let devices = en("player-devices");

@@ -242,6 +242,7 @@ dependencies = [
  "open",
  "pollster",
  "rfd",
+ "serde_json",
  "tempfile",
  "tracing",
  "ttf-parser",

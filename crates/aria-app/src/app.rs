@@ -196,6 +196,9 @@ pub struct AriaApp {
     /// What the hotkeys are for changed, or the dialog opened or closed: they are synced at the
     /// end of the frame.
     hotkeys_dirty: bool,
+    /// "Play in Aria" or the language changed: the Spotify thread is told, with the player
+    /// page's texts, at the start of the next frame.
+    play_in_aria_dirty: bool,
     /// The hotkeys the system refused at the last sync, marked on their tiles.
     inactive_hotkeys: Vec<Hotkey>,
     /// The output devices the backend last listed. Empty until it answers.
@@ -305,6 +308,7 @@ impl AriaApp {
             hotkeys: Hotkeys::new(hotkeys),
             hotkeys_available,
             hotkeys_dirty: true,
+            play_in_aria_dirty: true,
             inactive_hotkeys: Vec::new(),
             devices: Vec::new(),
             input_devices: Vec::new(),
@@ -393,6 +397,12 @@ impl AriaApp {
         let ctx = ui.ctx().clone();
         // Events first, so settings the backend replaced are styled in this very frame.
         self.drain_events(&ctx);
+        if mem::take(&mut self.play_in_aria_dirty) {
+            self.send(Command::Spotify(SpotifyRequest::PlayInAria {
+                on: self.settings.spotify_play_in_aria,
+                strings: crate::spotify::player_page_strings(&self.localizer),
+            }));
+        }
         self.tell_window_shown(&ctx);
         self.vinyl.leave_restored_fullscreen(&ctx);
         if !self.vinyl.is_open() && !self.mini.is_open() {
@@ -1597,6 +1607,9 @@ impl AriaApp {
                 tracing::warn!(%err, "could not switch the interface language");
             }
         }
+        if old.language != new.language || old.spotify_play_in_aria != new.spotify_play_in_aria {
+            self.play_in_aria_dirty = true;
+        }
         if old.log_level != new.log_level
             && let Some(logging) = &self.deps.logging
         {
@@ -2066,6 +2079,27 @@ mod tests {
         assert!(
             sent.iter()
                 .any(|c| matches!(c, Command::WindowShown(false))),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn play_in_aria_is_sent_at_start() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), plain_app());
+        harness.run_steps(2);
+        let sent = harness.state().sent.borrow();
+        let plays: Vec<_> = sent
+            .iter()
+            .filter(|c| matches!(c, Command::Spotify(SpotifyRequest::PlayInAria { .. })))
+            .collect();
+        assert!(
+            matches!(
+                plays.as_slice(),
+                [Command::Spotify(SpotifyRequest::PlayInAria { on: true, strings })]
+                    if strings.contains("player-page-playing")
+            ),
             "{sent:?}"
         );
     }
@@ -2694,14 +2728,13 @@ mod tests {
         harness.run();
         assert!(harness.state().name_dialog.is_none());
         assert!(!harness.state().modal_open());
-        // The first frame tells the backend the window is shown; nothing else goes.
+        // The first frame tells the backend the window is shown and whether Spotify may play
+        // in Aria; nothing else goes.
         assert!(
-            harness
-                .state()
-                .sent
-                .borrow()
-                .iter()
-                .all(|c| matches!(c, Command::WindowShown(true))),
+            harness.state().sent.borrow().iter().all(|c| matches!(
+                c,
+                Command::WindowShown(true) | Command::Spotify(SpotifyRequest::PlayInAria { .. })
+            )),
             "Escape sent something"
         );
     }

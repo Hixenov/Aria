@@ -2,6 +2,7 @@
 //! Spotify's Development mode and Premium mean for it.
 
 use aria_core::i18n::FluentArgs;
+use aria_core::spotify_player::{ARIA_DEVICE, AriaPlayerStatus};
 use aria_core::spotify_service::{SpotifyAccount, SpotifyRequest};
 use eframe::egui::{ComboBox, Label, RichText, TextStyle, Ui};
 
@@ -51,6 +52,8 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
                 let label = tr.tr("settings-spotify-device");
                 row(ui, &p, &label, |ui| device_combo(ui, ctx, &label));
                 divider(ui);
+                play_in_aria(ui, ctx);
+                divider(ui);
                 buttons_row(ui, |ui| {
                     if ui.button(tr.tr("settings-spotify-refresh")).clicked() {
                         ctx.out.push(PageAction::Spotify(SpotifyRequest::Refresh));
@@ -73,14 +76,60 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
     });
 }
 
-/// "The active device", then Spotify's devices by name; restricted ones cannot be chosen.
+/// "Play in Aria", and, when the session lacks the permission for it, Reconnect.
+fn play_in_aria(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
+    let (tr, p) = (ctx.tr, ctx.palette);
+    let mut on = ctx.settings.spotify_play_in_aria;
+    ui.add_space(super::SPACE[1]);
+    if ui
+        .checkbox(&mut on, tr.tr("settings-spotify-play-in-aria"))
+        .changed()
+    {
+        ctx.out
+            .push(PageAction::Spotify(SpotifyRequest::PlayInAria {
+                on,
+                strings: crate::spotify::player_page_strings(tr),
+            }));
+    }
+    caption(
+        ui,
+        &p,
+        &tr.tr("settings-spotify-play-in-aria-hint"),
+        TextStyle::Small,
+    );
+    if ctx.spotify.player == AriaPlayerStatus::NeedsReconnect {
+        caption(
+            ui,
+            &p,
+            &tr.tr("settings-spotify-reconnect-hint"),
+            TextStyle::Small,
+        );
+        buttons_row(ui, |ui| {
+            if ui.button(tr.tr("settings-spotify-reconnect")).clicked() {
+                ctx.out.push(PageAction::Spotify(SpotifyRequest::SignOut));
+                ctx.out.push(PageAction::Spotify(SpotifyRequest::SignIn {
+                    done_page: String::new(),
+                    failed_page: String::new(),
+                }));
+            }
+        });
+    }
+}
+
+/// "The active device", "Aria (this computer)" while Spotify may play in Aria, then Spotify's
+/// devices by name; restricted ones cannot be chosen.
 fn device_combo(ui: &mut Ui, ctx: &mut PageCtx<'_>, name: &str) {
     let tr = ctx.tr;
     let chosen = ctx.settings.spotify_device.clone();
     let active = tr.tr("settings-spotify-active-device").into_owned();
+    let aria = tr.tr("spotify-device-aria").into_owned();
+    let offer_aria = ctx.settings.spotify_play_in_aria;
     let selected = chosen
         .as_ref()
         .and_then(|id| {
+            if id == ARIA_DEVICE {
+                return Some(aria.clone());
+            }
             ctx.spotify
                 .devices
                 .iter()
@@ -95,6 +144,13 @@ fn device_combo(ui: &mut Ui, ctx: &mut PageCtx<'_>, name: &str) {
         .show_ui(ui, |ui| {
             if ui.selectable_label(chosen.is_none(), &active).clicked() {
                 picked = Some(None);
+            }
+            if offer_aria
+                && ui
+                    .selectable_label(chosen.as_deref() == Some(ARIA_DEVICE), &aria)
+                    .clicked()
+            {
+                picked = Some(Some(ARIA_DEVICE.to_owned()));
             }
             for device in &ctx.spotify.devices {
                 let Some(id) = &device.id else {
@@ -124,10 +180,11 @@ fn device_combo(ui: &mut Ui, ctx: &mut PageCtx<'_>, name: &str) {
 #[cfg(test)]
 mod tests {
     use aria_core::SpDevice;
+    use aria_core::spotify_player::{ARIA_DEVICE, AriaPlayerStatus};
     use aria_core::spotify_service::{SpotifyAccount, SpotifyRequest};
     use aria_library::Collections;
     use eframe::egui::accesskit::Role;
-    use egui_kittest::kittest::Queryable as _;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
     use super::super::super::{
         LibraryView,
@@ -221,6 +278,93 @@ mod tests {
         harness
             .get_by_role(Role::ListBox)
             .get_by_role_and_label(Role::Button, &active);
+    }
+
+    #[test]
+    fn the_aria_device_is_listed_first_after_active() {
+        let mut harness = page(signed_in());
+        let device = harness.state().english("settings-spotify-device");
+        click_on(&mut harness, Role::ComboBox, &device);
+        let aria = harness.state().english("spotify-device-aria");
+        harness
+            .get_by_role(Role::ListBox)
+            .get_by_role_and_label(Role::Button, &aria)
+            .click();
+        harness.run();
+        assert_eq!(
+            harness.state().out,
+            [PageAction::Spotify(SpotifyRequest::Device(Some(
+                ARIA_DEVICE.to_owned()
+            )))]
+        );
+    }
+
+    #[test]
+    fn without_play_in_aria_there_is_no_aria_device() {
+        let mut harness = page(signed_in());
+        harness.state_mut().settings.spotify_play_in_aria = false;
+        harness.run();
+        let device = harness.state().english("settings-spotify-device");
+        click_on(&mut harness, Role::ComboBox, &device);
+        let aria = harness.state().english("spotify-device-aria");
+        assert!(
+            harness
+                .get_by_role(Role::ListBox)
+                .query_by_role_and_label(Role::Button, &aria)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_chosen_aria_shows_its_name() {
+        let mut harness = page(signed_in());
+        harness.state_mut().settings.spotify_device = Some(ARIA_DEVICE.to_owned());
+        harness.run();
+        let aria = harness.state().english("spotify-device-aria");
+        let device = harness.state().english("settings-spotify-device");
+        let combo = harness.get_by_role_and_label(Role::ComboBox, &device);
+        assert_eq!(combo.accesskit_node().value(), Some(aria));
+    }
+
+    #[test]
+    fn the_play_in_aria_checkbox_sends_the_request() {
+        let mut harness = page(signed_in());
+        let label = harness.state().english("settings-spotify-play-in-aria");
+        click_on(&mut harness, Role::CheckBox, &label);
+        assert!(
+            matches!(
+                harness.state().out.as_slice(),
+                [PageAction::Spotify(SpotifyRequest::PlayInAria { on: false, strings })]
+                    if strings.contains("player-page-playing")
+            ),
+            "{:?}",
+            harness.state().out
+        );
+    }
+
+    #[test]
+    fn reconnect_shows_when_needed() {
+        let mut harness = page(signed_in());
+        let reconnect = harness.state().english("settings-spotify-reconnect");
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Button, &reconnect)
+                .is_none()
+        );
+        harness.state_mut().spotify.player = AriaPlayerStatus::NeedsReconnect;
+        harness.run();
+        click_on(&mut harness, Role::Button, &reconnect);
+        assert!(
+            matches!(
+                harness.state().out.as_slice(),
+                [
+                    PageAction::Spotify(SpotifyRequest::SignOut),
+                    PageAction::Spotify(SpotifyRequest::SignIn { .. })
+                ]
+            ),
+            "{:?}",
+            harness.state().out
+        );
     }
 
     #[test]

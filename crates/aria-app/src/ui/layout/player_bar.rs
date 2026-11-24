@@ -1041,6 +1041,13 @@ fn devices_button(ui: &mut Ui, bar: &PlayerBar<'_>, out: &mut Vec<PlayerAction>)
         if ui.selectable_label(chosen.is_none(), &*active).clicked() {
             picked = Some(None);
         }
+        if bar.settings.spotify_play_in_aria {
+            let aria = tr.tr("spotify-device-aria");
+            let is_aria = chosen == Some(aria_core::spotify_player::ARIA_DEVICE);
+            if ui.selectable_label(is_aria, &*aria).clicked() {
+                picked = Some(Some(aria_core::spotify_player::ARIA_DEVICE.to_owned()));
+            }
+        }
         for device in devices {
             let Some(id) = &device.id else {
                 continue;

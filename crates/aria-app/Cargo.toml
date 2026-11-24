@@ -18,6 +18,7 @@ path = "src/main.rs"
 embed-resource = { workspace = true }
 
 [dependencies]
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 aria-core = { workspace = true }
 aria-library = { workspace = true }
