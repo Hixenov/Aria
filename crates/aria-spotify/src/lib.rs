@@ -36,7 +36,7 @@ pub const REDIRECT_PORT: u16 = 43819;
 /// The scopes Aria asks for, space-separated.
 pub const SCOPES: &str = "user-read-private user-library-read user-follow-read \
 playlist-read-private playlist-read-collaborative user-read-playback-state \
-user-modify-playback-state user-read-currently-playing";
+user-modify-playback-state user-read-currently-playing streaming user-read-email";
 
 /// The redirect URI for a loopback port: `http://127.0.0.1:{port}/callback`.
 pub fn redirect_uri(port: u16) -> String {
@@ -56,5 +56,18 @@ impl Endpoints {
             accounts: "https://accounts.spotify.com".to_owned(),
             api: "https://api.spotify.com/v1".to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_scopes_include_streaming_and_email() {
+        let scopes: Vec<&str> = SCOPES.split_whitespace().collect();
+        assert!(scopes.contains(&"streaming"));
+        assert!(scopes.contains(&"user-read-email"));
+        assert!(scopes.contains(&"user-read-private"));
     }
 }

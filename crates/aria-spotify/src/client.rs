@@ -16,7 +16,7 @@ use crate::model::{
     RawPlayer, RawPlaylist, RawSearch, RepeatState, SavedAlbum, SavedTrack, SearchResults, SpAlbum,
     SpArtist, SpDevice, SpPlaylist, SpTrack,
 };
-use crate::{Endpoints, Http, SpotifyError, Tokens, token};
+use crate::{Endpoints, Http, Secret, SpotifyError, Tokens, token};
 
 /// A `Retry-After` up to this long is waited out once; a longer one is returned.
 const SHORT_WAIT: Duration = Duration::from_secs(5);
@@ -53,6 +53,19 @@ impl Client {
     /// The current tokens, so a rotated refresh token can be saved.
     pub fn tokens(&self) -> &Tokens {
         &self.tokens
+    }
+
+    /// The access token, refreshed first when it expires within `within`.
+    pub fn fresh_access(&mut self, within: Duration) -> Result<Secret, SpotifyError> {
+        if self
+            .tokens
+            .expires_at
+            .saturating_duration_since(Instant::now())
+            < within
+        {
+            self.refresh()?;
+        }
+        Ok(self.tokens.access.clone())
     }
 
     pub fn me(&mut self) -> Result<Account, SpotifyError> {
@@ -248,7 +261,11 @@ impl Client {
     }
 
     fn refresh(&mut self) -> Result<(), SpotifyError> {
-        self.tokens = token::refresh(&self.http, &self.endpoints, &self.tokens.refresh)?;
+        let mut tokens = token::refresh(&self.http, &self.endpoints, &self.tokens.refresh)?;
+        if tokens.scopes.is_none() {
+            tokens.scopes = self.tokens.scopes.take();
+        }
+        self.tokens = tokens;
         Ok(())
     }
 
@@ -389,8 +406,42 @@ mod tests {
             access: Secret::new("access-1".to_owned()),
             refresh: Secret::new("refresh-1".to_owned()),
             expires_at: Instant::now() + Duration::from_secs(3600),
+            scopes: Some("streaming".to_owned()),
         };
         Client::new(Http::new(), fake.endpoints(), tokens)
+    }
+
+    #[test]
+    fn fresh_access_refreshes_when_near_expiry() {
+        let fake = FakeSpotify::start();
+        let mut c = client(&fake);
+        c.tokens.expires_at = Instant::now() + Duration::from_secs(10 * 60);
+        let token = c.fresh_access(Duration::from_secs(60)).unwrap();
+        assert_eq!(token.expose(), "access-1");
+        assert!(fake.requests().is_empty(), "no refresh while it is fresh");
+        c.tokens.expires_at = Instant::now() + Duration::from_secs(30);
+        fake.reply(
+            "POST",
+            "/api/token",
+            Reply::json(200, r#"{"access_token":"access-2","expires_in":3600}"#),
+        );
+        let token = c.fresh_access(Duration::from_secs(60)).unwrap();
+        assert_eq!(token.expose(), "access-2");
+        assert_eq!(fake.requests().len(), 1);
+    }
+
+    #[test]
+    fn a_refresh_without_scope_keeps_the_old_ones() {
+        let fake = FakeSpotify::start();
+        let mut c = client(&fake);
+        c.tokens.expires_at = Instant::now();
+        fake.reply(
+            "POST",
+            "/api/token",
+            Reply::json(200, r#"{"access_token":"access-2","expires_in":3600}"#),
+        );
+        c.fresh_access(Duration::from_secs(60)).unwrap();
+        assert!(c.tokens().can_stream());
     }
 
     fn json(value: &str) -> serde_json::Value {
@@ -664,6 +715,7 @@ mod tests {
             access: Secret::new("old".to_owned()),
             refresh: Secret::new("refresh-1".to_owned()),
             expires_at: Instant::now(),
+            scopes: None,
         };
         Client::new(Http::new(), fake.endpoints(), tokens)
             .me()

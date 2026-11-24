@@ -16,6 +16,17 @@ pub struct Tokens {
     pub access: Secret,
     pub refresh: Secret,
     pub expires_at: Instant,
+    /// The scopes Spotify granted, space-separated, from the last answer that named them.
+    pub scopes: Option<String>,
+}
+
+impl Tokens {
+    /// Whether Spotify granted `streaming`, which the Web Playback SDK needs.
+    pub fn can_stream(&self) -> bool {
+        self.scopes
+            .as_deref()
+            .is_some_and(|s| s.split_whitespace().any(|scope| scope == "streaming"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -23,6 +34,7 @@ struct TokenAnswer {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: u64,
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +100,7 @@ fn request(
                 access: Secret::new(parsed.access_token),
                 refresh,
                 expires_at: Instant::now() + lifetime,
+                scopes: parsed.scope,
             })
         }
         429 => Err(SpotifyError::RateLimited {
@@ -174,6 +187,43 @@ mod tests {
         let form = form_of(&fake.requests()[0].body);
         assert!(form.contains(&("grant_type".to_owned(), "refresh_token".to_owned())));
         assert!(form.contains(&("refresh_token".to_owned(), "old-refresh".to_owned())));
+    }
+
+    #[test]
+    fn granted_scopes_are_kept() {
+        let fake = FakeSpotify::start();
+        fake.reply(
+            "POST",
+            "/api/token",
+            Reply::json(
+                200,
+                r#"{"access_token":"a","refresh_token":"r","expires_in":3600,"scope":"streaming user-read-private"}"#,
+            ),
+        );
+        let tokens = exchange_code(
+            &Http::new(),
+            &fake.endpoints(),
+            &Secret::new("c".to_owned()),
+            &pkce(),
+            &redirect_uri(43819),
+        )
+        .unwrap();
+        assert!(tokens.can_stream());
+    }
+
+    #[test]
+    fn no_streaming_scope_cannot_stream() {
+        let mut tokens = Tokens {
+            access: Secret::new("a".to_owned()),
+            refresh: Secret::new("r".to_owned()),
+            expires_at: Instant::now(),
+            scopes: Some("user-read-private".to_owned()),
+        };
+        assert!(!tokens.can_stream());
+        tokens.scopes = None;
+        assert!(!tokens.can_stream());
+        tokens.scopes = Some("streamingx user-read-private".to_owned());
+        assert!(!tokens.can_stream());
     }
 
     #[test]
