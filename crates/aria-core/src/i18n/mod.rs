@@ -582,6 +582,7 @@ mod tests {
         "spotify-playlist-empty",
         "spotify-playlist-failed",
         "spotify-playlist-loading",
+        "settings-spotify-reconnect-edit-hint",
     ];
 
     // The six tests below are the Task 4 brief's, verbatim except for the
@@ -711,6 +712,7 @@ mod tests {
         args.set("device", "777");
         args.set("owner", "777");
         args.set("rpm", "777");
+        args.set("playlist", "777");
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));

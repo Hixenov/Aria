@@ -497,3 +497,4 @@ spotify-playlist-play = Играть
 spotify-playlist-empty = В этом плейлисте пусто.
 spotify-playlist-failed = Aria не удалось загрузить этот плейлист из Spotify.
 spotify-playlist-loading = Загрузка плейлиста…
+settings-spotify-reconnect-edit-hint = Переподключитесь один раз, чтобы Spotify разрешил Aria отмечать треки и менять ваши плейлисты.

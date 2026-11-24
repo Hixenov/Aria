@@ -76,7 +76,8 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
     });
 }
 
-/// "Play in Aria", and, when the session lacks the permission for it, Reconnect.
+/// "Play in Aria", and, when the session lacks a permission Aria needs (to play in Aria, or
+/// to like tracks and edit playlists), Reconnect.
 fn play_in_aria(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
     let (tr, p) = (ctx.tr, ctx.palette);
     let mut on = ctx.settings.spotify_play_in_aria;
@@ -97,13 +98,15 @@ fn play_in_aria(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
         &tr.tr("settings-spotify-play-in-aria-hint"),
         TextStyle::Small,
     );
-    if ctx.spotify.player == AriaPlayerStatus::NeedsReconnect {
-        caption(
-            ui,
-            &p,
-            &tr.tr("settings-spotify-reconnect-hint"),
-            TextStyle::Small,
-        );
+    let hint = if ctx.spotify.player == AriaPlayerStatus::NeedsReconnect {
+        Some("settings-spotify-reconnect-hint")
+    } else if ctx.spotify.signed_in() && !ctx.spotify.can_edit() {
+        Some("settings-spotify-reconnect-edit-hint")
+    } else {
+        None
+    };
+    if let Some(hint) = hint {
+        caption(ui, &p, &tr.tr(hint), TextStyle::Small);
         buttons_row(ui, |ui| {
             if ui.button(tr.tr("settings-spotify-reconnect")).clicked() {
                 ctx.out.push(PageAction::Spotify(SpotifyRequest::SignOut));
@@ -220,6 +223,31 @@ mod tests {
             },
         ];
         harness(world, |ui, world| world.page(ui, settings_page))
+    }
+
+    #[test]
+    fn reconnect_shows_without_the_edit_permissions() {
+        let mut harness = page(SpotifyAccount::SignedIn {
+            name: "Ann".to_owned(),
+            can_edit: false,
+        });
+        let hint = harness
+            .state()
+            .english("settings-spotify-reconnect-edit-hint");
+        harness.get_by_label(&hint);
+        let reconnect = harness.state().english("settings-spotify-reconnect");
+        click_on(&mut harness, Role::Button, &reconnect);
+        assert!(
+            matches!(
+                harness.state().out.as_slice(),
+                [
+                    PageAction::Spotify(SpotifyRequest::SignOut),
+                    PageAction::Spotify(SpotifyRequest::SignIn { .. })
+                ]
+            ),
+            "{:?}",
+            harness.state().out
+        );
     }
 
     fn click_on(harness: &mut egui_kittest::Harness<'static, World>, role: Role, label: &str) {

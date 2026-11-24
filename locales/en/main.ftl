@@ -488,3 +488,4 @@ spotify-playlist-play = Play
 spotify-playlist-empty = This playlist is empty.
 spotify-playlist-failed = Aria couldn't load this playlist from Spotify.
 spotify-playlist-loading = Loading the playlist…
+settings-spotify-reconnect-edit-hint = Reconnect once so Spotify lets Aria like tracks and edit your playlists.

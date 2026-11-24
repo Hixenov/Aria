@@ -485,3 +485,4 @@ spotify-playlist-play = Նվագարկել
 spotify-playlist-empty = Այս երգացանկը դատարկ է։
 spotify-playlist-failed = Aria-ն չկարողացավ բեռնել այս երգացանկը Spotify-ից։
 spotify-playlist-loading = Երգացանկը բեռնվում է…
+settings-spotify-reconnect-edit-hint = Վերամիացեք մեկ անգամ, որպեսզի Spotify-ը թույլ տա Aria-ին հավանել երգեր և փոխել ձեր երգացանկերը։

@@ -121,20 +121,23 @@ disconnect, it makes no request to Spotify or anyone else.
   `playlist-read-collaborative`), and to see and control playback on your Spotify devices
   (`user-read-playback-state`, `user-modify-playback-state`, `user-read-currently-playing`). Since
   0.3.3 also `streaming`, for Spotify's own player in Aria's window, and `user-read-email`, which
-  that player requires; Aria never reads, keeps or sends your email address. It changes nothing
-  in your Spotify library or playlists.
+  that player requires; Aria never reads, keeps or sends your email address. Since 0.3.4 also
+  `user-library-modify` and `playlist-modify-public`, `playlist-modify-private`: Aria changes
+  your Liked Songs and playlists only when you click a heart, "Add to playlist", "New
+  playlist…" or "Remove from this playlist", and nothing else in your Spotify account.
 - **What is sent, and to whom.** Requests go to Spotify only: `accounts.spotify.com` (sign-in and
   token refresh) and `api.spotify.com` (your library, search, playback), with your access token.
   Covers are fetched from the image addresses Spotify's answers give (Spotify's image servers,
   such as `i.scdn.co`), over HTTPS and without your token. The full-screen record and the
   mini-player fetch the largest image Spotify offers (about 640 pixels) for the item they show,
   and only while one of them is open. What you type in Search is sent to
-  Spotify as you type. While Aria is connected it asks Spotify what is playing every 2 seconds
+  Spotify as you type. Opening one of your playlists asks Spotify for its tracks; liking a track
+  or changing a playlist sends that track's Spotify address and the playlist's id. While Aria is connected it asks Spotify what is playing every 2 seconds
   while the player bar shows Spotify and every 15 seconds otherwise, and not at all while the
   window is minimized.
 - **What is kept.** Only the refresh token, in your system's protected store: Windows
   Credential Manager, the macOS Keychain, or the Secret Service on Linux, under `Aria` /
-  `spotify`. The access token, your Spotify library, search results and covers stay in memory
+  `spotify`. The access token, your Spotify library, an opened playlist, search results and covers stay in memory
   and are gone when Aria closes; nothing of them is written to `library.db` or anywhere else.
   The chosen Spotify device's id is kept in `settings.toml` (`spotify_device`). A system without
   a protected store keeps nothing, and you connect again each time. Tokens are never written to

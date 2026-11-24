@@ -5,6 +5,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-24 (Spotify likes and playlists)
+
+Checked with automated tests on Windows against a local fake Spotify only. Nobody has liked a track or changed a playlist on a real Spotify account from Aria yet. See `docs/testing/0.3.4-manual-check.md`.
+
+### Added
+
+- **A heart on Spotify tracks.** Every Spotify track row (Your Library, Search, an opened playlist) and the player bar, while a Spotify track plays, has a heart: it saves the track to your Liked Songs or removes it. The heart and Liked Songs change at once; if Spotify refuses, they change back and Aria says why.
+- **Right-click a Spotify track:** "Add to Liked Songs" or "Remove from Liked Songs", and "Add to playlist", with the playlists you own or collaborate on, then "New playlist…", which asks for a name, creates a private playlist with the track in it and lists it first.
+- **Your own playlists open.** On Your Library, clicking a playlist you own or collaborate on opens it: Back, its name, Play, and its tracks. A track there plays the playlist from that track; right-click offers "Remove from this playlist" (Spotify removes every copy of the track from it). Playlists you only follow still play when clicked; Spotify doesn't show what's in them.
+
+### Changed
+
+- Version 0.3.4. No settings or database change.
+- Aria asks Spotify for three more permissions: `user-library-modify` (Liked Songs), `playlist-modify-public` and `playlist-modify-private` (your playlists). A session connected before 0.3.4 lacks them: the hearts and the edit items are greyed out and Settings, Spotify shows Reconnect.
+- Uses Spotify's 2026 endpoints for these: `/me/library` for Liked Songs and `/playlists/{id}/items` for a playlist's tracks.
+
+### Limits
+
+- Not renaming, reordering or deleting playlists, and not liking albums, artists or playlists.
+- Adding a track that is already in a playlist adds it again (Spotify allows that).
+
 ## [0.3.3] - 2026-11-24 (Spotify plays in Aria)
 
 Checked with 1377 automated tests on Windows, and the player page served by Aria in a browser (its texts, session, Spotify's player loading and its messages back). Nobody has played Spotify in Aria's window yet: that needs Edge or Chrome, a Premium account and the "Web Playback SDK" ticked for Aria's app in Spotify's developer dashboard. See `docs/testing/0.3.3-manual-check.md`.
