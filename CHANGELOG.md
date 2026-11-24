@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format is based on
 
 ## [0.3.3] - 2026-11-24 (Spotify plays in Aria)
 
-Checked with 1372 automated tests on Windows, and the player page served by Aria in a browser (its texts, session, Spotify's player loading and its messages back). Nobody has played Spotify in Aria's window yet: that needs Edge or Chrome, a Premium account and the "Web Playback SDK" ticked for Aria's app in Spotify's developer dashboard. See `docs/testing/0.3.3-manual-check.md`.
+Checked with 1377 automated tests on Windows, and the player page served by Aria in a browser (its texts, session, Spotify's player loading and its messages back). Nobody has played Spotify in Aria's window yet: that needs Edge or Chrome, a Premium account and the "Web Playback SDK" ticked for Aria's app in Spotify's developer dashboard. See `docs/testing/0.3.3-manual-check.md`.
 
 ### Added
 

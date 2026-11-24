@@ -144,8 +144,9 @@ disconnect, it makes no request to Spotify or anyone else.
   in Aria's cache folder under `spotify-player` (cookies and cache of that window only; your own
   browser profile is not touched). The window shows a page that Aria serves on `127.0.0.1`
   only, under an address with a random key that changes at each launch; the page takes a second
-  random secret once, keeps it in memory, and only with it gets the access token from Aria, so a
-  program that reads the window's address learns nothing useful. The page writes nothing to the
+  random secret once, as the first thing it does, keeps it in memory, and only with it gets the
+  access token from Aria, so once the page has loaded, a program that reads the window's address
+  can get nothing with it. The page writes nothing to the
   browser's storage and logs nothing. It loads Spotify's player from `sdk.scdn.co`, and that
   player talks to Spotify as Spotify's own code decides (it is Spotify's, not Aria's). The
   access token is handed only to that page; Aria keeps no copy on disk. Turning "Play in Aria"

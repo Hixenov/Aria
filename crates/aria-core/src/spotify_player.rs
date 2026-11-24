@@ -253,6 +253,17 @@ impl Player {
         self.pending.take()
     }
 
+    /// The page's player went offline as `device_id`: plays wait for its next `ready`, for as
+    /// long as a launch would, and a new window opens only if none comes.
+    pub(crate) fn not_ready(&mut self, device_id: &str) {
+        let ours = self.device.as_deref() == Some(device_id);
+        if ours && matches!(self.state, State::Ready | State::Lost) {
+            self.state = State::Starting {
+                until: Instant::now() + self.deps.ready,
+            };
+        }
+    }
+
     /// A quiet page whose device Spotify still lists is taken as ready again.
     pub(crate) fn revive(&mut self) {
         if self.state == State::Lost {

@@ -799,6 +799,30 @@ mod tests {
     }
 
     #[test]
+    fn the_page_closes_itself_when_aria_is_gone() {
+        // Aria crashed or quit without closing the window: once the server has not answered
+        // for this long, the page closes its window.
+        assert!(SCRIPT.contains("const GONE_AFTER_MS = 12000;"));
+        assert!(SCRIPT.contains("unreachableSince"));
+    }
+
+    #[test]
+    fn a_failed_token_is_asked_again() {
+        assert!(SCRIPT.contains("const TOKEN_TRIES = 5;"));
+        assert!(SCRIPT.contains("const TOKEN_RETRY_MS = 2000;"));
+    }
+
+    #[test]
+    fn the_session_is_taken_before_anything_else() {
+        let session = SCRIPT.find(r#"fetch(base + "session""#).unwrap();
+        let strings = SCRIPT.find(r#"fetch(base + "strings")"#).unwrap();
+        assert!(
+            session < strings,
+            "the session first, so the key is spent at once"
+        );
+    }
+
+    #[test]
     fn the_page_says_what_is_wrong_without_its_strings() {
         // Shown when the texts or the session can't be had (a page opened from disk, a
         // reloaded page): English built in, so the window never stays blank.

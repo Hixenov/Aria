@@ -851,8 +851,9 @@ impl Service {
                 }
                 self.list_devices();
             }
-            PageMsg::Event(PageEvent::NotReady { .. }) => {
+            PageMsg::Event(PageEvent::NotReady { device_id }) => {
                 tracing::debug!("Aria's Spotify player went offline");
+                self.player.not_ready(&device_id);
             }
             PageMsg::Event(PageEvent::Error { kind, message }) => {
                 tracing::debug!("Aria's Spotify player: {kind:?}: {message}");
@@ -2158,6 +2159,41 @@ mod tests {
             let l = Launches::default();
             let (_h, page) = started(&l, WAIT);
             assert_eq!(page.token(), (200, r#"{"access_token":"a1"}"#.to_owned()));
+        }
+
+        #[test]
+        fn a_page_gone_offline_waits_for_its_next_ready() {
+            let l = Launches::default();
+            let (mut h, page) = started(&l, WAIT);
+            page.event(r#"{"type":"not_ready","device_id":"web1"}"#);
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Starting));
+            let before = puts(&h).len();
+            h.send(SpotifyRequest::Play(album("albumD")));
+            h.during(Duration::from_millis(200));
+            assert_eq!(puts(&h).len(), before, "nothing goes to an offline device");
+            assert_eq!(launched(&l).len(), 1, "no second window");
+            page.event(r#"{"type":"ready","device_id":"web2"}"#);
+            h.expect(|e| is_status(e, &ready("web2")));
+            h.during(Duration::from_millis(200));
+            let after = puts(&h);
+            let last = after.last().unwrap();
+            assert_eq!(last.param("device_id"), Some("web2"));
+            assert!(last.body.contains("albumD"), "{}", last.body);
+        }
+
+        #[test]
+        fn sign_out_closes_the_window() {
+            let l = Launches::default();
+            let (mut h, page) = started(&l, WAIT);
+            let waiting = {
+                let page = page.clone();
+                thread::spawn(move || page.wait())
+            };
+            thread::sleep(Duration::from_millis(100));
+            h.send(SpotifyRequest::SignOut);
+            assert_eq!(waiting.join().unwrap().1, r#"{"close":true}"#);
+            h.expect(|e| is_status(e, &AriaPlayerStatus::Off));
+            assert_eq!(l.killed.load(Ordering::SeqCst), 1);
         }
 
         #[test]
