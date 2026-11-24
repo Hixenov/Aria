@@ -11,6 +11,7 @@ pub mod error;
 pub mod fake;
 pub mod http;
 pub mod model;
+pub mod player_page;
 pub mod secret;
 pub mod store;
 pub mod token;

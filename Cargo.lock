@@ -312,6 +312,7 @@ name = "aria-spotify"
 version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
+ "crossbeam-channel",
  "form_urlencoded",
  "getrandom 0.3.4",
  "keyring",
