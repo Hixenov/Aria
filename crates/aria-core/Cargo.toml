@@ -13,8 +13,10 @@ workspace = true
 aria-audio = { workspace = true }
 aria-library = { workspace = true }
 aria-spotify = { workspace = true }
+aria-update = { workspace = true }
 crossbeam-channel = { workspace = true }
 directories = { workspace = true }
+hex = { workspace = true }
 fluent-bundle = { workspace = true }
 fluent-syntax = { workspace = true }
 image = { workspace = true }
@@ -36,4 +38,5 @@ unic-langid = { workspace = true }
 lofty = { workspace = true }
 aria-audio = { workspace = true, features = ["test-support"] }
 aria-spotify = { workspace = true, features = ["test-support"] }
+serde_json = { workspace = true }
 tempfile = { workspace = true }

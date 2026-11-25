@@ -21,6 +21,7 @@ pub mod settings;
 pub mod soundboard;
 pub mod spotify_player;
 pub mod spotify_service;
+pub mod update_service;
 pub mod watch;
 
 // What `aria-app` needs from the crates below it, which it reaches only through this one.
