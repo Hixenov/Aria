@@ -14,7 +14,8 @@ use crate::{Asset, Endpoints, Release, UpdateError, parse_release};
 const ANSWER_CAP: u64 = 1024 * 1024;
 /// How long a question to GitHub may take.
 const ASK_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a download may wait for its next bytes.
+/// How long any read may wait for its next bytes. A slow download that keeps coming is never
+/// cut off.
 const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// How much of a download is read at a time.
 const CHUNK: usize = 64 * 1024;
@@ -27,13 +28,18 @@ pub struct Client {
 
 impl Client {
     pub fn new(endpoints: Endpoints) -> Client {
+        Client::build(endpoints, STALL_TIMEOUT)
+    }
+
+    /// A client whose reads may each wait up to `stall`.
+    fn build(endpoints: Endpoints, stall: Duration) -> Client {
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
             // No version: GitHub needs a User-Agent, not to know which Aria asks.
             .user_agent("Aria")
             .timeout_connect(Some(ASK_TIMEOUT))
             .timeout_recv_response(Some(ASK_TIMEOUT))
-            .timeout_recv_body(Some(STALL_TIMEOUT))
+            .timeout_per_read(Some(stall))
             .tls_config(
                 TlsConfig::builder()
                     .root_certs(RootCerts::PlatformVerifier)
@@ -286,6 +292,57 @@ mod tests {
         let result = client(&fake).download(&setup_asset(&fake, 11), &dest, 100, &mut |_, _| {});
         assert_eq!(result, Err(UpdateError::Answer));
         assert!(!dest.exists());
+    }
+
+    /// A server that sends `body` in `parts`, `gap` apart, to one request.
+    fn trickle(parts: &'static [&'static [u8]], gap: std::time::Duration) -> String {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let total: usize = parts.iter().map(|part| part.len()).sum();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+            );
+            for part in parts {
+                std::thread::sleep(gap);
+                let _ = stream.write_all(part);
+                let _ = stream.flush();
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn a_slow_but_steady_download_is_not_cut_off() {
+        // Each part arrives well within the stall limit; all of them together take longer.
+        let base = trickle(
+            &[b"hel", b"lo ", b"wor", b"ld"],
+            std::time::Duration::from_millis(150),
+        );
+        let client = Client::build(
+            Endpoints {
+                latest: format!("{base}{LATEST}"),
+                download_prefix: format!("{base}/"),
+            },
+            std::time::Duration::from_millis(400),
+        );
+        let asset = Asset {
+            name: "Aria-0.3.6-setup.exe".to_owned(),
+            size: 11,
+            url: format!("{base}{SETUP}"),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("f.part");
+        client.download(&asset, &dest, 100, &mut |_, _| {}).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"hello world");
     }
 
     #[test]

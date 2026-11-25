@@ -286,9 +286,8 @@ impl Service {
             }
             Ok(Found::NotReady(version)) => {
                 self.emit(UpdateEvent::Status(UpdateStatus::NotReady(version)));
-                // The row says "trying again soon": the user asked, so that holds with
-                // automatic checks off too.
-                self.retry(true);
+                // A click is one check: only automatic checks come back for it.
+                self.retry();
             }
             Ok(Found::Ready(version, path)) => {
                 self.emit(UpdateEvent::Status(UpdateStatus::Ready(version.clone())));
@@ -301,10 +300,22 @@ impl Service {
                         .with_arg("version", version.to_string()),
                 ));
             }
+            // A tag that is not a plain version is nothing to offer: the same as no news.
+            Err(UpdateError::NotARelease) => {
+                self.emit(UpdateEvent::Status(UpdateStatus::UpToDate));
+                self.checked();
+            }
+            // GitHub out of reach, or an answer that may be better soon: in an hour.
+            Err(error @ (UpdateError::Offline | UpdateError::Answer)) => {
+                tracing::info!(%error, "update check failed");
+                self.emit(UpdateEvent::Status(UpdateStatus::Failed(error)));
+                self.retry();
+            }
+            // The same release would fail the same way: not before the next day's check.
             Err(error) => {
                 tracing::info!(%error, "update check failed");
                 self.emit(UpdateEvent::Status(UpdateStatus::Failed(error)));
-                self.retry(false);
+                self.checked();
             }
         }
     }
@@ -317,8 +328,9 @@ impl Service {
         self.emit(UpdateEvent::Checked(at));
     }
 
-    fn retry(&mut self, even_if_off: bool) {
-        if self.auto || even_if_off {
+    /// Automatic checks only: the next one in an hour, not a day.
+    fn retry(&mut self) {
+        if self.auto {
             let at = Instant::now() + self.deps.retry;
             self.retry_at = Some(at);
             self.due = Some(at);
@@ -859,6 +871,61 @@ mod tests {
                 .any(|e| matches!(e, UpdateEvent::Checked(_))),
             "a release still being published is not a finished check"
         );
+    }
+
+    #[test]
+    fn a_click_with_checks_off_is_one_check_only() {
+        let h = Harness::installed();
+        h.fake
+            .reply("GET", LATEST, Reply::json(200, &release_without_sums()));
+        h.fake
+            .reply("GET", LATEST, Reply::json(200, &release_without_sums()));
+        h.settings(UpdateChecks::Off, None);
+        h.send(UpdateRequest::CheckNow);
+        let seen = h.until(is_final);
+        assert_eq!(
+            seen.last().and_then(status),
+            Some(&UpdateStatus::NotReady(v036()))
+        );
+        assert_eq!(h.quiet(), []);
+        assert_eq!(h.latest_count(), 1);
+    }
+
+    #[test]
+    fn a_wrong_checksum_waits_a_day() {
+        let h = Harness::installed();
+        h.serve_release(b"hello earth", Some(&good_sums()));
+        h.serve_release(b"hello earth", Some(&good_sums()));
+        h.settings(UpdateChecks::On, None);
+        let seen = h.until(|e| matches!(e, UpdateEvent::Checked(_)));
+        assert!(seen.contains(&UpdateEvent::Status(UpdateStatus::Failed(
+            UpdateError::Checksum
+        ))));
+        assert_eq!(h.quiet(), []);
+        assert_eq!(h.latest_count(), 1);
+    }
+
+    #[test]
+    fn an_odd_tag_counts_as_up_to_date() {
+        let h = Harness::installed();
+        h.fake.reply(
+            "GET",
+            LATEST,
+            Reply::json(200, &FIXTURE.replace("\"v0.3.6\"", "\"latest\"")),
+        );
+        h.fake.reply("GET", LATEST, Reply::json(200, FIXTURE));
+        h.settings(UpdateChecks::On, None);
+        let seen = h.until(|e| matches!(e, UpdateEvent::Checked(_)));
+        assert_eq!(
+            seen,
+            [
+                UpdateEvent::Status(UpdateStatus::Checking),
+                UpdateEvent::Status(UpdateStatus::UpToDate),
+                UpdateEvent::Checked(NOW),
+            ]
+        );
+        assert_eq!(h.quiet(), []);
+        assert_eq!(h.latest_count(), 1);
     }
 
     #[test]
