@@ -66,6 +66,8 @@ pub struct Seen {
     pub path: String,
     pub query: Vec<(String, String)>,
     pub authorization: Option<String>,
+    /// Every header, its name in lower case.
+    pub headers: Vec<(String, String)>,
     pub body: String,
 }
 
@@ -214,9 +216,11 @@ fn serve(mut stream: TcpStream, port: u16, state: &Mutex<State>) {
     let target = first.next().unwrap_or("").to_owned();
     let mut length = 0usize;
     let mut authorization = None;
+    let mut headers = Vec::new();
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             let name = name.trim().to_ascii_lowercase();
+            headers.push((name.clone(), value.trim().to_owned()));
             if name == "content-length" {
                 length = value.trim().parse().unwrap_or(0);
             } else if name == "authorization" {
@@ -243,6 +247,7 @@ fn serve(mut stream: TcpStream, port: u16, state: &Mutex<State>) {
             path: path.to_owned(),
             query,
             authorization,
+            headers,
             body,
         });
         state.replies.get_mut(&key).and_then(next)

@@ -327,6 +327,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aria-update"
+version = "0.3.4"
+dependencies = [
+ "aria-spotify",
+ "hex",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

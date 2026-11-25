@@ -1,0 +1,26 @@
+{
+  "url": "https://api.github.com/repos/Hixenov/Aria/releases/1",
+  "html_url": "https://github.com/Hixenov/Aria/releases/tag/v0.3.6",
+  "tag_name": "v0.3.6",
+  "name": "Aria 0.3.6",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+    {
+      "name": "Aria-0.3.6-setup.exe",
+      "size": 11,
+      "content_type": "application/x-msdownload",
+      "browser_download_url": "{base}/Hixenov/Aria/releases/download/v0.3.6/Aria-0.3.6-setup.exe"
+    },
+    {
+      "name": "aria.exe",
+      "size": 20,
+      "browser_download_url": "{base}/Hixenov/Aria/releases/download/v0.3.6/aria.exe"
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "size": 160,
+      "browser_download_url": "{base}/Hixenov/Aria/releases/download/v0.3.6/SHA256SUMS.txt"
+    }
+  ]
+}
