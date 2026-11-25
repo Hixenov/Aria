@@ -84,6 +84,19 @@ pub enum ReplayGainMode {
     Album,
 }
 
+/// Whether Aria may ask GitHub for new versions on its own.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateChecks {
+    /// The user has not been asked yet; Aria asks once and checks nothing until then.
+    #[default]
+    NotAsked,
+    /// At most once a day.
+    On,
+    /// Never on its own; "Check for updates" still checks when clicked.
+    Off,
+}
+
 /// The record's look in the full-screen mode.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -505,6 +518,12 @@ pub struct Settings {
     /// The mini-player's window.
     #[serde(deserialize_with = "lenient_or_default")]
     pub mini_player: MiniPlayerSettings,
+    /// Whether Aria checks for updates on its own.
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub update_checks: UpdateChecks,
+    /// When the last check finished, in seconds since 1970 (UTC).
+    #[serde(deserialize_with = "lenient_or_default")]
+    pub update_checked_at: Option<u64>,
 }
 
 impl Default for Settings {
@@ -544,6 +563,8 @@ impl Default for Settings {
             vinyl_finish: VinylFinish::Black,
             vinyl_rpm: VINYL_RPM_DEFAULT,
             mini_player: MiniPlayerSettings::default(),
+            update_checks: UpdateChecks::NotAsked,
+            update_checked_at: None,
         }
     }
 }
@@ -592,6 +613,42 @@ fn level(value: f32, max: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_checks_start_not_asked() {
+        let s = Settings::default();
+        assert_eq!(s.update_checks, UpdateChecks::NotAsked);
+        assert_eq!(s.update_checked_at, None);
+    }
+
+    #[test]
+    fn update_settings_round_trip() {
+        let on = Settings {
+            update_checks: UpdateChecks::On,
+            update_checked_at: Some(1_700_000_000),
+            ..Settings::default()
+        };
+        let text = toml::to_string(&on).unwrap();
+        assert!(text.contains("update_checks = \"on\""), "{text}");
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back.update_checks, UpdateChecks::On);
+        assert_eq!(back.update_checked_at, Some(1_700_000_000));
+        let off: Settings = toml::from_str("update_checks = \"off\"").unwrap();
+        assert_eq!(off.update_checks, UpdateChecks::Off);
+    }
+
+    #[test]
+    fn an_unknown_update_choice_reads_as_not_asked() {
+        let read: Settings = toml::from_str(
+            "update_checks = \"sometimes\"
+update_checked_at = \"x\"
+shuffle = true",
+        )
+        .unwrap();
+        assert_eq!(read.update_checks, UpdateChecks::NotAsked);
+        assert_eq!(read.update_checked_at, None);
+        assert!(read.shuffle);
+    }
 
     #[test]
     fn mini_player_defaults() {
