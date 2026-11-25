@@ -91,8 +91,18 @@ Root: HKA; Subkey: "Software\Classes\Applications\aria.exe\shell\open\command"; 
 
 [Run]
 Filename: "{app}\aria.exe"; Description: "{cm:LaunchProgram,Aria}"; Flags: nowait postinstall skipifsilent
+; "Restart to update" (since 0.3.5): Aria runs this installer silently with /RELAUNCH=1 and quits;
+; this starts the new Aria once the files are replaced. Any other silent install starts nothing.
+Filename: "{app}\aria.exe"; Flags: nowait skipifnotsilent; Check: Relaunch
 
 ; For checking: ISCC /DSavePreprocessed=<file> writes the script as compiled.
 #ifdef SavePreprocessed
   #expr SaveToFile(SavePreprocessed)
 #endif
+
+; The Pascal code comes last: any line after it, a comment too, would be read as code.
+[Code]
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;

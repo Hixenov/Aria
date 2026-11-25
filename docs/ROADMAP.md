@@ -27,7 +27,8 @@ Aria opens, the one route Spotify allows for other apps.
    Spotify Connect remote control. No in-app audio streaming. 0.3.0 brings the core: sign-in,
    your saved tracks, albums, followed artists and playlists, search, and playing on the device
    you choose from the player bar. Liking tracks and adding to or removing from your own Spotify
-   playlists came in 0.3.4. Spotify's limits for apps in development mode apply: five allow-listed accounts, search
+   playlists came in 0.3.4. An update checker that downloads and installs new versions, once
+   the user agrees, came in 0.3.5. Spotify's limits for apps in development mode apply: five allow-listed accounts, search
    results capped at 10 per kind, no artist top tracks (an artist plays as a whole).
 4. **Desktop experience.** System tray (including the minimize-to-tray preference stored in
    Phase 1), media keys, shortcuts, notifications, startup integration and the mini-player.

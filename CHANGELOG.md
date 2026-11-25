@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-25 (update checker)
+
+Checked with automated tests on Windows against a local fake GitHub only. Aria has not yet updated itself from a real release: the first time it can is from 0.3.5 to the next version. See `docs/testing/0.3.5-manual-check.md`.
+
+### Added
+
+- **Aria looks for new versions, once you agree.** The first start asks "Keep Aria up to date?" ("Turn on" or "Not now"); nothing is checked until you say yes. Settings, Updates has "Check for updates automatically", "Check for updates" (one check, whenever you click it) and the status: up to date, downloading with its percentage, ready, a new version is out, or why a check failed.
+- **Restart to update.** With checks on, the installed Windows Aria downloads a newer release's installer, checks it against the release's `SHA256SUMS.txt`, and shows "Restart to update" in the sidebar and in Settings. A click checks the installer again, closes Aria, runs the installer and starts the new Aria. Nothing installs by itself.
+- A portable Aria, the loose `aria.exe`, macOS and Linux show "Aria <version> is out" with a button that opens the release page; they download nothing.
+
+### Changed
+
+- Version 0.3.5. Two new settings, `update_checks` and `update_checked_at`; older settings files read as "not asked yet".
+- "Check for updates" asks GitHub instead of opening the releases page.
+- The installer starts Aria after a silent install when it is given `/RELAUNCH=1` (only "Restart to update" does that).
+- Privacy: with update checks on, Aria asks GitHub once a day; the User-Agent is `Aria`, with no version. See `docs/PRIVACY.md`, "Updates".
+
 ## [0.3.4] - 2026-11-24 (Spotify likes and playlists)
 
 Checked with automated tests on Windows against a local fake Spotify only. Nobody has liked a track or changed a playlist on a real Spotify account from Aria yet. See `docs/testing/0.3.4-manual-check.md`.

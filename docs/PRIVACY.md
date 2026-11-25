@@ -1,7 +1,8 @@
 # Privacy
 
 Aria sends nothing over the network unless you connect Spotify (since 0.3.0; see "Spotify"
-below). Until then it makes no network requests at runtime, and it has no telemetry. Nothing
+below) or turn on update checks (since 0.3.5; see "Updates" below). Until then it makes no
+network requests at runtime, and it has no telemetry. Nothing
 from your music library, tags or folders is sent anywhere, Spotify included.
 
 ## What Aria stores
@@ -160,6 +161,33 @@ disconnect, it makes no request to Spotify or anyone else.
   remove Aria's access on your Spotify account page (Apps).
 - **Audio.** Aria plays no Spotify audio and records nothing: Spotify plays on your own devices,
   and Aria only asks it to.
+
+## Updates (since 0.3.5)
+
+- **Asked first.** The first time 0.3.5 or later starts, a card asks "Keep Aria up to date?". Until
+  you answer "Turn on", Aria checks nothing by itself. "Not now" and Settings, Updates, "Check for
+  updates automatically" turn it off; "Check for updates" checks once, when you click it.
+- **What is sent.** With checks on, at most once a day (and 10 seconds after start, if a day has
+  passed), Aria asks `https://api.github.com/repos/Hixenov/Aria/releases/latest` for the latest
+  full release. On the installed Windows Aria, when that release is newer, it then downloads that
+  release's `SHA256SUMS.txt` and `Aria-<version>-setup.exe` from
+  `https://github.com/Hixenov/Aria/releases/download/` (GitHub sends the files from its own file
+  servers). Each request carries the User-Agent `Aria`, with no version, and nothing else about
+  you or your music. GitHub sees your IP address, as any website does. A portable Aria, the loose
+  `aria.exe`, macOS and Linux only ask about the latest release and show its page; they download
+  nothing.
+- **What is stored.** In `settings.toml`: your choice (`update_checks`) and when the last check
+  finished (`update_checked_at`, seconds since 1970). In the cache folder's `updates` folder: the
+  downloaded installer and `Aria-<version>-setup.exe.sha256`, the checksum it matched. A download
+  in progress is a `.part` file. Aria deletes installers that are not newer than itself, and any
+  `.part` file, when it starts.
+- **Installing.** Nothing installs until you click "Restart to update". Aria then checks the
+  installer against its checksum again, closes as on any quit, and starts it with `/SILENT
+  /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`; the installer shows its progress and starts the new
+  Aria.
+- **What the checksum proves.** `SHA256SUMS.txt` is in the same GitHub release as the installer.
+  It catches a broken or incomplete download; it does not protect against someone who takes over
+  the GitHub account, who could change both. The installer is not code-signed.
 
 ## The microphone (since 0.2.3)
 

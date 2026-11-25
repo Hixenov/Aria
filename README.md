@@ -101,6 +101,8 @@ Settings, Soundboard chooses where sounds go: "My device" (the music's device, t
 
 ## Upgrading
 
+Since 0.3.5 Aria can look for new versions itself, once you agree: the first start asks "Keep Aria up to date?", and Settings, Updates has "Check for updates automatically" and "Check for updates". With checks on, Aria asks GitHub once a day for the latest release (GitHub sees your IP address; nothing else is sent). The installed Windows Aria downloads a newer installer, checks it against the release's `SHA256SUMS.txt`, and shows "Restart to update" in the sidebar and in Settings: it installs only when you click it, then starts the new version. A portable Aria, macOS and Linux only say that a new version is out and open its page. The checksum catches a broken download, not a taken-over GitHub account, and the installer is not signed; see [docs/PRIVACY.md](docs/PRIVACY.md). The first real "Restart to update" can only happen from 0.3.5 to a later release, and has not been tried yet.
+
 Install a new version over the old one; the library, playlists and settings are kept. A library database that a newer version has upgraded (0.2.1 and 0.2.2 did) no longer opens in an older one: copy the data folder first if you may want to go back. Close older copies of Aria before starting a new one.
 
 ## Build, run, test
