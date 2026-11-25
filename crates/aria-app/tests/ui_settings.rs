@@ -384,6 +384,7 @@ fn persisting_settings_page(file: &Path) -> Harness<'static, AriaApp> {
     let store = SettingsStore::new(file.to_path_buf());
     let services = BackendServices {
         spotify: None,
+        update: None,
         library: None,
         output: Box::new(FakeFactory::new(OutputFormat {
             sample_rate: 48_000,
@@ -784,6 +785,7 @@ fn settings_only(
                     artwork: None,
                     spotify: &Default::default(),
                     covers: &mut Default::default(),
+                    update: &aria_core::update_service::UpdateStatus::Idle,
                 };
                 pages::show(Route::Settings, ui, &mut ctx);
             },

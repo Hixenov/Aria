@@ -15,8 +15,13 @@ mod spotify_lists;
 mod test_support;
 
 use aria_core::{
-    DeviceInfo, hotkey::Hotkey, i18n::Localizer, settings::Settings, soundboard::SoundboardState,
+    DeviceInfo,
+    hotkey::Hotkey,
+    i18n::Localizer,
+    settings::Settings,
+    soundboard::SoundboardState,
     spotify_service::SpotifyRequest,
+    update_service::{UpdateRequest, UpdateStatus},
 };
 use aria_library::{Collections, FolderId, PlaylistId, SoundId, TrackId};
 use eframe::egui::Ui;
@@ -67,11 +72,15 @@ pub struct PageCtx<'a> {
     pub spotify: &'a SpotifyUi,
     /// Spotify's covers.
     pub covers: &'a mut RemoteCovers,
+    /// Where the update checker stands.
+    pub update: &'a UpdateStatus,
 }
 
 /// A request from a page to the app.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PageAction {
+    /// For the update checker: check now, or install what was downloaded.
+    Update(UpdateRequest),
     /// Apply and save these settings.
     UpdateSettings(Settings),
     /// A request for Spotify. For a sign-in the app fills in the page the browser shows.

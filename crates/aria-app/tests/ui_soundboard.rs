@@ -105,6 +105,7 @@ fn page(route: Route, settings: Settings, sounds: Vec<SoundView>) -> Harness<'st
                     artwork: None,
                     spotify: &Default::default(),
                     covers: &mut Default::default(),
+                    update: &aria_core::update_service::UpdateStatus::Idle,
                 };
                 pages::show(page.route, ui, &mut ctx);
             },

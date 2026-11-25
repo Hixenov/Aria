@@ -5,6 +5,7 @@ use aria_core::{
     i18n::{FluentArgs, Localizer},
     settings::{Language, Settings},
     soundboard::SoundboardState,
+    update_service::UpdateStatus,
 };
 use aria_library::Collections;
 use eframe::egui::{Theme, Ui};
@@ -28,6 +29,8 @@ pub struct World {
     pub settings: Settings,
     pub spotify: SpotifyUi,
     pub covers: RemoteCovers,
+    /// The update checker's status the page is shown.
+    pub update: UpdateStatus,
     tr: Localizer,
 }
 
@@ -44,6 +47,7 @@ impl World {
             settings: Settings::default(),
             spotify: SpotifyUi::default(),
             covers: RemoteCovers::default(),
+            update: UpdateStatus::Idle,
             tr: Localizer::new(Language::En).expect("the English locale loads"),
         }
     }
@@ -67,6 +71,7 @@ impl World {
             artwork: None,
             spotify: &self.spotify,
             covers: &mut self.covers,
+            update: &self.update,
         };
         draw(ui, &mut ctx)
     }

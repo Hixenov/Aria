@@ -180,6 +180,11 @@ fn main() -> anyhow::Result<()> {
         spotify: Some(aria_core::spotify_service::SpotifyDeps::system(
             paths.as_ref().map(|p| p.cache_dir.clone()),
         )),
+        // Makes no request until the user turns update checks on or clicks "Check for updates".
+        update: Some(aria_core::update_service::UpdateDeps::system(
+            paths.as_ref().map(|p| p.cache_dir.clone()),
+            install_kind(),
+        )),
     };
     let backend = match Backend::start(
         sink,
@@ -226,6 +231,7 @@ fn main() -> anyhow::Result<()> {
         clock: None,
         hotkeys,
         instance,
+        launcher: Some(Box::new(aria_app::update::launch_installer)),
     };
     if let Some(instance) = &deps.instance {
         // Another copy's request wakes the window, minimized or not.
@@ -408,6 +414,17 @@ fn repaint_waker(ctx: Arc<OnceLock<egui::Context>>) -> Waker {
             ctx.request_repaint();
         }
     })
+}
+
+/// Whether this Aria was installed by the Windows installer, so it can update itself.
+fn install_kind() -> aria_update::InstallKind {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent()
+                .map(|dir| aria_update::install_kind(dir, cfg!(windows)))
+        })
+        .unwrap_or(aria_update::InstallKind::TellOnly)
 }
 
 #[cfg(test)]

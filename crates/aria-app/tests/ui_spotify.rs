@@ -77,6 +77,7 @@ fn harness(route: Route, spotify: SpotifyUi) -> Harness<'static, Page> {
                     artwork: None,
                     spotify: &page.spotify,
                     covers: &mut page.covers,
+                    update: &aria_core::update_service::UpdateStatus::Idle,
                 };
                 pages::show(page.route, ui, &mut ctx);
                 // What the app does with a search: the field keeps the text.

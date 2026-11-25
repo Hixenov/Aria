@@ -11,6 +11,7 @@ pub mod nav;
 mod shortcuts;
 pub mod spotify;
 pub mod ui;
+pub mod update;
 
 pub use hotkeys::SystemHotkeys;
 

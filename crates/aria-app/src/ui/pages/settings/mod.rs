@@ -8,7 +8,8 @@ mod spotify;
 
 use aria_core::{
     i18n::Localizer,
-    settings::{Language, LogLevel, Rgb, Settings, Theme},
+    settings::{Language, LogLevel, Rgb, Settings, Theme, UpdateChecks},
+    update_service::{UpdateRequest, UpdateStatus},
 };
 use aria_library::FolderId;
 use eframe::egui::{
@@ -31,9 +32,6 @@ use crate::{
 
 /// Aria's version, from its manifest.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Where the newest release is. "Check for updates" opens it in the browser; Aria itself
-/// makes no request.
-const RELEASES_URL: &str = "https://github.com/Hixenov/Aria/releases/latest";
 /// Aria's license, from its manifest: the SPDX expression `MIT OR Apache-2.0`.
 const LICENSE: &str = env!("CARGO_PKG_LICENSE");
 
@@ -113,6 +111,7 @@ pub fn show(ui: &mut Ui, ctx: &mut PageCtx<'_>) {
             library::show(ui, ctx, &mut settings);
             spotify::show(ui, ctx);
             advanced(ui, ctx, &mut settings.log_level);
+            updates(ui, ctx, &mut settings);
             about(ui, ctx.tr, &ctx.palette);
         });
     if settings != *ctx.settings {
@@ -192,6 +191,53 @@ fn advanced(ui: &mut Ui, ctx: &mut PageCtx<'_>, log_level: &mut LogLevel) {
     });
 }
 
+/// Automatic checks, "Check for updates", and where the checker stands.
+fn updates(ui: &mut Ui, ctx: &mut PageCtx<'_>, s: &mut Settings) {
+    let tr = ctx.tr;
+    let p = ctx.palette;
+    group(ui, &p, &tr.tr("settings-updates"), |ui| {
+        let auto = tr.tr("settings-update-auto");
+        let hint = tr.tr("settings-update-auto-hint");
+        row(ui, &p, &auto, |ui| {
+            let mut on = s.update_checks == UpdateChecks::On;
+            let response = ui
+                .add(Checkbox::without_text(&mut on))
+                .accessible_name(&*auto);
+            ui.ctx()
+                .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
+            if response.changed() {
+                s.update_checks = if on {
+                    UpdateChecks::On
+                } else {
+                    UpdateChecks::Off
+                };
+            }
+        });
+        caption(ui, &p, &hint, TextStyle::Small);
+        divider(ui);
+        let status = crate::update::status_text(tr, ctx.update);
+        row(ui, &p, &status, |ui| {
+            if ui
+                .button(tr.tr("settings-check-updates"))
+                .on_hover_text(tr.tr("settings-check-updates-hint"))
+                .clicked()
+            {
+                ctx.out.push(PageAction::Update(UpdateRequest::CheckNow));
+            }
+            let restart = matches!(ctx.update, UpdateStatus::Ready(_))
+                && ui.button(tr.tr("update-restart")).clicked();
+            if restart {
+                ctx.out.push(PageAction::Update(UpdateRequest::Install));
+            }
+            if let UpdateStatus::Available { page, .. } = ctx.update
+                && ui.button(tr.tr("update-open-page")).clicked()
+            {
+                crate::update::open_page(ui, page);
+            }
+        });
+    });
+}
+
 /// Version, license and third-party notices.
 fn about(ui: &mut Ui, tr: &Localizer, p: &Palette) {
     group(ui, p, &tr.tr("settings-about"), |ui| {
@@ -202,18 +248,6 @@ fn about(ui: &mut Ui, tr: &Localizer, p: &Palette) {
             });
             divider(ui);
         }
-        let updates = tr.tr("settings-updates");
-        row(ui, p, &updates, |ui| {
-            if ui
-                .button(tr.tr("settings-check-updates"))
-                .on_hover_text(tr.tr("settings-check-updates-hint"))
-                .clicked()
-            {
-                ui.ctx()
-                    .open_url(eframe::egui::OpenUrl::new_tab(RELEASES_URL));
-            }
-        });
-        divider(ui);
         ui.add_space(SPACE[2]);
         caption(ui, p, &tr.tr("settings-third-party"), TextStyle::Body);
     });
@@ -493,7 +527,8 @@ fn settings_dialog(ui: &Ui, ctx: &mut PageCtx<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use aria_core::settings::ReplayGainMode;
+    use aria_core::settings::{ReplayGainMode, UpdateChecks};
+    use aria_core::update_service::{UpdateRequest, UpdateStatus};
     use aria_library::Collections;
     use eframe::egui::accesskit::Role;
     use egui_kittest::kittest::Queryable as _;
@@ -551,14 +586,14 @@ mod tests {
         assert_eq!(settings.replay_gain, ReplayGainMode::Album);
     }
 
-    #[test]
-    fn check_for_updates_opens_the_releases_page_in_the_browser() {
-        let mut harness = page();
-        let label = harness.state().english("settings-check-updates");
-        click_on(&mut harness, Role::Button, &label);
-        // The frame that takes the click asks for the browser; a later one asks nothing.
-        harness.step();
-        let opened: Vec<String> = harness
+    fn page_with(update: UpdateStatus) -> egui_kittest::Harness<'static, World> {
+        let mut world = World::new(Collections::default(), LibraryView::default());
+        world.update = update;
+        harness(world, |ui, world| world.page(ui, show))
+    }
+
+    fn opened_urls(harness: &egui_kittest::Harness<'static, World>) -> Vec<String> {
+        harness
             .output()
             .platform_output
             .commands
@@ -567,8 +602,102 @@ mod tests {
                 eframe::egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
                 _ => None,
             })
-            .collect();
-        assert_eq!(opened, [RELEASES_URL]);
+            .collect()
+    }
+
+    fn v036() -> aria_update::Version {
+        aria_update::Version::new(0, 3, 6)
+    }
+
+    #[test]
+    fn check_for_updates_sends_check_now() {
+        let mut harness = page();
+        let label = harness.state().english("settings-check-updates");
+        click_on(&mut harness, Role::Button, &label);
+        harness.run();
+        assert_eq!(
+            harness.state().out,
+            [PageAction::Update(UpdateRequest::CheckNow)]
+        );
+        // Nothing opens in the browser any more.
+        harness.step();
+        assert_eq!(opened_urls(&harness), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_automatic_update_switch_turns_checks_on() {
+        let mut harness = page();
+        let label = harness.state().english("settings-update-auto");
+        click_on(&mut harness, Role::CheckBox, &label);
+        harness.run();
+        let [PageAction::UpdateSettings(settings)] = harness.state().out.as_slice() else {
+            panic!("expected one UpdateSettings, got {:?}", harness.state().out);
+        };
+        assert_eq!(settings.update_checks, UpdateChecks::On);
+    }
+
+    #[test]
+    fn the_automatic_update_switch_turns_checks_off() {
+        let mut world = World::new(Collections::default(), LibraryView::default());
+        world.settings.update_checks = UpdateChecks::On;
+        let mut harness = harness(world, |ui, world| world.page(ui, show));
+        let label = harness.state().english("settings-update-auto");
+        click_on(&mut harness, Role::CheckBox, &label);
+        harness.run();
+        let [PageAction::UpdateSettings(settings)] = harness.state().out.as_slice() else {
+            panic!("expected one UpdateSettings, got {:?}", harness.state().out);
+        };
+        assert_eq!(settings.update_checks, UpdateChecks::Off);
+    }
+
+    #[test]
+    fn the_update_row_shows_the_status() {
+        let mut args = aria_core::i18n::FluentArgs::new();
+        args.set("version", "0.3.6");
+        args.set("percent", 42);
+        let harness = page_with(UpdateStatus::Downloading {
+            version: v036(),
+            percent: 42,
+        });
+        let text = harness.state().english_with("update-downloading", &args);
+        assert_eq!(text, "Downloading 0.3.6\u{2026} 42%");
+        harness.get_by_label(&text);
+
+        let harness = page_with(UpdateStatus::Failed(aria_update::UpdateError::Offline));
+        let mut args = aria_core::i18n::FluentArgs::new();
+        args.set("reason", harness.state().english("update-reason-offline"));
+        let text = harness.state().english_with("update-failed", &args);
+        assert_eq!(text, "Couldn't check: no connection to GitHub");
+        harness.get_by_label(&text);
+
+        let harness = page();
+        let idle = harness.state().english("update-idle");
+        harness.get_by_label(&idle);
+    }
+
+    #[test]
+    fn ready_offers_restart_to_update() {
+        let mut harness = page_with(UpdateStatus::Ready(v036()));
+        let label = harness.state().english("update-restart");
+        click_on(&mut harness, Role::Button, &label);
+        harness.run();
+        assert_eq!(
+            harness.state().out,
+            [PageAction::Update(UpdateRequest::Install)]
+        );
+    }
+
+    #[test]
+    fn available_opens_the_release_page() {
+        let page_url = "https://github.com/Hixenov/Aria/releases/tag/v0.3.6".to_owned();
+        let mut harness = page_with(UpdateStatus::Available {
+            version: v036(),
+            page: page_url.clone(),
+        });
+        let label = harness.state().english("update-open-page");
+        click_on(&mut harness, Role::Button, &label);
+        harness.step();
+        assert_eq!(opened_urls(&harness), [page_url]);
     }
 
     #[test]

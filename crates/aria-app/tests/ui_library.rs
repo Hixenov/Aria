@@ -116,6 +116,7 @@ fn harness(snapshot: LibrarySnapshot) -> Harness<'static, Page> {
                     artwork: None,
                     spotify: &Default::default(),
                     covers: &mut Default::default(),
+                    update: &aria_core::update_service::UpdateStatus::Idle,
                 };
                 pages::show(Route::LocalMusic, ui, &mut ctx);
             },

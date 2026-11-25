@@ -21,6 +21,7 @@ embed-resource = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 aria-core = { workspace = true }
+aria-update = { workspace = true }
 aria-library = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true }

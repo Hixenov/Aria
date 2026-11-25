@@ -2,6 +2,7 @@
 
 use aria_core::event::ActivePlayer;
 use aria_core::spotify_service::{SpotifyAccount, SpotifyEvent, SpotifyRequest};
+use aria_core::update_service::{UpdateEvent, UpdateRequest, UpdateStatus};
 
 use crate::spotify::{RemoteCovers, SpotifyUi};
 use crate::ui::mini::{
@@ -124,6 +125,8 @@ pub struct AppDeps {
     /// This copy's hold on the data folder, kept until the app ends, and the requests of later
     /// copies to show the window.
     pub instance: Option<Instance>,
+    /// Starts the downloaded installer once Aria has shut down. Without it nothing is started.
+    pub launcher: Option<crate::update::Launcher>,
 }
 
 impl AppDeps {
@@ -235,6 +238,10 @@ pub struct AriaApp {
     spotify: SpotifyUi,
     /// Spotify's covers.
     covers: RemoteCovers,
+    /// Where the update checker stands.
+    update: UpdateStatus,
+    /// The checked installer to start once the backend has shut down ("Restart to update").
+    install_on_exit: Option<std::path::PathBuf>,
     /// Whether the window was shown at the last frame, as last told to the backend.
     window_shown: Option<bool>,
     /// The full-screen record.
@@ -327,6 +334,8 @@ impl AriaApp {
             startup: None,
             spotify: SpotifyUi::default(),
             covers: RemoteCovers::default(),
+            update: UpdateStatus::Idle,
+            install_on_exit: None,
             window_shown: None,
             vinyl: VinylMode::default(),
             mini: MiniPlayer::default(),
@@ -1052,6 +1061,24 @@ impl AriaApp {
                 }
                 self.spotify.apply(event);
             }
+            Event::Update(event) => self.update_event(ctx, event),
+        }
+    }
+
+    fn update_event(&mut self, ctx: &egui::Context, event: UpdateEvent) {
+        match event {
+            UpdateEvent::Status(status) => self.update = status,
+            UpdateEvent::Checked(at) => {
+                let mut settings = self.settings.clone();
+                settings.update_checked_at = Some(at);
+                self.update_settings(ctx, settings);
+            }
+            UpdateEvent::Install(installer) => {
+                // Aria closes as on any quit, saving everything; `on_exit` starts the installer.
+                self.install_on_exit = Some(installer);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            UpdateEvent::Notice(notice) => self.notify(ctx, notice),
         }
     }
 
@@ -1147,6 +1174,7 @@ impl AriaApp {
             &self.history,
             self.settings.sidebar_width,
             mem::take(&mut self.sidebar_width_dirty),
+            &self.update,
         );
         match output.action {
             Some(SidebarAction::Navigate(route)) => self.history.navigate(route),
@@ -1155,6 +1183,9 @@ impl AriaApp {
             }
             Some(SidebarAction::Forward) => {
                 self.history.forward();
+            }
+            Some(SidebarAction::RestartToUpdate) => {
+                self.send(Command::Update(UpdateRequest::Install));
             }
             None => {}
         }
@@ -1194,6 +1225,7 @@ impl AriaApp {
             artwork: self.artwork.as_mut(),
             spotify: &self.spotify,
             covers: &mut self.covers,
+            update: &self.update,
         };
         let route = self.history.current();
         let frame = Frame::new()
@@ -1201,7 +1233,14 @@ impl AriaApp {
             .inner_margin(Margin::symmetric(SPACE[4] as i8, SPACE[3] as i8));
         CentralPanel::default().frame(frame).show(ui, |ui| {
             let main = UiBuilder::new().accessibility_role(Role::Main);
-            ui.scope_builder(main, |ui| pages::show(route, ui, &mut page));
+            ui.scope_builder(main, |ui| {
+                if let Some(answered) =
+                    crate::update::card(ui, page.tr, &page.palette, page.settings)
+                {
+                    page.out.push(PageAction::UpdateSettings(answered));
+                }
+                pages::show(route, ui, &mut page);
+            });
         });
         for action in actions {
             self.handle_page_action(ctx, action);
@@ -1224,6 +1263,7 @@ impl AriaApp {
     fn handle_page_action(&mut self, ctx: &egui::Context, action: PageAction) {
         match action {
             PageAction::UpdateSettings(settings) => self.update_settings(ctx, settings),
+            PageAction::Update(request) => self.send(Command::Update(request)),
             PageAction::Spotify(SpotifyRequest::SignIn { .. }) => {
                 let done = self.localizer.tr("spotify-signed-in-page");
                 let failed = self.localizer.tr("spotify-sign-in-failed-page");
@@ -1699,6 +1739,19 @@ impl eframe::App for AriaApp {
             let clean = backend.shutdown(SHUTDOWN_TIMEOUT);
             tracing::debug!(clean, "backend stopped");
         }
+        // After the settings are written: the installer waits for Aria to be gone, then
+        // replaces it and starts the new one.
+        if let Some(installer) = self.install_on_exit.take()
+            && let Some(launch) = &self.deps.launcher
+        {
+            let name = installer
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            match launch(&installer) {
+                Ok(()) => tracing::info!(?name, "started the update"),
+                Err(error) => tracing::warn!(?name, %error, "could not start the update"),
+            }
+        }
     }
 
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
@@ -1777,6 +1830,7 @@ mod tests {
         // Read-only: nothing is written, and a reset is still answered.
         let services = BackendServices {
             spotify: None,
+            update: None,
             library: None,
             output: Box::new(FakeFactory::new(OutputFormat {
                 sample_rate: 48_000,
@@ -2651,6 +2705,200 @@ mod tests {
         assert!(!harness.state().modal_open());
     }
 
+    mod updates {
+        use super::*;
+        use aria_core::settings::UpdateChecks;
+        use aria_core::update_service::{UpdateEvent, UpdateRequest, UpdateStatus};
+        use egui_kittest::kittest::Queryable as _;
+
+        fn v036() -> aria_update::Version {
+            aria_update::Version::new(0, 3, 6)
+        }
+
+        fn sent_settings(app: &AriaApp) -> Vec<Settings> {
+            app.sent
+                .borrow()
+                .iter()
+                .filter_map(|command| match command {
+                    Command::UpdateSettings(settings) => Some(settings.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn the_card_shows_until_answered() {
+            let mut harness = dialog_harness(aria_library::Collections::default());
+            let title = english("update-card-title");
+            harness.get_by_label(&title);
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, &english("update-card-later"))
+                .click();
+            harness.run();
+            let saved = sent_settings(harness.state());
+            assert_eq!(
+                saved.last().map(|s| s.update_checks),
+                Some(UpdateChecks::Off)
+            );
+            assert_eq!(harness.state().settings.update_checks, UpdateChecks::Off);
+            assert!(harness.query_by_label(&title).is_none());
+        }
+
+        #[test]
+        fn turn_on_saves_on() {
+            let mut harness = dialog_harness(aria_library::Collections::default());
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, &english("update-card-on"))
+                .click();
+            harness.run();
+            let saved = sent_settings(harness.state());
+            assert_eq!(
+                saved.last().map(|s| s.update_checks),
+                Some(UpdateChecks::On)
+            );
+            assert!(
+                harness
+                    .query_by_label(&english("update-card-title"))
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn an_answered_card_stays_away() {
+            let mut app = app(vec![]);
+            app.settings.update_checks = UpdateChecks::Off;
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1200.0, 780.0))
+                .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+            harness.run();
+            assert!(
+                harness
+                    .query_by_label(&english("update-card-title"))
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn checked_is_stored_in_settings() {
+            let ctx = egui::Context::default();
+            let mut app = plain_app();
+            app.handle_event(&ctx, Event::Update(UpdateEvent::Checked(1_800_000_000)));
+            assert_eq!(app.settings.update_checked_at, Some(1_800_000_000));
+            assert_eq!(
+                sent_settings(&app).last().and_then(|s| s.update_checked_at),
+                Some(1_800_000_000)
+            );
+        }
+
+        #[test]
+        fn the_sidebar_button_appears_only_when_ready_or_available() {
+            let mut harness = dialog_harness(aria_library::Collections::default());
+            let restart = english("update-restart");
+            assert!(harness.query_by_label(&restart).is_none());
+            let ctx = harness.ctx.clone();
+            harness.state_mut().handle_event(
+                &ctx,
+                Event::Update(UpdateEvent::Status(UpdateStatus::Downloading {
+                    version: v036(),
+                    percent: 10,
+                })),
+            );
+            harness.run();
+            assert!(harness.query_by_label(&restart).is_none());
+            harness.state_mut().handle_event(
+                &ctx,
+                Event::Update(UpdateEvent::Status(UpdateStatus::Ready(v036()))),
+            );
+            harness.run();
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, &restart)
+                .click();
+            harness.run();
+            assert_eq!(
+                sent_like(harness.state(), &Command::Update(UpdateRequest::Install)),
+                1
+            );
+        }
+
+        #[test]
+        fn the_sidebar_says_a_new_version_is_out() {
+            let mut harness = dialog_harness(aria_library::Collections::default());
+            let ctx = harness.ctx.clone();
+            harness.state_mut().handle_event(
+                &ctx,
+                Event::Update(UpdateEvent::Status(UpdateStatus::Available {
+                    version: v036(),
+                    page: "https://github.com/Hixenov/Aria/releases/tag/v0.3.6".to_owned(),
+                })),
+            );
+            harness.run();
+            let mut args = aria_core::i18n::FluentArgs::new();
+            args.set("version", "0.3.6");
+            let label = Localizer::new(Language::En)
+                .unwrap()
+                .tr_args("update-available", &args)
+                .into_owned();
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, &label)
+                .click();
+            harness.step();
+            let opened: Vec<String> = harness
+                .output()
+                .platform_output
+                .commands
+                .iter()
+                .filter_map(|command| match command {
+                    egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                opened,
+                ["https://github.com/Hixenov/Aria/releases/tag/v0.3.6"]
+            );
+        }
+
+        #[test]
+        fn install_closes_and_launches_after_shutdown() {
+            let launched: Arc<std::sync::Mutex<Vec<PathBuf>>> = Arc::default();
+            let mut app = app(vec![]);
+            {
+                let launched = Arc::clone(&launched);
+                app.deps.launcher = Some(Box::new(move |path: &std::path::Path| {
+                    launched
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(path.to_path_buf());
+                    Ok(())
+                }));
+            }
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1200.0, 780.0))
+                .build_ui_state(|ui, app: &mut AriaApp| app.show(ui), app);
+            harness.run();
+            let ctx = harness.ctx.clone();
+            let installer = PathBuf::from("C:/cache/updates/Aria-0.3.6-setup.exe");
+            harness
+                .state_mut()
+                .handle_event(&ctx, Event::Update(UpdateEvent::Install(installer.clone())));
+            harness.step();
+            let closes = harness
+                .output()
+                .viewport_output
+                .values()
+                .flat_map(|viewport| viewport.commands.iter())
+                .filter(|command| matches!(command, egui::ViewportCommand::Close))
+                .count();
+            assert_eq!(closes, 1);
+            assert!(
+                launched.lock().unwrap().is_empty(),
+                "not before Aria has shut down"
+            );
+            eframe::App::on_exit(harness.state_mut(), None);
+            assert_eq!(*launched.lock().unwrap(), [installer]);
+        }
+    }
+
     #[test]
     fn the_spotify_name_dialog_creates_on_spotify() {
         use egui_kittest::kittest::Queryable as _;
@@ -3171,6 +3419,7 @@ mod tests {
         let waker: Waker = Arc::new(move || flag.store(true, Ordering::SeqCst));
         let services = BackendServices {
             spotify: None,
+            update: None,
             library: None,
             output: Box::new(FakeFactory::new(OutputFormat {
                 sample_rate: 48_000,

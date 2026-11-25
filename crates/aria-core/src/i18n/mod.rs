@@ -459,6 +459,29 @@ mod tests {
         "settings-updates",
         "settings-check-updates",
         "settings-check-updates-hint",
+        "update-card-title",
+        "update-card-body",
+        "update-card-on",
+        "update-card-later",
+        "settings-update-auto",
+        "settings-update-auto-hint",
+        "update-idle",
+        "update-checking",
+        "update-up-to-date",
+        "update-downloading",
+        "update-ready",
+        "update-restart",
+        "update-available",
+        "update-open-page",
+        "update-not-ready",
+        "update-failed",
+        "update-reason-offline",
+        "update-reason-answer",
+        "update-reason-too-big",
+        "update-reason-checksum",
+        "update-reason-disk",
+        "notice-update-ready",
+        "notice-update-broken",
         "settings-watch-folders",
         "settings-watch-folders-hint",
         "settings-history",
@@ -713,6 +736,9 @@ mod tests {
         args.set("owner", "777");
         args.set("rpm", "777");
         args.set("playlist", "777");
+        args.set("version", "777");
+        args.set("percent", "777");
+        args.set("reason", "777");
         let en = Localizer::new(Language::En).unwrap();
         // Guard against a vacuous pass: English must use the placeable.
         assert!(en.tr_args("player-coming-in", &args).contains("777"));

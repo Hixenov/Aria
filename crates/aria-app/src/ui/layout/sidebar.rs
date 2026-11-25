@@ -3,9 +3,10 @@
 use aria_core::{
     i18n::Localizer,
     settings::{SIDEBAR_MAX, SIDEBAR_MIN},
+    update_service::UpdateStatus,
 };
 use eframe::egui::{
-    Align, Label, Layout, Margin, Panel, RichText, ScrollArea, Separator, Ui, UiBuilder,
+    Align, Button, Label, Layout, Margin, Panel, RichText, ScrollArea, Separator, Ui, UiBuilder,
     accesskit::Role, vec2,
 };
 
@@ -54,6 +55,8 @@ pub enum SidebarAction {
     Back,
     /// Step forward in history.
     Forward,
+    /// Install the downloaded update.
+    RestartToUpdate,
 }
 
 /// The result of showing the sidebar.
@@ -74,6 +77,7 @@ pub fn show(
     history: &History,
     width: f32,
     force_width: bool,
+    update: &UpdateStatus,
 ) -> SidebarOutput {
     let margin = Margin {
         left: SPACE[1] as i8,
@@ -98,7 +102,7 @@ pub fn show(
     widgets.active.fg_stroke.color = p.accent;
     let response = panel.show(ui, |ui| {
         ui.set_style(base.clone());
-        contents(ui, tr, p, history)
+        contents(ui, tr, p, history, update)
     });
     ui.set_style(base);
 
@@ -108,11 +112,21 @@ pub fn show(
     }
 }
 
-fn contents(ui: &mut Ui, tr: &Localizer, p: &Palette, history: &History) -> Option<SidebarAction> {
+fn contents(
+    ui: &mut Ui,
+    tr: &Localizer,
+    p: &Palette,
+    history: &History,
+    update: &UpdateStatus,
+) -> Option<SidebarAction> {
     let mut action = header(ui, tr, p, history);
     ui.add_space(SPACE[2]);
-    if let Some(route) = nav_list(ui, tr, p, history.current()) {
+    let (route, restart) = nav_list(ui, tr, p, history.current(), update);
+    if let Some(route) = route {
         action = Some(SidebarAction::Navigate(route));
+    }
+    if restart {
+        action = Some(SidebarAction::RestartToUpdate);
     }
     action
 }
@@ -147,9 +161,18 @@ fn header(ui: &mut Ui, tr: &Localizer, p: &Palette, history: &History) -> Option
     action
 }
 
-/// The navigation entries; returns the one clicked.
-fn nav_list(ui: &mut Ui, tr: &Localizer, p: &Palette, current: Route) -> Option<Route> {
+/// The navigation entries, and below them the update button when there is one. Returns the
+/// entry clicked, and whether "Restart to update" was.
+fn nav_list(
+    ui: &mut Ui,
+    tr: &Localizer,
+    p: &Palette,
+    current: Route,
+    update: &UpdateStatus,
+) -> (Option<Route>, bool) {
     let mut clicked = None;
+    let mut restart = false;
+    let update_text = crate::update::sidebar_text(tr, update);
     let mut entry = |ui: &mut Ui, route: Route| {
         let label = tr.tr(route.label_key());
         if nav_item(ui, route.icon(), &label, route == current, p).clicked() {
@@ -161,7 +184,12 @@ fn nav_list(ui: &mut Ui, tr: &Localizer, p: &Palette, current: Route) -> Option<
         |ui| {
             ui.spacing_mut().item_spacing.y = SPACE[0] / 2.0;
             // Scrolls only when zoomed in far enough that the list no longer fits.
-            let list_height = (ui.available_height() - NAV_ROW_HEIGHT - SPACE[1]).max(0.0);
+            let pinned = if update_text.is_some() {
+                2.0 * NAV_ROW_HEIGHT + SPACE[1]
+            } else {
+                NAV_ROW_HEIGHT
+            };
+            let list_height = (ui.available_height() - pinned - SPACE[1]).max(0.0);
             ScrollArea::vertical()
                 .id_salt("aria_nav_list")
                 .max_height(list_height)
@@ -176,10 +204,24 @@ fn nav_list(ui: &mut Ui, tr: &Localizer, p: &Palette, current: Route) -> Option<
                         }
                     }
                 });
-            ui.with_layout(Layout::bottom_up(Align::Min), |ui| entry(ui, PINNED));
+            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                entry(ui, PINNED);
+                if let Some(text) = &update_text {
+                    let button = Button::new(RichText::new(text).color(p.accent))
+                        .min_size(vec2(ui.available_width(), NAV_ROW_HEIGHT));
+                    if ui.add(button).clicked() {
+                        match update {
+                            UpdateStatus::Available { page, .. } => {
+                                crate::update::open_page(ui, page);
+                            }
+                            _ => restart = true,
+                        }
+                    }
+                }
+            });
         },
     );
-    clicked
+    (clicked, restart)
 }
 
 #[cfg(test)]

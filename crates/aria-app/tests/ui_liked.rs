@@ -103,6 +103,7 @@ fn harness(favorites: &[i64]) -> Harness<'static, Page> {
                     artwork: None,
                     spotify: &Default::default(),
                     covers: &mut Default::default(),
+                    update: &aria_core::update_service::UpdateStatus::Idle,
                 };
                 pages::show(Route::Liked, ui, &mut ctx);
             },
