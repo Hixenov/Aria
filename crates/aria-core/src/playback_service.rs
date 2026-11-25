@@ -409,6 +409,7 @@ impl PlaybackService {
             | Command::ListInputDevices
             | Command::ToggleMicrophone
             | Command::Spotify(_)
+            | Command::Update(_)
             | Command::WindowShown(_)
             | Command::Shutdown => {}
         }

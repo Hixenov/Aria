@@ -7,7 +7,7 @@ use aria_library::{Collections, LibrarySnapshot, ScanProgress, Track};
 
 use crate::{
     notice::Notice, playback_service::PlayerView, settings::Settings, soundboard::SoundboardState,
-    spotify_service::SpotifyEvent,
+    spotify_service::SpotifyEvent, update_service::UpdateEvent,
 };
 
 /// Which player the player bar shows and controls: the one last started.
@@ -60,4 +60,6 @@ pub enum Event {
     ActivePlayer(ActivePlayer),
     /// What the Spotify service reports.
     Spotify(SpotifyEvent),
+    /// From the update checker.
+    Update(UpdateEvent),
 }

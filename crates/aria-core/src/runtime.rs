@@ -52,6 +52,7 @@ use crate::{
         Cadence, SpotifyAccount, SpotifyDeps, SpotifyEvent, SpotifyHandle, SpotifyRequest,
         SpotifyService,
     },
+    update_service::{UpdateDeps, UpdateEvent, UpdateHandle, UpdateRequest, UpdateService},
     watch::{self, FolderWatcher},
 };
 
@@ -123,6 +124,8 @@ pub struct BackendServices {
     pub settings: Settings,
     /// Spotify; `None` leaves it out (tests).
     pub spotify: Option<SpotifyDeps>,
+    /// The update checker; `None` leaves it out (tests).
+    pub update: Option<UpdateDeps>,
 }
 
 /// A running Spotify service, as the backend holds it.
@@ -139,6 +142,24 @@ impl SpotifyLink {
             let _ = events_tx.send(event);
         });
         let handle = SpotifyService::start(deps, on_event)?;
+        Ok(Self { handle, events })
+    }
+}
+
+/// A running update service, as the backend holds it.
+struct UpdateLink {
+    handle: UpdateHandle,
+    events: UnboundedReceiver<UpdateEvent>,
+}
+
+impl UpdateLink {
+    fn start(deps: UpdateDeps) -> io::Result<Self> {
+        let (events_tx, events) = unbounded_channel();
+        let on_event = Box::new(move |event| {
+            // Fails only once the backend has exited, when nobody is listening.
+            let _ = events_tx.send(event);
+        });
+        let handle = UpdateService::start(deps, on_event)?;
         Ok(Self { handle, events })
     }
 }
@@ -241,11 +262,13 @@ impl Backend {
             capture,
             settings,
             spotify,
+            update,
         } = services;
         let playback = PlaybackLink::start(output, capture, &settings)?;
         let library = library.map(LibraryLink::start).transpose()?;
         let spotify = spotify.map(SpotifyLink::start).transpose()?;
-        Self::spawn_with(sink, library, spotify, playback, waker, cfg)
+        let update = update.map(UpdateLink::start).transpose()?;
+        Self::spawn_with(sink, library, spotify, update, playback, waker, cfg)
     }
 
     #[cfg(test)]
@@ -256,13 +279,14 @@ impl Backend {
         waker: Waker,
         cfg: BackendConfig,
     ) -> io::Result<BackendHandle> {
-        Self::spawn_with(sink, library, None, playback, waker, cfg)
+        Self::spawn_with(sink, library, None, None, playback, waker, cfg)
     }
 
     fn spawn_with(
         sink: Option<Box<dyn SettingsSink>>,
         library: Option<LibraryLink>,
         spotify: Option<SpotifyLink>,
+        update: Option<UpdateLink>,
         playback: PlaybackLink,
         waker: Waker,
         cfg: BackendConfig,
@@ -279,6 +303,10 @@ impl Backend {
             None => (None, None, None),
         };
         let (spotify, spotify_events) = match spotify {
+            Some(link) => (Some(link.handle), Some(link.events)),
+            None => (None, None),
+        };
+        let (update, update_events) = match update {
             Some(link) => (Some(link.handle), Some(link.events)),
             None => (None, None),
         };
@@ -313,6 +341,7 @@ impl Backend {
             library_folders: Vec::new(),
             data_dir,
             spotify,
+            update,
             active: ActivePlayer::Local,
             window_shown: true,
             cadence: None,
@@ -332,6 +361,7 @@ impl Backend {
                     library_events,
                     engine_events,
                     spotify_events,
+                    update_events,
                 ));
                 runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
             })?;
@@ -482,6 +512,8 @@ struct Worker {
     library_folders: Vec<PathBuf>,
     /// `None` without Spotify, or after its thread died.
     spotify: Option<SpotifyHandle>,
+    /// The update checker, when it runs.
+    update: Option<UpdateHandle>,
     /// The player the bar shows: the one last started.
     active: ActivePlayer,
     /// The window is neither minimized nor hidden.
@@ -501,11 +533,13 @@ impl Worker {
         mut library_events: Option<UnboundedReceiver<LibraryEvent>>,
         engine_events: UnboundedReceiver<EngineEvent>,
         mut spotify_events: Option<UnboundedReceiver<SpotifyEvent>>,
+        mut update_events: Option<UnboundedReceiver<UpdateEvent>>,
     ) {
         let mut engine_events = Some(engine_events);
         let mut tick = tokio::time::interval(PLAYBACK_TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         self.flush_playback();
+        self.sync_update();
         if let Some(spotify) = &self.spotify {
             spotify.send(SpotifyRequest::Device(self.settings.spotify_device.clone()));
             self.emit([Event::ActivePlayer(self.active)]);
@@ -618,6 +652,7 @@ impl Worker {
                         self.list(Arc::clone(&self.input_devices), Event::InputDevices);
                     }
                     Some(Command::Spotify(request)) => self.spotify_request(request),
+                    Some(Command::Update(request)) => self.update_request(request),
                     Some(Command::WindowShown(shown)) => {
                         self.window_shown = shown;
                         self.sync_cadence();
@@ -692,6 +727,15 @@ impl Worker {
                         self.show(ActivePlayer::Local);
                     }
                 },
+                event = next_event(&mut update_events) => match event {
+                    Some(event) => self.emit([Event::Update(event)]),
+                    // Only the thread's end closes this channel.
+                    None => {
+                        tracing::error!("the update thread stopped unexpectedly");
+                        update_events = None;
+                        self.update = None;
+                    }
+                },
                 _ = tick.tick() => {
                     self.playback.tick();
                     self.flush_playback();
@@ -721,6 +765,9 @@ impl Worker {
         let spotify = self.spotify.take().map(|spotify| {
             tokio::task::spawn_blocking(move || spotify.join(LIBRARY_SHUTDOWN_TIMEOUT))
         });
+        let update = self.update.take().map(|update| {
+            tokio::task::spawn_blocking(move || update.join(LIBRARY_SHUTDOWN_TIMEOUT))
+        });
         if let Some(library) = library {
             let stop = move || library.shutdown(LIBRARY_SHUTDOWN_TIMEOUT);
             let _ = tokio::task::spawn_blocking(stop).await;
@@ -728,6 +775,31 @@ impl Worker {
         let _ = engine.await;
         if let Some(spotify) = spotify {
             let _ = spotify.await;
+        }
+        if let Some(update) = update {
+            let _ = update.await;
+        }
+    }
+
+    /// Passes the user's update choice and the last check to the update checker.
+    fn sync_update(&self) {
+        if let Some(update) = &self.update {
+            update.send(UpdateRequest::Settings {
+                checks: self.settings.update_checks,
+                checked_at: self.settings.update_checked_at,
+            });
+        }
+    }
+
+    fn update_request(&self, request: UpdateRequest) {
+        match request {
+            // The backend's own.
+            UpdateRequest::Settings { .. } | UpdateRequest::Shutdown => {}
+            request => {
+                if let Some(update) = &self.update {
+                    update.send(request);
+                }
+            }
         }
     }
 
@@ -949,9 +1021,13 @@ impl Worker {
     /// Puts `settings` in effect and schedules their save.
     fn apply(&mut self, settings: Settings) {
         let watching = self.settings.watch_folders;
+        let updates = (self.settings.update_checks, self.settings.update_checked_at);
         self.settings = settings.clone();
         if settings.watch_folders != watching {
             self.sync_watch();
+        }
+        if (settings.update_checks, settings.update_checked_at) != updates {
+            self.sync_update();
         }
         self.playback.on_settings(&settings);
         self.flush_playback();
@@ -1339,6 +1415,7 @@ mod tests {
         };
         BackendServices {
             spotify: None,
+            update: None,
             library,
             output: Box::new(FakeFactory::new(format)),
             capture: Box::new(no_microphone()),
@@ -1483,6 +1560,7 @@ mod tests {
         let factory = FakeFactory::new(format);
         let services = BackendServices {
             spotify: None,
+            update: None,
             library: Some(library_paths(dir.path())),
             output: Box::new(factory.clone()),
             capture: Box::new(no_microphone()),
@@ -1543,6 +1621,7 @@ mod tests {
         let factory = FakeFactory::new(format);
         let services = BackendServices {
             spotify: None,
+            update: None,
             library: Some(library_paths(dir.path())),
             output: Box::new(factory.clone()),
             capture: Box::new(no_microphone()),
@@ -1569,6 +1648,7 @@ mod tests {
         factory.set_devices(vec![speakers.clone()]);
         let services = BackendServices {
             spotify: None,
+            update: None,
             library: None,
             output: Box::new(factory),
             capture: Box::new(no_microphone()),
@@ -1659,6 +1739,7 @@ mod tests {
         });
         let services = BackendServices {
             spotify: None,
+            update: None,
             output: Box::new(factory.clone()),
             ..services(Some(library_paths(dir.path())))
         };
@@ -1861,6 +1942,7 @@ mod tests {
     fn no_library_with_cable() -> BackendServices {
         BackendServices {
             spotify: None,
+            update: None,
             settings: with_cable(),
             ..no_library()
         }
@@ -1872,6 +1954,7 @@ mod tests {
         fs::create_dir(&music).unwrap();
         let services = BackendServices {
             spotify: None,
+            update: None,
             settings: Settings {
                 watch_folders: watch,
                 ..Settings::default()
@@ -2058,6 +2141,7 @@ music/two.flac
         };
         let services = BackendServices {
             spotify: None,
+            update: None,
             output: Box::new(factory.clone()),
             settings: sharing(1.0),
             ..services(Some(library_paths(dir.path())))
@@ -2181,6 +2265,7 @@ music/two.flac
         // Left on from before the second device was removed.
         let services = BackendServices {
             spotify: None,
+            update: None,
             settings: Settings {
                 mic_enabled: true,
                 ..Settings::default()
@@ -2519,6 +2604,7 @@ music/two.flac
         let (waker, _) = counting_waker();
         let services = BackendServices {
             spotify: None,
+            update: None,
             library: None,
             output: Box::new(FakeFactory::new(OutputFormat {
                 sample_rate: 48_000,
@@ -3051,6 +3137,93 @@ music/two.flac
                     .any(|e| matches!(e, Event::Spotify(_) | Event::ActivePlayer(_))),
                 "{events:?}"
             );
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+    }
+
+    mod update {
+        use super::*;
+        use crate::settings::UpdateChecks;
+        use crate::update_service::{UpdateDeps, UpdateEvent, UpdateRequest, UpdateStatus};
+        use aria_spotify::fake::{FakeSpotify, Reply};
+        use aria_update::{Endpoints, InstallKind, Version};
+
+        const LATEST: &str = "/repos/Hixenov/Aria/releases/latest";
+        const RELEASE: &str = include_str!("../../aria-update/tests/fixtures/release.json");
+
+        /// A backend whose update service asks `fake`, as Aria 0.3.6 (so the release is not
+        /// newer), starting from `settings`.
+        fn backend(fake: &FakeSpotify, dir: &Path, settings: Settings) -> BackendHandle {
+            fake.reply("GET", LATEST, Reply::json(200, RELEASE));
+            let mut services = services(None);
+            services.settings = settings;
+            services.update = Some(UpdateDeps {
+                endpoints: Endpoints {
+                    latest: format!("{}{LATEST}", fake.base()),
+                    download_prefix: format!("{}/Hixenov/Aria/releases/download/", fake.base()),
+                },
+                running: Version::new(0, 3, 6),
+                cache_dir: Some(dir.to_path_buf()),
+                kind: InstallKind::Installed,
+                start_delay: Duration::ZERO,
+                interval: Duration::from_secs(24 * 60 * 60),
+                retry: Duration::from_secs(60 * 60),
+                now: Arc::new(|| 1_800_000_000),
+            });
+            let (waker, _) = counting_waker();
+            Backend::start(None, services, waker, SLOW).unwrap()
+        }
+
+        fn asked(fake: &FakeSpotify) -> usize {
+            fake.requests().iter().filter(|s| s.path == LATEST).count()
+        }
+
+        #[test]
+        fn update_events_reach_the_app() {
+            let fake = FakeSpotify::start();
+            let dir = tempfile::tempdir().unwrap();
+            let handle = backend(&fake, dir.path(), Settings::default());
+            handle.send(Command::Update(UpdateRequest::CheckNow));
+            drain_until(&handle, |e| {
+                e.contains(&Event::Update(UpdateEvent::Status(UpdateStatus::UpToDate)))
+            });
+            assert_eq!(asked(&fake), 1);
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn nothing_is_asked_before_the_user_says_yes() {
+            let fake = FakeSpotify::start();
+            let dir = tempfile::tempdir().unwrap();
+            let handle = backend(&fake, dir.path(), Settings::default());
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(asked(&fake), 0);
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn update_checks_on_at_start_reach_the_service() {
+            let fake = FakeSpotify::start();
+            let dir = tempfile::tempdir().unwrap();
+            let settings = Settings {
+                update_checks: UpdateChecks::On,
+                ..Settings::default()
+            };
+            let handle = backend(&fake, dir.path(), settings);
+            assert!(wait_until(|| asked(&fake) == 1, MAX));
+            assert!(handle.shutdown(LIBRARY_MAX));
+        }
+
+        #[test]
+        fn turning_update_checks_on_reaches_the_service() {
+            let fake = FakeSpotify::start();
+            let dir = tempfile::tempdir().unwrap();
+            let handle = backend(&fake, dir.path(), Settings::default());
+            handle.send(Command::UpdateSettings(Settings {
+                update_checks: UpdateChecks::On,
+                ..Settings::default()
+            }));
+            assert!(wait_until(|| asked(&fake) == 1, Duration::from_secs(2)));
             assert!(handle.shutdown(LIBRARY_MAX));
         }
     }

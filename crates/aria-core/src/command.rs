@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use aria_library::{FolderId, PlaylistId, SoundId, TrackId};
 
-use crate::{hotkey::Hotkey, settings::Settings, spotify_service::SpotifyRequest};
+use crate::{
+    hotkey::Hotkey, settings::Settings, spotify_service::SpotifyRequest,
+    update_service::UpdateRequest,
+};
 
 /// A request from the UI thread to the backend.
 #[derive(Debug, Clone)]
@@ -168,6 +171,8 @@ pub enum Command {
     /// A request for the Spotify service. The backend routes the player's ones and keeps
     /// [`SpotifyRequest::Cadence`] and [`SpotifyRequest::Shutdown`] to itself.
     Spotify(SpotifyRequest),
+    /// For the update checker; its `Settings` and `Shutdown` are the backend's own.
+    Update(UpdateRequest),
     /// The window is shown (`true`), or minimized or hidden (`false`).
     WindowShown(bool),
     /// Save the queue and any pending settings, then stop the backend.
