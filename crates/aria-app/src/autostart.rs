@@ -5,8 +5,9 @@
 //! - macOS: `~/Library/LaunchAgents/io.github.hixenov.aria.plist`.
 //! - Linux and the BSDs: `$XDG_CONFIG_HOME/autostart/io.github.hixenov.aria.desktop`.
 //!
-//! [`Entry::apply`] writes the entry when it is missing or different, and removes it only when it
-//! is Aria's own (its command has [`AUTOSTART_ARG`]); nothing else is ever touched.
+//! [`Entry::apply`] writes the entry under Aria's name when it is missing or different, and
+//! removes it only when it starts an Aria at login (its command has [`AUTOSTART_ARG`]), whichever
+//! copy of Aria wrote it. Nothing under another name is touched.
 
 use std::io;
 use std::path::{Path, PathBuf};

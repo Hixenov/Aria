@@ -78,9 +78,11 @@ click.
 ## My calls
 
 - The name is `--autostart`, checked anywhere in the arguments.
-- The hidden start is `ViewportBuilder::with_visible(false)`, with `hidden = true` in the app
-  from the first frame. eframe 0.37 runs `logic` for invisible windows, which the tray already
-  relies on.
+- The hidden start is `hidden = true` in the app from the first frame, plus one
+  `Visible(false)` once the tray is there.
+  - Corrected after the final review: `ViewportBuilder::with_visible(false)` does nothing here.
+    eframe 0.37 builds every window hidden and shows it after its first frame, so a login start
+    may flash for a moment.
 - The quiet second copy is a new `instance::claim_quietly`, which never reaches the running
   copy.
 - Version 0.4.3.

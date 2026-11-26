@@ -294,6 +294,9 @@ pub struct AriaApp {
     hidden: bool,
     /// The main window cannot be hidden here (Wayland ignores it), only minimized.
     cannot_hide: bool,
+    /// Started at login and not hidden yet: eframe shows every window once its first frame is
+    /// drawn, whatever it was built with, so the first frame with a tray hides it again.
+    hide_on_start: bool,
     /// What "Start with the system" was last applied as; `None` until the first frame, which
     /// checks the entry once.
     autostart_applied: Option<bool>,
@@ -403,6 +406,7 @@ impl AriaApp {
             tray_failed: false,
             tray_sent: None,
             hidden: start_hidden,
+            hide_on_start: start_hidden,
             autostart_applied: None,
             cannot_hide: false,
             can_relaunch,
@@ -605,9 +609,17 @@ impl AriaApp {
                 ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
             }
             self.hidden = false;
+            self.hide_on_start = false;
         }
         if self.tray.is_none() {
             return;
+        }
+        if mem::take(&mut self.hide_on_start) && self.hidden {
+            // A login start: back into the tray after eframe's first frame showed the window.
+            ctx.send_viewport_cmd_to(
+                egui::ViewportId::ROOT,
+                egui::ViewportCommand::Visible(false),
+            );
         }
         let events: Vec<_> = self
             .tray_events
@@ -3480,6 +3492,7 @@ mod tests {
         fn hidden_start(system: &System, works: bool) -> AriaApp {
             let mut app = tray_app(system, works, false, false);
             app.hidden = true;
+            app.hide_on_start = true;
             app
         }
 
@@ -3488,14 +3501,17 @@ mod tests {
             let system = System::default();
             let mut app = hidden_start(&system, true);
             let ctx = egui::Context::default();
+            // eframe shows every window after its first frame: Aria hides it again.
             let commands = frame(&mut app, &ctx, false, false);
-            assert!(!shows_minimized(&commands), "{commands:?}");
+            assert!(has(&commands, &HIDE), "{commands:?}");
+            assert!(!shows_minimized(&commands));
             assert!(!shows(&commands));
             assert!(app.hidden);
             assert!(
                 !system.states()[0].window_shown,
                 "the menu offers to show Aria"
             );
+            assert!(!has(&frame(&mut app, &ctx, false, false), &HIDE), "once");
         }
 
         #[test]

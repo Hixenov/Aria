@@ -252,7 +252,7 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(renderer = "glow", "opening the window");
     let result = eframe::run_native(
         APP_NAME,
-        native_options(autostart),
+        native_options(),
         Box::new(|cc| {
             log_stage("window", stage.elapsed());
             if egui_ctx.set(cc.egui_ctx.clone()).is_err() {
@@ -378,14 +378,13 @@ fn show_message(_level: rfd::MessageLevel, title: &str, body: &str) {
 
 /// The window: titled Aria, with Aria's icon, 1200×780 (at least 900×600), drawn with glow, and
 /// remembered between runs.
-fn native_options(hidden: bool) -> eframe::NativeOptions {
+fn native_options() -> eframe::NativeOptions {
+    // A login start cannot open hidden from here: eframe shows the window after its first
+    // frame whatever this says, so the app hides it again once its tray is there.
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(APP_NAME)
         .with_inner_size([1200.0, 780.0])
-        .with_min_inner_size([900.0, 600.0])
-        // Started at login: the window waits hidden until the tray (or the app, if it cannot
-        // hide) shows it.
-        .with_visible(!hidden);
+        .with_min_inner_size([900.0, 600.0]);
     if let Some(icon) = aria_app::icon::app_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -569,7 +568,7 @@ mod tests {
 
     #[test]
     fn window_options() {
-        let options = native_options(false);
+        let options = native_options();
         assert_eq!(options.viewport.title.as_deref(), Some(APP_NAME));
         assert_eq!(options.viewport.inner_size, Some(egui::vec2(1200.0, 780.0)));
         assert_eq!(
@@ -578,11 +577,5 @@ mod tests {
         );
         assert!(options.persist_window);
         assert_eq!(options.renderer, eframe::Renderer::Glow);
-        assert_eq!(options.viewport.visible, Some(true));
-    }
-
-    #[test]
-    fn a_login_start_opens_the_window_hidden() {
-        assert_eq!(native_options(true).viewport.visible, Some(false));
     }
 }

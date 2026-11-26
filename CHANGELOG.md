@@ -15,7 +15,7 @@ The third part of Phase 4. Checked with automated tests only. The startup entrie
   - On Windows this is the value `Aria` in your user's startup list (the one Task Manager's Startup tab shows).
   - On macOS it is the launch agent `~/Library/LaunchAgents/io.github.hixenov.aria.plist`.
   - On Linux it is `~/.config/autostart/io.github.hixenov.aria.desktop`.
-- Aria checks its entry at every start, so it follows a portable Aria that moved. Turning the switch off removes the entry. Aria only ever removes an entry that is its own (one that starts it with `--autostart`).
+- Aria checks its entry at every start, so it follows a portable Aria that moved. Turning the switch off removes the entry. Only an entry that starts Aria with `--autostart` is removed, whichever copy of Aria wrote it, and nothing under another name is touched.
 
 ### Changed
 
@@ -23,6 +23,12 @@ The third part of Phase 4. Checked with automated tests only. The startup entrie
 - A login start while Aria already runs quits without showing the running window.
 - Uninstalling on Windows removes the startup value of the user who uninstalls.
 - New dependency on Windows: `winreg` 0.56 (MIT), already used to build Aria.
+
+### Limits
+
+- At login the window may flash for a moment before it goes to the tray: eframe shows every window once its first frame is drawn.
+- If you disable Aria in Task Manager's Startup tab, Windows keeps it disabled, even after the switch in Aria is turned off and on again. Enable it there.
+- Two copies of Aria (say an installed one and a portable one) share the one entry; the last one started with the switch on decides which copy starts at login.
 
 ## [0.4.2] - 2026-11-26 (the tray)
 

@@ -227,8 +227,9 @@ disconnect, it makes no request to Spotify or anyone else.
   - Linux: `~/.config/autostart/io.github.hixenov.aria.desktop`.
   It holds the path to Aria's program and nothing else.
 - **When it changes.** At every start, Aria checks the entry: it rewrites it if Aria moved, or
-  removes it if the switch is off. It never touches an entry that isn't its own. Uninstalling on
-  Windows removes it too.
+  removes it if the switch is off. It only removes an entry under that name that starts Aria with
+  `--autostart`, and never touches anything under another name. Uninstalling on Windows removes
+  it too.
 - **Nothing is sent anywhere** for it.
 
 ## The tray (since 0.4.2)
