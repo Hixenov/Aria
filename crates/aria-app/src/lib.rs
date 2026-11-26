@@ -7,6 +7,7 @@ pub mod artwork;
 mod folders;
 mod hotkeys;
 pub mod icon;
+pub mod media_controls;
 pub mod nav;
 mod shortcuts;
 pub mod spotify;
