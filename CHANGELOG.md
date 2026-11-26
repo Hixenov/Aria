@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-26 (media keys)
+
+The first part of Phase 4, the desktop experience. Checked with automated tests on Windows against a stand-in for the system's media controls only: nobody has pressed a media key or opened the volume pop-up with Aria yet. See `docs/testing/0.4.0-manual-check.md`.
+
+### Added
+
+- **Media keys control Aria**, also while it is minimized or in the background: the keyboard's play/pause, next and previous keys, a headset's buttons, and the system's media panel. They do what the player bar's buttons do, for local tracks and for Spotify while the bar shows Spotify.
+- **The system shows what plays.** On Windows, Aria appears in the volume pop-up and on the lock screen with the cover, title, artist and album, and a seek bar that can be dragged. macOS's Now Playing and Linux's media controls (MPRIS) get the same; on Linux the system's volume control also sets Aria's volume, and "Raise" brings its window forward.
+- Settings, General: "Show in the system's media controls" (on by default) turns it all off.
+
+### Changed
+
+- Version 0.4.0. A new setting, `media_controls`.
+- New dependency: `souvlaki` (MIT), for Windows' System Media Transport Controls, macOS's Now Playing and MPRIS on Linux.
+
+### Limits
+
+- With the Spotify desktop app open too, Windows sends the media keys to whichever player was used last.
+- macOS and Linux are built and tested in CI, but nobody has tried them.
+
 ## [0.3.5] - 2026-11-25 (update checker)
 
 Checked with automated tests on Windows against a local fake GitHub only. Aria has not yet updated itself from a real release: the first time it can is from 0.3.5 to the next version. See `docs/testing/0.3.5-manual-check.md`.

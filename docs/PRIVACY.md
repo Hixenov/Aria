@@ -191,6 +191,23 @@ disconnect, it makes no request to Spotify or anyone else.
   It catches a broken or incomplete download; it does not protect against someone who takes over
   the GitHub account, who could change both. The installer is not code-signed.
 
+## System media controls (since 0.4.0)
+
+- **What is handed over.** While "Show in the system's media controls" is on (Settings, General;
+  on by default), Aria tells the operating system's media session what plays: the title, artist,
+  album, length and position, whether it plays, and a link to the cover. For a local track that
+  link is the cover's thumbnail file in Aria's cache (`file:///…`); for a Spotify track it is
+  Spotify's own image address (`https://i.scdn.co/…`), which the system itself fetches from
+  Spotify's servers. This is Windows' System Media Transport Controls, macOS's Now Playing, or
+  MPRIS over the local D-Bus on Linux; Aria itself sends nothing over the network for it.
+- **Who sees it.** Whatever the system shows it in: the volume pop-up and the lock screen on
+  Windows, Now Playing on macOS, the desktop's media controls on Linux, and other programs that
+  read the system's media session (on Linux, any program on the session's D-Bus).
+- **What Aria receives.** Only what the system's media session hands it: play, pause, next,
+  previous, seek, and on Linux volume and "raise". Aria reads no other keys.
+- **What is kept.** Nothing new beyond the setting `media_controls` in `settings.toml`. Turning it
+  off removes Aria from the system's media controls.
+
 ## The microphone (since 0.2.3)
 
 Before 0.2.3 Aria never opened a microphone. Since 0.2.3 it can, and only like this:
