@@ -32,7 +32,7 @@ use aria_core::{
     instance::{self, Claim, Instance},
     logging::{self, LoggingHandle},
     notice::{Notice, NoticeLevel},
-    opened::launch_paths,
+    opened::{is_autostart, launch_paths},
     paths::AppPaths,
     runtime::{Backend, BackendConfig, BackendServices, LibraryPaths, SettingsSink, Waker},
     settings::{Language, Settings, store::SettingsStore},
@@ -130,7 +130,10 @@ fn main() -> anyhow::Result<()> {
     let opened = std::env::current_dir()
         .map(|base| launch_paths(std::env::args_os().skip(1), &base))
         .unwrap_or_default();
-    let Some(instance) = claim_folder(paths.as_ref(), &localizer, &opened) else {
+    // Started at login ("Start with the system"): the window waits hidden in the tray, and if
+    // Aria already runs this copy quits without showing it.
+    let autostart = is_autostart(std::env::args_os().skip(1));
+    let Some(instance) = claim_folder(paths.as_ref(), &localizer, &opened, autostart) else {
         return Ok(());
     };
     log_stage("instance", stage.elapsed());
@@ -235,6 +238,9 @@ fn main() -> anyhow::Result<()> {
         // Media keys and the system's media panel; the setting can turn them off.
         media: Some(aria_app::media_controls::system_factory()),
         tray: Some(aria_app::tray::system_factory()),
+        // Registers Aria to start at login as the setting says, checked at every start.
+        autostart: Some(aria_app::autostart::system()),
+        start_hidden: autostart,
     };
     if let Some(instance) = &deps.instance {
         // Another copy's request wakes the window, minimized or not.
@@ -246,7 +252,7 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(renderer = "glow", "opening the window");
     let result = eframe::run_native(
         APP_NAME,
-        native_options(),
+        native_options(autostart),
         Box::new(|cc| {
             log_stage("window", stage.elapsed());
             if egui_ctx.set(cc.egui_ctx.clone()).is_err() {
@@ -317,15 +323,21 @@ fn claim_folder(
     paths: Option<&AppPaths>,
     localizer: &Localizer,
     opened: &[std::path::PathBuf],
+    quietly: bool,
 ) -> Option<Option<Instance>> {
     let Some(paths) = paths else {
         return Some(None);
     };
-    match instance::claim_opening(&paths.data_dir, instance::REACH_WAIT, opened) {
+    let claim = if quietly {
+        instance::claim_quietly(&paths.data_dir)
+    } else {
+        instance::claim_opening(&paths.data_dir, instance::REACH_WAIT, opened)
+    };
+    match claim {
         Ok(Claim::First(instance)) => Some(Some(instance)),
         Ok(Claim::Running { reached }) => {
-            tracing::info!(reached, "Aria is already running; this copy quits");
-            if !reached {
+            tracing::info!(reached, quietly, "Aria is already running; this copy quits");
+            if !reached && !quietly {
                 show_message(
                     rfd::MessageLevel::Info,
                     &localizer.tr("instance-unreachable-title"),
@@ -366,11 +378,14 @@ fn show_message(_level: rfd::MessageLevel, title: &str, body: &str) {
 
 /// The window: titled Aria, with Aria's icon, 1200×780 (at least 900×600), drawn with glow, and
 /// remembered between runs.
-fn native_options() -> eframe::NativeOptions {
+fn native_options(hidden: bool) -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(APP_NAME)
         .with_inner_size([1200.0, 780.0])
-        .with_min_inner_size([900.0, 600.0]);
+        .with_min_inner_size([900.0, 600.0])
+        // Started at login: the window waits hidden until the tray (or the app, if it cannot
+        // hide) shows it.
+        .with_visible(!hidden);
     if let Some(icon) = aria_app::icon::app_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -554,7 +569,7 @@ mod tests {
 
     #[test]
     fn window_options() {
-        let options = native_options();
+        let options = native_options(false);
         assert_eq!(options.viewport.title.as_deref(), Some(APP_NAME));
         assert_eq!(options.viewport.inner_size, Some(egui::vec2(1200.0, 780.0)));
         assert_eq!(
@@ -563,5 +578,11 @@ mod tests {
         );
         assert!(options.persist_window);
         assert_eq!(options.renderer, eframe::Renderer::Glow);
+        assert_eq!(options.viewport.visible, Some(true));
+    }
+
+    #[test]
+    fn a_login_start_opens_the_window_hidden() {
+        assert_eq!(native_options(true).viewport.visible, Some(false));
     }
 }

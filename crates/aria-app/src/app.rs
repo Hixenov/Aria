@@ -132,6 +132,12 @@ pub struct AppDeps {
     /// Makes the tray icon. Without it there is none, and minimizing and closing stay as
     /// they are whatever the settings say.
     pub tray: Option<crate::tray::TrayFactory>,
+    /// Registers Aria to start at login, or removes that ("Start with the system"). Without it
+    /// the setting changes nothing.
+    pub autostart: Option<crate::autostart::Autostart>,
+    /// Started at login: the window starts hidden, waiting in the tray, and appears minimized
+    /// if it cannot wait there.
+    pub start_hidden: bool,
 }
 
 impl AppDeps {
@@ -288,6 +294,9 @@ pub struct AriaApp {
     hidden: bool,
     /// The main window cannot be hidden here (Wayland ignores it), only minimized.
     cannot_hide: bool,
+    /// What "Start with the system" was last applied as; `None` until the first frame, which
+    /// checks the entry once.
+    autostart_applied: Option<bool>,
     /// Starting Aria again would show a hidden window. Where a tray may have no host to draw
     /// its icon (Linux and the BSDs), that is the way back, so without it nothing hides.
     can_relaunch: bool,
@@ -317,6 +326,7 @@ impl AriaApp {
     ) -> AriaApp {
         let hotkeys_available = deps.hotkeys.is_some();
         let can_relaunch = !cfg!(all(unix, not(target_os = "macos"))) || deps.instance.is_some();
+        let start_hidden = deps.start_hidden;
         let hotkeys: Box<dyn HotkeyBackend> = match deps.hotkeys.take() {
             Some(system) => Box::new(system),
             None => Box::new(NoHotkeys),
@@ -392,7 +402,8 @@ impl AriaApp {
             tray_events: None,
             tray_failed: false,
             tray_sent: None,
-            hidden: false,
+            hidden: start_hidden,
+            autostart_applied: None,
             cannot_hide: false,
             can_relaunch,
             quitting: false,
@@ -538,16 +549,38 @@ impl AriaApp {
         self.run_hotkeys(ctx);
         self.run_media_controls(ctx);
         self.run_tray(ctx);
+        self.run_autostart(ctx);
+    }
+
+    /// Applies "Start with the system" at the first frame (so the entry follows Aria if it
+    /// moved) and whenever the setting changes. A failure is told once and tried again at the
+    /// next start or change.
+    fn run_autostart(&mut self, ctx: &egui::Context) {
+        let want = self.settings.start_with_system;
+        if self.autostart_applied == Some(want) {
+            return;
+        }
+        self.autostart_applied = Some(want);
+        let Some(apply) = &mut self.deps.autostart else {
+            return;
+        };
+        if let Err(error) = apply(want) {
+            tracing::warn!(%error, want, "the startup entry could not be changed");
+            self.notify(
+                ctx,
+                Notice::new(NoticeLevel::Error, "notice-autostart-failed"),
+            );
+        }
     }
 
     /// Makes the tray icon once, acts on its clicks, hides the window for "Minimize to tray"
     /// and "Close to tray", and tells the tray what changed.
     fn run_tray(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-        if self.tray.is_none() && !self.tray_failed {
-            let Some(factory) = &self.deps.tray else {
-                return;
-            };
+        if self.tray.is_none()
+            && !self.tray_failed
+            && let Some(factory) = &self.deps.tray
+        {
             let (events_tx, events) = std::sync::mpsc::channel();
             let state = self.tray_state(minimized);
             match factory(events_tx, ctx.clone(), &state) {
@@ -561,6 +594,17 @@ impl AriaApp {
                     self.tray_failed = true;
                 }
             }
+        }
+        if self.hidden && !self.can_hide() {
+            // Started hidden at login, but nothing here could bring the window back: it
+            // appears, minimized.
+            for command in [
+                egui::ViewportCommand::Visible(true),
+                egui::ViewportCommand::Minimized(true),
+            ] {
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+            }
+            self.hidden = false;
         }
         if self.tray.is_none() {
             return;
@@ -3059,6 +3103,69 @@ mod tests {
         assert!(!harness.state().modal_open());
     }
 
+    mod autostart {
+        use super::*;
+        use std::sync::Mutex;
+
+        /// An app whose "start with the system" calls land in the returned list; `works`
+        /// says whether they succeed.
+        fn app_with(works: bool, on: bool) -> (AriaApp, Arc<Mutex<Vec<bool>>>) {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let seen = Arc::clone(&calls);
+            let deps = AppDeps {
+                autostart: Some(Box::new(move |on| {
+                    seen.lock().unwrap().push(on);
+                    if works {
+                        Ok(())
+                    } else {
+                        Err("no access".to_owned())
+                    }
+                })),
+                ..AppDeps::none()
+            };
+            let settings = Settings {
+                language: Some(Language::En),
+                start_with_system: on,
+                ..Settings::default()
+            };
+            let app = AriaApp::new(
+                settings,
+                Localizer::new(Language::En).unwrap(),
+                deps,
+                vec![],
+            );
+            (app, calls)
+        }
+
+        #[test]
+        fn the_setting_is_applied_once_at_start_and_on_change() {
+            let (mut app, calls) = app_with(true, false);
+            let ctx = egui::Context::default();
+            app.logic_frame(&ctx);
+            app.logic_frame(&ctx);
+            assert_eq!(*calls.lock().unwrap(), [false], "checked once at start");
+            app.settings.start_with_system = true;
+            app.logic_frame(&ctx);
+            app.logic_frame(&ctx);
+            assert_eq!(*calls.lock().unwrap(), [false, true]);
+        }
+
+        #[test]
+        fn a_failed_change_is_tried_once_and_told() {
+            let (mut app, calls) = app_with(false, true);
+            let ctx = egui::Context::default();
+            app.logic_frame(&ctx);
+            app.logic_frame(&ctx);
+            assert_eq!(*calls.lock().unwrap(), [true]);
+            assert!(
+                app.toasts
+                    .notices()
+                    .any(|notice| notice.key == "notice-autostart-failed"),
+                "the user is told"
+            );
+        }
+    }
+
     mod tray {
         use super::*;
         use crate::tray::{TrayBackend, TrayEvent, TrayFactory, TrayState};
@@ -3359,6 +3466,76 @@ mod tests {
             assert!(!app.hidden);
             system.click(TrayEvent::Toggle);
             assert!(shows(&frame(&mut app, &ctx, true, false)));
+        }
+
+        const SHOW_MINIMIZED: [egui::ViewportCommand; 2] = [
+            egui::ViewportCommand::Visible(true),
+            egui::ViewportCommand::Minimized(true),
+        ];
+
+        fn shows_minimized(commands: &[egui::ViewportCommand]) -> bool {
+            commands.windows(2).any(|two| two == SHOW_MINIMIZED)
+        }
+
+        fn hidden_start(system: &System, works: bool) -> AriaApp {
+            let mut app = tray_app(system, works, false, false);
+            app.hidden = true;
+            app
+        }
+
+        #[test]
+        fn a_hidden_start_waits_in_the_tray() {
+            let system = System::default();
+            let mut app = hidden_start(&system, true);
+            let ctx = egui::Context::default();
+            let commands = frame(&mut app, &ctx, false, false);
+            assert!(!shows_minimized(&commands), "{commands:?}");
+            assert!(!shows(&commands));
+            assert!(app.hidden);
+            assert!(
+                !system.states()[0].window_shown,
+                "the menu offers to show Aria"
+            );
+        }
+
+        #[test]
+        fn a_hidden_start_without_a_tray_shows_minimized() {
+            let system = System::default();
+            let mut app = hidden_start(&system, false);
+            let ctx = egui::Context::default();
+            assert!(shows_minimized(&frame(&mut app, &ctx, false, false)));
+            assert!(!app.hidden);
+            assert!(
+                !shows_minimized(&frame(&mut app, &ctx, false, false)),
+                "once"
+            );
+        }
+
+        #[test]
+        fn a_hidden_start_with_no_tray_at_all_shows_minimized() {
+            let mut app = AriaApp::new(
+                Settings::default(),
+                Localizer::new(Language::En).unwrap(),
+                AppDeps {
+                    start_hidden: true,
+                    ..AppDeps::none()
+                },
+                vec![],
+            );
+            assert!(app.hidden, "start_hidden starts hidden");
+            let ctx = egui::Context::default();
+            assert!(shows_minimized(&frame(&mut app, &ctx, false, false)));
+            assert!(!app.hidden);
+        }
+
+        #[test]
+        fn a_hidden_start_where_hiding_fails_shows_minimized() {
+            let system = System::default();
+            let mut app = hidden_start(&system, true);
+            app.cannot_hide = true;
+            let ctx = egui::Context::default();
+            assert!(shows_minimized(&frame(&mut app, &ctx, false, false)));
+            assert!(!app.hidden);
         }
 
         #[test]
