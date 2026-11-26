@@ -5,6 +5,7 @@
 //! to tell the system, and when. Both run on the UI thread. The system behind them is a
 //! [`MediaBackend`]: `souvlaki` in the app, a fake in tests.
 
+use std::fmt::Write as _;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -186,6 +187,38 @@ fn same_metadata(a: &NowPlaying, b: &NowPlaying) -> bool {
         == (&b.title, &b.artist, &b.album, b.duration_ms, &b.cover_url)
 }
 
+/// The URL a cover file is handed to the system as. On Windows souvlaki strips `file://` and
+/// opens the rest as a path, so the path follows as it is; elsewhere it is a percent-encoded
+/// `file://` URL.
+pub fn cover_file_url(path: &std::path::Path) -> String {
+    if cfg!(windows) {
+        return format!("file://{}", path.display());
+    }
+    let mut url = String::from("file://");
+    for byte in path.to_string_lossy().bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+            url.push(char::from(byte));
+        } else {
+            let _ = write!(url, "%{byte:02X}");
+        }
+    }
+    url
+}
+
+/// What souvlaki is given for `meta`. Text that is missing is sent empty: Windows keeps what it
+/// was told before for anything left out, so a track without an album would show the last one's.
+fn system_metadata(meta: Option<&NowPlaying>) -> MediaMetadata<'_> {
+    MediaMetadata {
+        title: Some(meta.map_or("", |meta| meta.title.as_str())),
+        album: Some(meta.and_then(|meta| meta.album.as_deref()).unwrap_or("")),
+        artist: Some(meta.map_or("", |meta| meta.artist.as_str())),
+        cover_url: meta.and_then(|meta| meta.cover_url.as_deref()),
+        duration: meta
+            .and_then(|meta| meta.duration_ms)
+            .map(Duration::from_millis),
+    }
+}
+
 /// Makes the system's media controls for the main window. The HWND is the window's on Windows.
 /// Events go to the sender, and each wakes the UI through the context.
 pub type MediaFactory = Box<
@@ -234,16 +267,23 @@ impl SouvlakiBackend {
 
 impl MediaBackend for SouvlakiBackend {
     fn metadata(&mut self, meta: Option<&NowPlaying>) {
-        let metadata = MediaMetadata {
-            title: meta.map(|meta| meta.title.as_str()),
-            album: meta.and_then(|meta| meta.album.as_deref()),
-            artist: meta.map(|meta| meta.artist.as_str()),
-            cover_url: meta.and_then(|meta| meta.cover_url.as_deref()),
-            duration: meta
-                .and_then(|meta| meta.duration_ms)
-                .map(Duration::from_millis),
+        let metadata = system_metadata(meta);
+        let with_cover = metadata.cover_url.is_some();
+        let Err(error) = self.controls.set_metadata(metadata) else {
+            return;
         };
-        if let Err(error) = self.controls.set_metadata(metadata) {
+        // A cover the system cannot load would cost the title and the seek bar too: again
+        // without it.
+        let result = if with_cover {
+            let without = MediaMetadata {
+                cover_url: None,
+                ..system_metadata(meta)
+            };
+            self.controls.set_metadata(without)
+        } else {
+            Err(error)
+        };
+        if let Err(error) = result {
             tracing::debug!(?error, "the system did not take the track's details");
         }
     }
@@ -557,6 +597,45 @@ mod tests {
             action_for(MediaEvent::SetPosition(70_000), Some(&unknown_length)),
             Some(MediaAction::SeekTo(70_000))
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_cover_file_is_a_windows_path_after_file_scheme() {
+        // souvlaki strips `file://` and opens the rest as a path.
+        assert_eq!(
+            cover_file_url(std::path::Path::new(r"C:\Users\A B\Ария\x.jpg")),
+            r"file://C:\Users\A B\Ария\x.jpg"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_cover_file_is_a_percent_encoded_url() {
+        assert_eq!(
+            cover_file_url(std::path::Path::new("/home/a b/é.jpg")),
+            "file:///home/a%20b/%C3%A9.jpg"
+        );
+    }
+
+    #[test]
+    fn missing_details_clear_the_previous_ones() {
+        let bare = NowPlaying {
+            album: None,
+            cover_url: None,
+            duration_ms: None,
+            ..track("b", 0, true)
+        };
+        let sent = system_metadata(Some(&bare));
+        assert_eq!(sent.album, Some(""));
+        assert_eq!(sent.title, Some("b title"));
+        let cleared = system_metadata(None);
+        assert_eq!(
+            (cleared.title, cleared.artist, cleared.album),
+            (Some(""), Some(""), Some(""))
+        );
+        assert_eq!(cleared.cover_url, None);
+        assert_eq!(cleared.duration, None);
     }
 
     #[test]

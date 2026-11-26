@@ -196,17 +196,23 @@ disconnect, it makes no request to Spotify or anyone else.
 - **What is handed over.** While "Show in the system's media controls" is on (Settings, General;
   on by default), Aria tells the operating system's media session what plays: the title, artist,
   album, length and position, whether it plays, and a link to the cover. For a local track that
-  link is the cover's thumbnail file in Aria's cache (`file:///…`); for a Spotify track it is
-  Spotify's own image address (`https://i.scdn.co/…`), which the system itself fetches from
-  Spotify's servers. This is Windows' System Media Transport Controls, macOS's Now Playing, or
-  MPRIS over the local D-Bus on Linux; Aria itself sends nothing over the network for it.
+  link is the cover's thumbnail file in Aria's cache; for a Spotify track it is Spotify's own
+  image address (`https://i.scdn.co/…`), the same cover Aria already shows, which is then loaded
+  from Spotify's image server once more: by the system on Windows and Linux, by Aria's own
+  process on macOS (souvlaki loads it there). This is Windows' System Media Transport Controls,
+  macOS's Now Playing, or MPRIS over the local D-Bus on Linux. Nothing else goes over the network
+  for it.
 - **Who sees it.** Whatever the system shows it in: the volume pop-up and the lock screen on
   Windows, Now Playing on macOS, the desktop's media controls on Linux, and other programs that
   read the system's media session (on Linux, any program on the session's D-Bus).
 - **What Aria receives.** Only what the system's media session hands it: play, pause, next,
   previous, seek, and on Linux volume and "raise". Aria reads no other keys.
 - **What is kept.** Nothing new beyond the setting `media_controls` in `settings.toml`. Turning it
-  off removes Aria from the system's media controls.
+  off makes Aria leave the system's media controls (on macOS, Now Playing may keep showing the
+  last track until something else plays).
+- **While minimized with Spotify playing.** So that the system's media controls follow Spotify,
+  Aria asks Spotify for what plays every 15 seconds, and when the track should have ended, while
+  its window is minimized (otherwise it stops asking while minimized).
 
 ## The microphone (since 0.2.3)
 

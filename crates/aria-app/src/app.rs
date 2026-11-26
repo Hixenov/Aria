@@ -252,6 +252,10 @@ pub struct AriaApp {
     media_failed: bool,
     /// The main window's HWND on Windows, from eframe's frame, once it has one.
     window_handle: Option<isize>,
+    /// When Spotify was last asked for its state while the window is minimized.
+    spotify_refreshed_at: Option<Instant>,
+    /// The Spotify track whose end was last reported, so it is asked about once.
+    spotify_end_asked: Option<String>,
     /// Whether the window was shown at the last frame, as last told to the backend.
     window_shown: Option<bool>,
     /// The full-screen record.
@@ -350,6 +354,8 @@ impl AriaApp {
             media_events: None,
             media_failed: false,
             window_handle: None,
+            spotify_refreshed_at: None,
+            spotify_end_asked: None,
             window_shown: None,
             vinyl: VinylMode::default(),
             mini: MiniPlayer::default(),
@@ -535,6 +541,38 @@ impl AriaApp {
         if let Some(media) = &mut self.media {
             media.sync(now.as_ref(), Instant::now());
         }
+        self.refresh_spotify_while_minimized(ctx, now.as_ref());
+    }
+
+    /// While the window is minimized the backend stops polling Spotify, yet the system's media
+    /// controls still show it: ask now and then, and when the track should have ended.
+    fn refresh_spotify_while_minimized(
+        &mut self,
+        ctx: &egui::Context,
+        now: Option<&crate::media_controls::NowPlaying>,
+    ) {
+        const PERIOD: Duration = Duration::from_secs(15);
+        let spotify = self.spotify.active == aria_core::event::ActivePlayer::Spotify;
+        if self.media.is_none() || self.window_shown != Some(false) || !spotify {
+            self.spotify_refreshed_at = None;
+            return;
+        }
+        let at = Instant::now();
+        let due = self
+            .spotify_refreshed_at
+            .is_none_or(|last| at.saturating_duration_since(last) >= PERIOD);
+        let ended = now
+            .filter(|now| now.playing && now.duration_ms.is_some_and(|end| now.position_ms >= end));
+        let ended =
+            ended.filter(|now| self.spotify_end_asked.as_deref() != Some(now.identity.as_str()));
+        if due || ended.is_some() {
+            self.send(Command::Spotify(SpotifyRequest::Refresh));
+            self.spotify_refreshed_at = Some(at);
+            if let Some(ended) = ended {
+                self.spotify_end_asked = Some(ended.identity.clone());
+            }
+        }
+        ctx.request_repaint_after(PERIOD);
     }
 
     fn media_action(&mut self, ctx: &egui::Context, action: crate::media_controls::MediaAction) {
@@ -610,7 +648,8 @@ impl AriaApp {
                 .cache_dir
                 .join("artwork")
                 .join(format!("{}.jpg", artwork.0));
-            file.is_file().then(|| file_url(&file))
+            file.is_file()
+                .then(|| crate::media_controls::cover_file_url(&file))
         });
         Some(NowPlaying {
             identity: track.path.to_string_lossy().into_owned(),
@@ -1920,16 +1959,6 @@ impl eframe::App for AriaApp {
     }
 }
 
-/// A `file:///` URL for `path`, with `\` as `/` (the system media controls want a URL).
-fn file_url(path: &std::path::Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
-    if text.starts_with('/') {
-        format!("file://{text}")
-    } else {
-        format!("file:///{text}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -3080,6 +3109,73 @@ mod tests {
             app.settings.media_controls = true;
             app.logic_frame(&ctx);
             assert_eq!(system.made(), 2);
+        }
+
+        /// The bar shows Spotify, playing "Tune" (3 min) at `progress_ms`.
+        fn spotify_playing(app: &mut AriaApp, progress_ms: u64) {
+            app.spotify.active = aria_core::event::ActivePlayer::Spotify;
+            app.spotify.playback = Some(Arc::new(aria_core::spotify_service::SpotifyPlayback {
+                state: aria_core::PlaybackState {
+                    device: None,
+                    item: Some(aria_core::NowItem::Track(aria_core::SpTrack {
+                        uri: Some("spotify:track:t1".to_owned()),
+                        name: "Tune".to_owned(),
+                        artists: vec!["Bo".to_owned()],
+                        album: "EP".to_owned(),
+                        album_uri: None,
+                        duration_ms: 180_000,
+                        image: None,
+                        image_large: None,
+                    })),
+                    progress_ms,
+                    playing: true,
+                    shuffle: false,
+                    repeat: aria_core::RepeatState::Off,
+                },
+                at: Instant::now(),
+            }));
+        }
+
+        fn refreshes(app: &AriaApp) -> usize {
+            sent_like(app, &Command::Spotify(SpotifyRequest::Refresh))
+        }
+
+        #[test]
+        fn spotify_is_asked_while_minimized() {
+            let system = System::default();
+            let mut app = media_app(&system, true);
+            spotify_playing(&mut app, 10_000);
+            app.window_shown = Some(false);
+            let ctx = egui::Context::default();
+            app.run_media_controls(&ctx);
+            assert_eq!(refreshes(&app), 1);
+            app.run_media_controls(&ctx);
+            assert_eq!(refreshes(&app), 1, "not again within the period");
+        }
+
+        #[test]
+        fn the_end_of_a_spotify_track_asks_for_the_next() {
+            let system = System::default();
+            let mut app = media_app(&system, true);
+            spotify_playing(&mut app, 10_000);
+            app.window_shown = Some(false);
+            let ctx = egui::Context::default();
+            app.run_media_controls(&ctx);
+            spotify_playing(&mut app, 180_000);
+            app.run_media_controls(&ctx);
+            assert_eq!(refreshes(&app), 2);
+            app.run_media_controls(&ctx);
+            assert_eq!(refreshes(&app), 2, "once per track end");
+        }
+
+        #[test]
+        fn spotify_is_not_asked_while_shown() {
+            let system = System::default();
+            let mut app = media_app(&system, true);
+            spotify_playing(&mut app, 180_000);
+            app.window_shown = Some(true);
+            app.run_media_controls(&egui::Context::default());
+            assert_eq!(refreshes(&app), 0);
         }
 
         #[test]
