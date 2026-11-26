@@ -298,6 +298,11 @@ fn lenient_close_to_tray<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Err
     lenient(d, false)
 }
 
+/// [`lenient`] for [`Settings::start_with_system`]: anything odd starts nothing at login.
+fn lenient_start_with_system<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, false)
+}
+
 /// [`lenient`] for [`Settings::history_enabled`].
 fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     lenient(d, HISTORY_ENABLED_DEFAULT)
@@ -544,6 +549,9 @@ pub struct Settings {
     /// (only while Aria has a tray icon).
     #[serde(deserialize_with = "lenient_close_to_tray")]
     pub close_to_tray: bool,
+    /// Whether the system starts Aria at login, waiting in the tray (since 0.4.3).
+    #[serde(deserialize_with = "lenient_start_with_system")]
+    pub start_with_system: bool,
 }
 
 impl Default for Settings {
@@ -587,6 +595,7 @@ impl Default for Settings {
             update_checked_at: None,
             media_controls: MEDIA_CONTROLS_DEFAULT,
             close_to_tray: false,
+            start_with_system: false,
         }
     }
 }
@@ -647,6 +656,15 @@ mod tests {
         assert!(!off.media_controls);
         let odd: Settings = toml::from_str("media_controls = \"x\"").unwrap();
         assert!(odd.media_controls);
+    }
+
+    #[test]
+    fn start_with_system_defaults_off() {
+        assert!(!Settings::default().start_with_system);
+        let on: Settings = toml::from_str("start_with_system = true").unwrap();
+        assert!(on.start_with_system);
+        let odd: Settings = toml::from_str("start_with_system = 3").unwrap();
+        assert!(!odd.start_with_system);
     }
 
     #[test]

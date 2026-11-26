@@ -19,12 +19,20 @@ pub fn is_opened(id: TrackId) -> bool {
     id.0 < 0
 }
 
+/// The argument the system starts Aria with at login ("Start with the system", since 0.4.3).
+pub const AUTOSTART_ARG: &str = "--autostart";
+
+/// Whether Aria was started at login: [`AUTOSTART_ARG`] among the arguments.
+pub fn is_autostart(args: impl IntoIterator<Item = OsString>) -> bool {
+    args.into_iter().any(|arg| arg == AUTOSTART_ARG)
+}
+
 /// The files and folders Aria was started with, from the arguments after the program's own name:
 /// each made whole against `base`, the folder it was started in, so that another copy of Aria,
-/// started elsewhere, can open them. Empty arguments are left out.
+/// started elsewhere, can open them. Empty arguments and [`AUTOSTART_ARG`] are left out.
 pub fn launch_paths(args: impl IntoIterator<Item = OsString>, base: &Path) -> Vec<PathBuf> {
     args.into_iter()
-        .filter(|arg| !arg.is_empty())
+        .filter(|arg| !arg.is_empty() && arg != AUTOSTART_ARG)
         .map(|arg| base.join(arg))
         .collect()
 }
@@ -176,6 +184,18 @@ mod tests {
             codec: Arc::from("flac"),
             picture: None,
         }
+    }
+
+    #[test]
+    fn the_autostart_argument_is_not_a_file() {
+        let args = || vec![OsString::from("--autostart"), OsString::from("song.flac")];
+        assert_eq!(
+            launch_paths(args(), Path::new("/base")),
+            vec![PathBuf::from("/base/song.flac")]
+        );
+        assert!(is_autostart(args()));
+        assert!(!is_autostart(vec![OsString::from("song.flac")]));
+        assert_eq!(AUTOSTART_ARG, "--autostart");
     }
 
     #[test]

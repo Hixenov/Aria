@@ -104,6 +104,17 @@ pub fn claim_opening(
     reach_wait: Duration,
     paths: &[PathBuf],
 ) -> io::Result<Claim> {
+    claim_with(data_dir, Some((reach_wait, paths)))
+}
+
+/// As [`claim`], but if another copy holds the folder this one asks it for nothing: a start at
+/// login while Aria already runs shows nothing. `reached` is then `false`.
+pub fn claim_quietly(data_dir: &Path) -> io::Result<Claim> {
+    claim_with(data_dir, None)
+}
+
+/// Claims `data_dir`; if another copy holds it, reaches that one with `ask`, if given.
+fn claim_with(data_dir: &Path, ask: Option<(Duration, &[PathBuf])>) -> io::Result<Claim> {
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -121,7 +132,7 @@ pub fn claim_opening(
             Ok(Claim::First(Instance { _lock: lock, wakes }))
         }
         Err(TryLockError::WouldBlock) => Ok(Claim::Running {
-            reached: reach(&name, reach_wait, paths),
+            reached: ask.is_some_and(|(reach_wait, paths)| reach(&name, reach_wait, paths)),
         }),
         Err(TryLockError::Error(error)) => Err(error),
     }
@@ -302,6 +313,22 @@ mod tests {
             Claim::Running { reached: true }
         ));
         assert!(wait_until(|| woken.load(Ordering::SeqCst) == 2));
+    }
+
+    #[test]
+    fn a_quiet_claim_does_not_wake_the_running_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance = first(dir.path());
+        let second = claim_quietly(dir.path()).unwrap();
+        assert!(matches!(second, Claim::Running { reached: false }));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !instance.take_wake(),
+            "the running copy was not asked for anything"
+        );
+        drop(instance);
+        let third = claim_quietly(dir.path()).unwrap();
+        assert!(matches!(third, Claim::First(_)), "the folder is free again");
     }
 
     #[test]
