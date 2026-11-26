@@ -88,6 +88,9 @@ Root: HKA; Subkey: "Software\Classes\Applications\aria.exe\shell\open\command"; 
 {#AudioType("opus")}
 {#AudioType("aif")}
 {#AudioType("aiff")}
+; "Start with the system" (since 0.4.3): Aria itself writes the value Aria under the user's Run
+; key. "none" creates nothing here; uninstalling deletes that value, if it is there.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Aria"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
 Filename: "{app}\aria.exe"; Description: "{cm:LaunchProgram,Aria}"; Flags: nowait postinstall skipifsilent

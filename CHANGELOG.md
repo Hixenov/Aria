@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-27 (start with the system)
+
+The third part of Phase 4. Checked with automated tests only. The startup entries are tested in temporary folders and under a throwaway registry key, never in the real ones, and nobody has logged in with Aria registered yet. See `docs/testing/0.4.3-manual-check.md`.
+
+### Added
+
+- **"Start with the system"** (Settings, General, off by default). When it is on, Aria starts when you log in and waits in the tray, playing nothing until you ask. Where it can't wait in the tray (no tray icon, Wayland), its window starts minimized instead.
+  - On Windows this is the value `Aria` in your user's startup list (the one Task Manager's Startup tab shows).
+  - On macOS it is the launch agent `~/Library/LaunchAgents/io.github.hixenov.aria.plist`.
+  - On Linux it is `~/.config/autostart/io.github.hixenov.aria.desktop`.
+- Aria checks its entry at every start, so it follows a portable Aria that moved. Turning the switch off removes the entry. Aria only ever removes an entry that is its own (one that starts it with `--autostart`).
+
+### Changed
+
+- Version 0.4.3. A new setting, `start_with_system`, and a new launch argument, `--autostart`, which is never taken for a file to open.
+- A login start while Aria already runs quits without showing the running window.
+- Uninstalling on Windows removes the startup value of the user who uninstalls.
+- New dependency on Windows: `winreg` 0.56 (MIT), already used to build Aria.
+
 ## [0.4.2] - 2026-11-26 (the tray)
 
 The second part of Phase 4. Checked with automated tests against a stand-in for the tray only: nobody has clicked Aria's tray icon yet, on any system. See `docs/testing/0.4.2-manual-check.md`.

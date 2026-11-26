@@ -217,6 +217,20 @@ disconnect, it makes no request to Spotify or anyone else.
   Aria asks Spotify for what plays every 15 seconds, and when the track should have ended, while
   its window is minimized (otherwise it stops asking while minimized).
 
+## Start with the system (since 0.4.3)
+
+- **What is written.** Only while "Start with the system" is on (Settings, General; off by
+  default), Aria writes one entry for your user account that starts it at login with
+  `--autostart`:
+  - Windows: the value `Aria` under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
+  - macOS: `~/Library/LaunchAgents/io.github.hixenov.aria.plist`.
+  - Linux: `~/.config/autostart/io.github.hixenov.aria.desktop`.
+  It holds the path to Aria's program and nothing else.
+- **When it changes.** At every start, Aria checks the entry: it rewrites it if Aria moved, or
+  removes it if the switch is off. It never touches an entry that isn't its own. Uninstalling on
+  Windows removes it too.
+- **Nothing is sent anywhere** for it.
+
 ## The tray (since 0.4.2)
 
 - **What it shows.** The tray icon's tooltip shows the title and artist of what plays, and its
