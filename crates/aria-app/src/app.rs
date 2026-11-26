@@ -286,6 +286,11 @@ pub struct AriaApp {
     tray_sent: Option<crate::tray::TrayState>,
     /// The main window is hidden to the tray (off the taskbar and Alt+Tab).
     hidden: bool,
+    /// The main window cannot be hidden here (Wayland ignores it), only minimized.
+    cannot_hide: bool,
+    /// Starting Aria again would show a hidden window. Where a tray may have no host to draw
+    /// its icon (Linux and the BSDs), that is the way back, so without it nothing hides.
+    can_relaunch: bool,
     /// Aria quits for real: a close is never turned into hiding.
     quitting: bool,
     /// The main window read as minimized last frame, so "Minimize to tray" hides once per
@@ -311,6 +316,7 @@ impl AriaApp {
         startup_notices: Vec<Notice>,
     ) -> AriaApp {
         let hotkeys_available = deps.hotkeys.is_some();
+        let can_relaunch = !cfg!(all(unix, not(target_os = "macos"))) || deps.instance.is_some();
         let hotkeys: Box<dyn HotkeyBackend> = match deps.hotkeys.take() {
             Some(system) => Box::new(system),
             None => Box::new(NoHotkeys),
@@ -387,6 +393,8 @@ impl AriaApp {
             tray_failed: false,
             tray_sent: None,
             hidden: false,
+            cannot_hide: false,
+            can_relaunch,
             quitting: false,
             was_minimized: false,
         }
@@ -554,7 +562,6 @@ impl AriaApp {
                 }
             }
         }
-        // Without a tray Aria never hides: nothing could bring it back.
         if self.tray.is_none() {
             return;
         }
@@ -566,12 +573,13 @@ impl AriaApp {
         for event in events {
             self.tray_action(ctx, event, minimized);
         }
-        if minimized && !self.was_minimized && !self.hidden && self.settings.minimize_to_tray {
+        let minimized_now = minimized && !self.was_minimized;
+        if minimized_now && !self.hidden && self.settings.minimize_to_tray && self.can_hide() {
             self.hide_main_window(ctx);
         }
         self.was_minimized = minimized;
         let close = ctx.input(|i| i.viewport().close_requested());
-        if close && self.settings.close_to_tray && !self.quitting {
+        if close && self.settings.close_to_tray && !self.quitting && self.can_hide() {
             ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
             self.hide_main_window(ctx);
         }
@@ -582,6 +590,12 @@ impl AriaApp {
             }
             self.tray_sent = Some(state);
         }
+    }
+
+    /// Whether the main window may be hidden: only with a tray icon to bring it back, where
+    /// hiding works at all (not on Wayland), and where starting Aria again can show it.
+    fn can_hide(&self) -> bool {
+        self.tray.is_some() && !self.cannot_hide && self.can_relaunch
     }
 
     /// What the tray shows now.
@@ -601,8 +615,13 @@ impl AriaApp {
             TrayEvent::Toggle => {
                 if self.hidden || minimized {
                     self.show_main_window(ctx);
-                } else {
+                } else if self.can_hide() {
                     self.hide_main_window(ctx);
+                } else {
+                    ctx.send_viewport_cmd_to(
+                        egui::ViewportId::ROOT,
+                        egui::ViewportCommand::Minimized(true),
+                    );
                 }
             }
             TrayEvent::TogglePlay => self.send(Command::TogglePlay),
@@ -2043,12 +2062,15 @@ impl eframe::App for AriaApp {
     /// backend's events (a new soundboard list, replaced settings) are taken in and the hotkeys
     /// synced here too: an Aria started minimized registers its hotkeys without a drawn frame.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if self.window_handle.is_none() {
+        if self.window_handle.is_none() && !self.cannot_hide {
             use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
-            if let Ok(handle) = frame.window_handle()
-                && let RawWindowHandle::Win32(win32) = handle.as_raw()
-            {
-                self.window_handle = Some(win32.hwnd.get());
+            if let Ok(handle) = frame.window_handle() {
+                match handle.as_raw() {
+                    RawWindowHandle::Win32(win32) => self.window_handle = Some(win32.hwnd.get()),
+                    // winit cannot hide a window on Wayland.
+                    RawWindowHandle::Wayland(_) => self.cannot_hide = true,
+                    _ => {}
+                }
             }
         }
         self.logic_frame(ctx);
@@ -3100,12 +3122,15 @@ mod tests {
                 clock: Some(Arc::new(aria_core::PlaybackClock::default())),
                 ..AppDeps::none()
             };
-            AriaApp::new(
+            let mut app = AriaApp::new(
                 settings,
                 Localizer::new(Language::En).unwrap(),
                 deps,
                 vec![],
-            )
+            );
+            // As with a claimed single instance: starting Aria again shows it.
+            app.can_relaunch = true;
+            app
         }
 
         /// One `logic_frame` with the main window `minimized` and, if `close`, its close
@@ -3291,6 +3316,49 @@ mod tests {
             let commands = frame(&mut app, &ctx, true, false);
             assert!(shows(&commands));
             assert!(!has(&commands, &HIDE));
+        }
+
+        #[test]
+        fn where_a_window_cannot_hide_close_and_minimize_stay_as_they_are() {
+            // Wayland: a window cannot be hidden, only minimized.
+            let system = System::default();
+            let mut app = tray_app(&system, true, true, true);
+            app.cannot_hide = true;
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            let commands = frame(&mut app, &ctx, true, true);
+            assert!(!has(&commands, &egui::ViewportCommand::CancelClose));
+            assert!(!has(&commands, &HIDE));
+            assert!(!app.hidden);
+        }
+
+        #[test]
+        fn without_a_way_back_nothing_hides() {
+            // Linux without the single-instance claim: nothing could show a hidden Aria.
+            let system = System::default();
+            let mut app = tray_app(&system, true, true, true);
+            app.can_relaunch = false;
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            let commands = frame(&mut app, &ctx, true, true);
+            assert!(!has(&commands, &egui::ViewportCommand::CancelClose));
+            assert!(!has(&commands, &HIDE));
+        }
+
+        #[test]
+        fn where_a_window_cannot_hide_the_tray_minimizes_it() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, false);
+            app.cannot_hide = true;
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            system.click(TrayEvent::Toggle);
+            let commands = frame(&mut app, &ctx, false, false);
+            assert!(has(&commands, &egui::ViewportCommand::Minimized(true)));
+            assert!(!has(&commands, &HIDE));
+            assert!(!app.hidden);
+            system.click(TrayEvent::Toggle);
+            assert!(shows(&frame(&mut app, &ctx, true, false)));
         }
 
         #[test]

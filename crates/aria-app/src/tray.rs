@@ -6,6 +6,7 @@
 //! tests. The icon's events arrive on the UI thread's queue and wake the window, so they are
 //! handled even while it is hidden.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use aria_core::i18n::Localizer;
@@ -143,18 +144,33 @@ pub fn menu_event(id: &str) -> Option<TrayEvent> {
     }
 }
 
+/// What the icon's clicks have been, so a double click is one toggle.
+#[derive(Debug, Default)]
+struct ClickState {
+    /// A double click came: the click that ends it is part of it.
+    after_double: AtomicBool,
+}
+
 /// What a click on the icon itself means: a left click (once released) shows or hides Aria.
-/// On macOS a click opens the menu instead, as menu bar icons do there.
-fn icon_event(event: &TrayIconEvent) -> Option<TrayEvent> {
-    let left_click = matches!(
-        event,
+/// Windows sends a double click as a click, the double click and a click again; only the first
+/// counts, or a double click would show Aria and hide it at once. On macOS a click opens the
+/// menu instead, as menu bar icons do there.
+fn icon_event(event: &TrayIconEvent, clicks: &ClickState) -> Option<TrayEvent> {
+    if cfg!(target_os = "macos") {
+        return None;
+    }
+    match event {
+        TrayIconEvent::DoubleClick { .. } => {
+            clicks.after_double.store(true, Ordering::Relaxed);
+            None
+        }
         TrayIconEvent::Click {
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
             ..
-        }
-    );
-    (left_click && !cfg!(target_os = "macos")).then_some(TrayEvent::Toggle)
+        } => (!clicks.after_double.swap(false, Ordering::Relaxed)).then_some(TrayEvent::Toggle),
+        _ => None,
+    }
 }
 
 /// Aria's icon at [`ICON_SIDE`] pixels square, as RGBA.
@@ -234,8 +250,9 @@ impl SystemTray {
                 menu_ctx.request_repaint();
             }
         }));
+        let clicks = ClickState::default();
         TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-            if let Some(event) = icon_event(&event) {
+            if let Some(event) = icon_event(&event, &clicks) {
                 let _ = events.send(event);
                 ctx.request_repaint();
             }
@@ -369,17 +386,48 @@ mod tests {
             button,
             button_state,
         };
+        let clicks = ClickState::default();
         assert_eq!(
-            icon_event(&click(MouseButton::Left, MouseButtonState::Up)),
+            icon_event(&click(MouseButton::Left, MouseButtonState::Up), &clicks),
             Some(TrayEvent::Toggle)
         );
         assert_eq!(
-            icon_event(&click(MouseButton::Left, MouseButtonState::Down)),
+            icon_event(&click(MouseButton::Left, MouseButtonState::Down), &clicks),
             None
         );
         assert_eq!(
-            icon_event(&click(MouseButton::Right, MouseButtonState::Up)),
+            icon_event(&click(MouseButton::Right, MouseButtonState::Up), &clicks),
             None
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_double_click_toggles_once() {
+        use tray_icon::{
+            MouseButton, MouseButtonState, Rect, TrayIconEvent, dpi::PhysicalPosition,
+        };
+        let up = || TrayIconEvent::Click {
+            id: "aria".into(),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: Rect::default(),
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+        };
+        let double = TrayIconEvent::DoubleClick {
+            id: "aria".into(),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: Rect::default(),
+            button: MouseButton::Left,
+        };
+        let clicks = ClickState::default();
+        // What Windows sends for a double click: up, double click, up.
+        let toggles: Vec<_> = [up(), double, up()]
+            .iter()
+            .filter_map(|event| icon_event(event, &clicks))
+            .collect();
+        assert_eq!(toggles, [TrayEvent::Toggle]);
+        // The next single click toggles again.
+        assert_eq!(icon_event(&up(), &clicks), Some(TrayEvent::Toggle));
     }
 }

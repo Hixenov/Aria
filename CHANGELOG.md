@@ -27,7 +27,9 @@ The second part of Phase 4. Checked with automated tests against a stand-in for 
 
 ### Limits
 
-- On a Linux desktop that shows no tray icons (GNOME without an extension), the icon can't be seen. Hiding Aria there leaves it running out of sight, and starting Aria again brings it back.
+- On Wayland a window can't be hidden: there "Minimize to tray" and "Close to tray" do nothing, and a click on the tray icon minimizes Aria instead of hiding it.
+- On a Linux desktop that shows no tray icons (GNOME on X11 without an extension), the icon can't be seen. Hiding Aria there leaves it running out of sight, and starting Aria again brings it back.
+- A double click on the icon on Windows counts as one click.
 - macOS and Linux are built and tested in CI, but nobody has tried them.
 
 ## [0.4.1] - 2026-11-26 (update check fix)
