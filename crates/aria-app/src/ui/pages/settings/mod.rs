@@ -157,6 +157,16 @@ fn general(ui: &mut Ui, tr: &Localizer, p: &Palette, s: &mut Settings) {
                 .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
         });
         caption(ui, p, &hint, TextStyle::Small);
+        divider(ui);
+        let media = tr.tr("settings-media-controls");
+        let hint = tr.tr("settings-media-controls-hint");
+        row(ui, p, &media, |ui| {
+            let checkbox = Checkbox::without_text(&mut s.media_controls);
+            let response = ui.add(checkbox).accessible_name(&*media);
+            ui.ctx()
+                .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
+        });
+        caption(ui, p, &hint, TextStyle::Small);
     });
 }
 
@@ -552,6 +562,19 @@ mod tests {
     fn page() -> egui_kittest::Harness<'static, World> {
         let world = World::new(Collections::default(), LibraryView::default());
         harness(world, |ui, world| world.page(ui, show))
+    }
+
+    #[test]
+    fn the_media_controls_switch_updates_settings() {
+        let mut harness = page();
+        let label = harness.state().english("settings-media-controls");
+        assert_eq!(label, "Show in the system's media controls");
+        click_on(&mut harness, Role::CheckBox, &label);
+        harness.run();
+        let [PageAction::UpdateSettings(settings)] = harness.state().out.as_slice() else {
+            panic!("expected one UpdateSettings, got {:?}", harness.state().out);
+        };
+        assert!(!settings.media_controls);
     }
 
     #[test]

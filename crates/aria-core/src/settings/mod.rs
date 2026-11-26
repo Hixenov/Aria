@@ -19,6 +19,8 @@ const SIDEBAR_DEFAULT: f32 = 220.0;
 const VOLUME_DEFAULT: f32 = 1.0;
 const GAPLESS_DEFAULT: bool = true;
 const SPOTIFY_PLAY_IN_ARIA_DEFAULT: bool = true;
+/// Whether Aria joins the system's media controls unless told otherwise.
+const MEDIA_CONTROLS_DEFAULT: bool = true;
 const HISTORY_ENABLED_DEFAULT: bool = true;
 const WATCH_FOLDERS_DEFAULT: bool = true;
 const EXCLUSIVE_OUTPUT_DEFAULT: bool = false;
@@ -287,6 +289,10 @@ fn lenient_play_in_aria<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Erro
     lenient(d, SPOTIFY_PLAY_IN_ARIA_DEFAULT)
 }
 
+fn lenient_media_controls<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, MEDIA_CONTROLS_DEFAULT)
+}
+
 /// [`lenient`] for [`Settings::history_enabled`].
 fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     lenient(d, HISTORY_ENABLED_DEFAULT)
@@ -524,6 +530,10 @@ pub struct Settings {
     /// When the last check finished, in seconds since 1970 (UTC).
     #[serde(deserialize_with = "lenient_or_default")]
     pub update_checked_at: Option<u64>,
+    /// Whether media keys and the system's media controls (the volume pop-up and lock screen on
+    /// Windows, Now Playing on macOS, MPRIS on Linux) control Aria and show what plays.
+    #[serde(deserialize_with = "lenient_media_controls")]
+    pub media_controls: bool,
 }
 
 impl Default for Settings {
@@ -565,6 +575,7 @@ impl Default for Settings {
             mini_player: MiniPlayerSettings::default(),
             update_checks: UpdateChecks::NotAsked,
             update_checked_at: None,
+            media_controls: MEDIA_CONTROLS_DEFAULT,
         }
     }
 }
@@ -613,6 +624,19 @@ fn level(value: f32, max: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_controls_default_on() {
+        assert!(Settings::default().media_controls);
+    }
+
+    #[test]
+    fn media_controls_reads_off_and_falls_back() {
+        let off: Settings = toml::from_str("media_controls = false").unwrap();
+        assert!(!off.media_controls);
+        let odd: Settings = toml::from_str("media_controls = \"x\"").unwrap();
+        assert!(odd.media_controls);
+    }
 
     #[test]
     fn update_checks_start_not_asked() {

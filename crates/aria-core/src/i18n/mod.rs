@@ -459,6 +459,8 @@ mod tests {
         "settings-updates",
         "settings-check-updates",
         "settings-check-updates-hint",
+        "settings-media-controls",
+        "settings-media-controls-hint",
         "update-card-title",
         "update-card-body",
         "update-card-on",
