@@ -127,6 +127,8 @@ pub struct AppDeps {
     pub instance: Option<Instance>,
     /// Starts the downloaded installer once Aria has shut down. Without it nothing is started.
     pub launcher: Option<crate::update::Launcher>,
+    /// Makes the system's media controls. Without it media keys do nothing.
+    pub media: Option<crate::media_controls::MediaFactory>,
 }
 
 impl AppDeps {
@@ -242,6 +244,14 @@ pub struct AriaApp {
     update: UpdateStatus,
     /// The checked installer to start once the backend has shut down ("Restart to update").
     install_on_exit: Option<std::path::PathBuf>,
+    /// The system's media controls, while the setting has them on.
+    media: Option<crate::media_controls::MediaSync>,
+    /// What the system's media controls ask, from their thread.
+    media_events: Option<std::sync::mpsc::Receiver<crate::media_controls::MediaEvent>>,
+    /// Making the media controls failed; not tried again until the setting is turned off and on.
+    media_failed: bool,
+    /// The main window's HWND on Windows, from eframe's frame, once it has one.
+    window_handle: Option<isize>,
     /// Whether the window was shown at the last frame, as last told to the backend.
     window_shown: Option<bool>,
     /// The full-screen record.
@@ -336,6 +346,10 @@ impl AriaApp {
             covers: RemoteCovers::default(),
             update: UpdateStatus::Idle,
             install_on_exit: None,
+            media: None,
+            media_events: None,
+            media_failed: false,
+            window_handle: None,
             window_shown: None,
             vinyl: VinylMode::default(),
             mini: MiniPlayer::default(),
@@ -473,6 +487,141 @@ impl AriaApp {
         self.drain_events(ctx);
         self.tell_window_shown(ctx);
         self.run_hotkeys(ctx);
+        self.run_media_controls(ctx);
+    }
+
+    /// Makes or drops the system's media controls as the setting says, acts on what they asked,
+    /// and tells them what plays now.
+    fn run_media_controls(&mut self, ctx: &egui::Context) {
+        if !self.settings.media_controls {
+            // Events still queued are dropped with their receiver, unread.
+            self.media = None;
+            self.media_events = None;
+            self.media_failed = false;
+            return;
+        }
+        if self.media.is_none() && !self.media_failed {
+            // Windows ties the controls to the window: wait for its handle.
+            if cfg!(windows) && self.window_handle.is_none() {
+                return;
+            }
+            let Some(factory) = &self.deps.media else {
+                return;
+            };
+            let (events_tx, events) = std::sync::mpsc::channel();
+            match factory(self.window_handle, events_tx, ctx.clone()) {
+                Ok(backend) => {
+                    self.media = Some(crate::media_controls::MediaSync::new(backend));
+                    self.media_events = Some(events);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the system's media controls are not available");
+                    self.media_failed = true;
+                    return;
+                }
+            }
+        }
+        let now = self.now_playing();
+        let events: Vec<_> = self
+            .media_events
+            .as_ref()
+            .map(|events| events.try_iter().collect())
+            .unwrap_or_default();
+        for event in events {
+            if let Some(action) = crate::media_controls::action_for(event, now.as_ref()) {
+                self.media_action(ctx, action);
+            }
+        }
+        if let Some(media) = &mut self.media {
+            media.sync(now.as_ref(), Instant::now());
+        }
+    }
+
+    fn media_action(&mut self, ctx: &egui::Context, action: crate::media_controls::MediaAction) {
+        use crate::media_controls::MediaAction;
+        match action {
+            MediaAction::TogglePlay => self.send(Command::TogglePlay),
+            MediaAction::Next => self.send(Command::Next),
+            MediaAction::Previous => self.send(Command::Previous),
+            MediaAction::SeekTo(position_ms) => self.send(Command::Seek(position_ms)),
+            MediaAction::SetVolume(volume) => {
+                let mut settings = self.settings.clone();
+                settings.volume = volume;
+                self.update_settings(ctx, settings);
+            }
+            MediaAction::Raise => {
+                for command in [
+                    egui::ViewportCommand::Visible(true),
+                    egui::ViewportCommand::Minimized(false),
+                    egui::ViewportCommand::Focus,
+                ] {
+                    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+                }
+            }
+        }
+    }
+
+    /// What plays now, as the player bar shows it: Spotify while the bar shows Spotify,
+    /// otherwise the loaded local track.
+    fn now_playing(&self) -> Option<crate::media_controls::NowPlaying> {
+        use crate::media_controls::NowPlaying;
+        if self.spotify.active == aria_core::event::ActivePlayer::Spotify {
+            let playback = self.spotify.playback.as_ref()?;
+            let state = &playback.state;
+            let Some(aria_core::NowItem::Track(track)) = &state.item else {
+                return None;
+            };
+            let since = if state.playing {
+                u64::try_from(playback.at.elapsed().as_millis()).unwrap_or(u64::MAX)
+            } else {
+                0
+            };
+            let duration_ms = (track.duration_ms > 0).then_some(track.duration_ms);
+            let position_ms = state.progress_ms.saturating_add(since);
+            return Some(NowPlaying {
+                identity: track.uri.clone().unwrap_or_else(|| track.name.clone()),
+                title: track.name.clone(),
+                artist: track.artists.join(", "),
+                album: (!track.album.is_empty()).then(|| track.album.clone()),
+                duration_ms,
+                cover_url: track
+                    .image_large
+                    .clone()
+                    .or_else(|| track.image.clone())
+                    .filter(|url| url.starts_with("https://")),
+                position_ms: duration_ms.map_or(position_ms, |end| position_ms.min(end)),
+                playing: state.playing,
+            });
+        }
+        let id = self.player.current?;
+        let track = self.playing_snapshot().track(id)?;
+        let reading = self.clock.as_ref().map(|clock| clock.read());
+        let (position_ms, playing) = match reading {
+            Some(reading) if reading.token == self.player.token && reading.token != 0 => {
+                (reading.position_ms, reading.playing)
+            }
+            _ => (0, self.player.playing),
+        };
+        let cover_url = track.artwork.as_ref().and_then(|artwork| {
+            let file = self
+                .deps
+                .paths
+                .as_ref()?
+                .cache_dir
+                .join("artwork")
+                .join(format!("{}.jpg", artwork.0));
+            file.is_file().then(|| file_url(&file))
+        });
+        Some(NowPlaying {
+            identity: track.path.to_string_lossy().into_owned(),
+            title: track.title.clone(),
+            artist: track.artist.as_deref().unwrap_or_default().to_owned(),
+            album: track.album.as_deref().map(str::to_owned),
+            duration_ms: (self.player.duration_ms > 0).then_some(self.player.duration_ms),
+            cover_url,
+            position_ms,
+            playing,
+        })
     }
 
     /// Tells the backend when the window is minimized or shown again, so Spotify is not polled
@@ -1724,7 +1873,15 @@ impl eframe::App for AriaApp {
     /// Runs before every [`Self::ui`], and alone while the window is minimized. So the
     /// backend's events (a new soundboard list, replaced settings) are taken in and the hotkeys
     /// synced here too: an Aria started minimized registers its hotkeys without a drawn frame.
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.window_handle.is_none() {
+            use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+            if let Ok(handle) = frame.window_handle()
+                && let RawWindowHandle::Win32(win32) = handle.as_raw()
+            {
+                self.window_handle = Some(win32.hwnd.get());
+            }
+        }
         self.logic_frame(ctx);
     }
 
@@ -1735,6 +1892,9 @@ impl eframe::App for AriaApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Aria leaves the system's media controls first, so no stale entry stays behind.
+        self.media = None;
+        self.media_events = None;
         if let Some(backend) = self.deps.backend.take() {
             let clean = backend.shutdown(SHUTDOWN_TIMEOUT);
             tracing::debug!(clean, "backend stopped");
@@ -1757,6 +1917,16 @@ impl eframe::App for AriaApp {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         // The page background, so newly exposed areas never flash another color on resize.
         visuals.extreme_bg_color.to_normalized_gamma_f32()
+    }
+}
+
+/// A `file:///` URL for `path`, with `\` as `/` (the system media controls want a URL).
+fn file_url(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    if text.starts_with('/') {
+        format!("file://{text}")
+    } else {
+        format!("file:///{text}")
     }
 }
 
@@ -2703,6 +2873,225 @@ mod tests {
             "the dialog stayed open"
         );
         assert!(!harness.state().modal_open());
+    }
+
+    mod media {
+        use super::*;
+        use crate::media_controls::{MediaBackend, MediaEvent, MediaFactory, NowPlaying};
+        use std::sync::Mutex;
+
+        #[derive(Clone, Debug, PartialEq)]
+        enum Call {
+            Metadata(Option<NowPlaying>),
+            Playback(Option<bool>, u64),
+        }
+
+        struct Fake(Arc<Mutex<Vec<Call>>>);
+
+        impl MediaBackend for Fake {
+            fn metadata(&mut self, meta: Option<&NowPlaying>) {
+                self.0.lock().unwrap().push(Call::Metadata(meta.cloned()));
+            }
+            fn playback(&mut self, playing: Option<bool>, position_ms: u64) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(Call::Playback(playing, position_ms));
+            }
+        }
+
+        /// What the fake system saw: the calls, how often it was made, and its event sender.
+        #[derive(Clone, Default)]
+        struct System {
+            calls: Arc<Mutex<Vec<Call>>>,
+            made: Arc<Mutex<usize>>,
+            events: Arc<Mutex<Option<std::sync::mpsc::Sender<MediaEvent>>>>,
+        }
+
+        impl System {
+            fn factory(&self, works: bool) -> MediaFactory {
+                let system = self.clone();
+                Box::new(move |_hwnd, events, _ctx| {
+                    *system.made.lock().unwrap() += 1;
+                    if !works {
+                        return Err("no media session here".to_owned());
+                    }
+                    *system.events.lock().unwrap() = Some(events);
+                    Ok(Box::new(Fake(Arc::clone(&system.calls))) as Box<dyn MediaBackend>)
+                })
+            }
+
+            fn press(&self, event: MediaEvent) {
+                if let Some(events) = &*self.events.lock().unwrap() {
+                    events.send(event).unwrap();
+                }
+            }
+
+            fn made(&self) -> usize {
+                *self.made.lock().unwrap()
+            }
+
+            fn last_metadata(&self) -> Option<Option<NowPlaying>> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find_map(|call| match call {
+                        Call::Metadata(meta) => Some(meta.clone()),
+                        Call::Playback(..) => None,
+                    })
+            }
+        }
+
+        fn media_app(system: &System, works: bool) -> AriaApp {
+            let settings = Settings {
+                language: Some(Language::En),
+                ..Settings::default()
+            };
+            let deps = AppDeps {
+                media: Some(system.factory(works)),
+                clock: Some(Arc::new(aria_core::PlaybackClock::default())),
+                ..AppDeps::none()
+            };
+            let mut app = AriaApp::new(
+                settings,
+                Localizer::new(Language::En).unwrap(),
+                deps,
+                vec![],
+            );
+            // What eframe's frame gives on Windows; tests have no window.
+            app.window_handle = Some(1);
+            app
+        }
+
+        /// A library track "Song" by "Ann" on "LP", loaded and playing at 1 s.
+        fn playing_song(app: &mut AriaApp) {
+            let mut track = opened_track(1, "Song");
+            track.artist = Some(Arc::from("Ann"));
+            track.album = Some(Arc::from("LP"));
+            track.duration_ms = 60_000;
+            app.library.snapshot = Arc::new(aria_library::LibrarySnapshot {
+                tracks: vec![track],
+                ..aria_library::LibrarySnapshot::default()
+            });
+            app.player.current = Some(aria_library::TrackId(1));
+            app.player.token = 7;
+            app.player.duration_ms = 60_000;
+            app.player.playing = true;
+            if let Some(clock) = &app.clock {
+                clock.publish(aria_core::ClockReading {
+                    token: 7,
+                    position_ms: 1_000,
+                    playing: true,
+                });
+            }
+        }
+
+        #[test]
+        fn media_keys_become_player_commands() {
+            let system = System::default();
+            let mut app = media_app(&system, true);
+            playing_song(&mut app);
+            let ctx = egui::Context::default();
+            app.logic_frame(&ctx);
+            for event in [
+                MediaEvent::Toggle,
+                MediaEvent::Next,
+                MediaEvent::Previous,
+                MediaEvent::SetPosition(5_000),
+            ] {
+                system.press(event);
+            }
+            app.logic_frame(&ctx);
+            for command in [
+                Command::TogglePlay,
+                Command::Next,
+                Command::Previous,
+                Command::Seek(5_000),
+            ] {
+                assert_eq!(sent_like(&app, &command), 1, "{command:?}");
+            }
+        }
+
+        #[test]
+        fn raise_shows_the_window() {
+            let system = System::default();
+            let app = media_app(&system, true);
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1200.0, 780.0))
+                .build_ui_state(
+                    |ui, app: &mut AriaApp| {
+                        app.logic_frame(&ui.ctx().clone());
+                        app.show(ui);
+                    },
+                    app,
+                );
+            harness.run();
+            system.press(MediaEvent::Raise);
+            harness.step();
+            let focused = harness
+                .output()
+                .viewport_output
+                .values()
+                .flat_map(|viewport| viewport.commands.iter())
+                .any(|command| matches!(command, egui::ViewportCommand::Focus));
+            assert!(focused);
+        }
+
+        #[test]
+        fn the_playing_track_reaches_the_system() {
+            let system = System::default();
+            let mut app = media_app(&system, true);
+            playing_song(&mut app);
+            app.logic_frame(&egui::Context::default());
+            let meta = system.last_metadata().flatten().unwrap();
+            assert_eq!(meta.title, "Song");
+            assert_eq!(meta.artist, "Ann");
+            assert_eq!(meta.album.as_deref(), Some("LP"));
+            assert_eq!(meta.duration_ms, Some(60_000));
+            assert_eq!(meta.cover_url, None, "no thumbnail file");
+            assert!(meta.playing);
+            assert_eq!(meta.position_ms, 1_000);
+        }
+
+        #[test]
+        fn nothing_playing_shows_stopped() {
+            let system = System::default();
+            let mut app = media_app(&system, true);
+            app.logic_frame(&egui::Context::default());
+            assert_eq!(system.last_metadata(), Some(None));
+        }
+
+        #[test]
+        fn turning_the_setting_off_drops_the_controls() {
+            let system = System::default();
+            let mut app = media_app(&system, true);
+            playing_song(&mut app);
+            let ctx = egui::Context::default();
+            app.logic_frame(&ctx);
+            assert_eq!(system.made(), 1);
+            system.press(MediaEvent::Toggle);
+            app.settings.media_controls = false;
+            app.logic_frame(&ctx);
+            app.logic_frame(&ctx);
+            assert_eq!(sent_like(&app, &Command::TogglePlay), 0);
+            assert_eq!(system.made(), 1);
+            app.settings.media_controls = true;
+            app.logic_frame(&ctx);
+            assert_eq!(system.made(), 2);
+        }
+
+        #[test]
+        fn a_failing_factory_is_tried_once() {
+            let system = System::default();
+            let mut app = media_app(&system, false);
+            let ctx = egui::Context::default();
+            for _ in 0..3 {
+                app.logic_frame(&ctx);
+            }
+            assert_eq!(system.made(), 1);
+        }
     }
 
     mod updates {

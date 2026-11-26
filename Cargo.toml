@@ -80,4 +80,7 @@ base64 = "0.22.1"
 form_urlencoded = "1.2.2"
 # 0.3.5 update checker: version comparison and checksum text. Both were already in Cargo.lock.
 semver = "1.0.28"
+# 0.4.0: media keys and the system's media controls (SMTC, Now Playing, MPRIS).
+souvlaki = "0.9.3"
+raw-window-handle = "0.6.2"
 hex = "0.4.3"

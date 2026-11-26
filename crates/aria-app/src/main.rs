@@ -232,6 +232,8 @@ fn main() -> anyhow::Result<()> {
         hotkeys,
         instance,
         launcher: Some(Box::new(aria_app::update::launch_installer)),
+        // Media keys and the system's media panel; the setting can turn them off.
+        media: Some(aria_app::media_controls::system_factory()),
     };
     if let Some(instance) = &deps.instance {
         // Another copy's request wakes the window, minimized or not.

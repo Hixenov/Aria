@@ -5,7 +5,14 @@
 //! to tell the system, and when. Both run on the UI thread. The system behind them is a
 //! [`MediaBackend`]: `souvlaki` in the app, a fake in tests.
 
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
+
+use eframe::egui;
+use souvlaki::{
+    MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
+    SeekDirection,
+};
 
 /// How often the position is sent again while playing, so the system's timeline stays close.
 pub const PERIOD: Duration = Duration::from_secs(5);
@@ -177,6 +184,107 @@ impl MediaSync {
 fn same_metadata(a: &NowPlaying, b: &NowPlaying) -> bool {
     (&a.title, &a.artist, &a.album, a.duration_ms, &a.cover_url)
         == (&b.title, &b.artist, &b.album, b.duration_ms, &b.cover_url)
+}
+
+/// Makes the system's media controls for the main window. The HWND is the window's on Windows.
+/// Events go to the sender, and each wakes the UI through the context.
+pub type MediaFactory = Box<
+    dyn Fn(
+        Option<isize>,
+        Sender<MediaEvent>,
+        egui::Context,
+    ) -> Result<Box<dyn MediaBackend>, String>,
+>;
+
+/// The real system's media controls, through `souvlaki`.
+pub fn system_factory() -> MediaFactory {
+    Box::new(|hwnd, events, ctx| {
+        SouvlakiBackend::new(hwnd, events, ctx)
+            .map(|backend| Box::new(backend) as Box<dyn MediaBackend>)
+    })
+}
+
+struct SouvlakiBackend {
+    controls: MediaControls,
+}
+
+impl SouvlakiBackend {
+    fn new(
+        hwnd: Option<isize>,
+        events: Sender<MediaEvent>,
+        ctx: egui::Context,
+    ) -> Result<Self, String> {
+        let config = PlatformConfig {
+            display_name: "Aria",
+            dbus_name: "aria",
+            // The window's handle as the pointer souvlaki asks for; nothing is dereferenced here.
+            hwnd: hwnd.map(|hwnd| std::ptr::with_exposed_provenance_mut(hwnd.cast_unsigned())),
+        };
+        let mut controls = MediaControls::new(config).map_err(|error| format!("{error:?}"))?;
+        controls
+            .attach(move |event| {
+                // Fails only once the app has dropped the controls' receiver.
+                let _ = events.send(from_system(&event));
+                ctx.request_repaint();
+            })
+            .map_err(|error| format!("{error:?}"))?;
+        Ok(SouvlakiBackend { controls })
+    }
+}
+
+impl MediaBackend for SouvlakiBackend {
+    fn metadata(&mut self, meta: Option<&NowPlaying>) {
+        let metadata = MediaMetadata {
+            title: meta.map(|meta| meta.title.as_str()),
+            album: meta.and_then(|meta| meta.album.as_deref()),
+            artist: meta.map(|meta| meta.artist.as_str()),
+            cover_url: meta.and_then(|meta| meta.cover_url.as_deref()),
+            duration: meta
+                .and_then(|meta| meta.duration_ms)
+                .map(Duration::from_millis),
+        };
+        if let Err(error) = self.controls.set_metadata(metadata) {
+            tracing::debug!(?error, "the system did not take the track's details");
+        }
+    }
+
+    fn playback(&mut self, playing: Option<bool>, position_ms: u64) {
+        let progress = Some(MediaPosition(Duration::from_millis(position_ms)));
+        let playback = match playing {
+            None => MediaPlayback::Stopped,
+            Some(false) => MediaPlayback::Paused { progress },
+            Some(true) => MediaPlayback::Playing { progress },
+        };
+        if let Err(error) = self.controls.set_playback(playback) {
+            tracing::debug!(?error, "the system did not take the playback state");
+        }
+    }
+}
+
+/// What a system event asks, in Aria's terms.
+fn from_system(event: &MediaControlEvent) -> MediaEvent {
+    let millis = |duration: &Duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+    match event {
+        MediaControlEvent::Play => MediaEvent::Play,
+        MediaControlEvent::Pause => MediaEvent::Pause,
+        MediaControlEvent::Toggle => MediaEvent::Toggle,
+        MediaControlEvent::Stop => MediaEvent::Stop,
+        MediaControlEvent::Next => MediaEvent::Next,
+        MediaControlEvent::Previous => MediaEvent::Previous,
+        MediaControlEvent::Seek(direction) => MediaEvent::Seek {
+            forward: matches!(direction, SeekDirection::Forward),
+            by_ms: None,
+        },
+        MediaControlEvent::SeekBy(direction, by) => MediaEvent::Seek {
+            forward: matches!(direction, SeekDirection::Forward),
+            by_ms: Some(millis(by)),
+        },
+        MediaControlEvent::SetPosition(MediaPosition(at)) => MediaEvent::SetPosition(millis(at)),
+        MediaControlEvent::SetVolume(volume) => MediaEvent::SetVolume(*volume),
+        MediaControlEvent::Raise => MediaEvent::Raise,
+        // Shuffle, opening a URI, quitting, and whatever a later souvlaki adds.
+        _ => MediaEvent::Ignored,
+    }
 }
 
 #[cfg(test)]
@@ -448,6 +556,40 @@ mod tests {
         assert_eq!(
             action_for(MediaEvent::SetPosition(70_000), Some(&unknown_length)),
             Some(MediaAction::SeekTo(70_000))
+        );
+    }
+
+    #[test]
+    fn system_events_are_read() {
+        use std::time::Duration;
+        assert_eq!(from_system(&MediaControlEvent::Toggle), MediaEvent::Toggle);
+        assert_eq!(
+            from_system(&MediaControlEvent::SeekBy(
+                SeekDirection::Backward,
+                Duration::from_secs(5)
+            )),
+            MediaEvent::Seek {
+                forward: false,
+                by_ms: Some(5_000)
+            }
+        );
+        assert_eq!(
+            from_system(&MediaControlEvent::Seek(SeekDirection::Forward)),
+            MediaEvent::Seek {
+                forward: true,
+                by_ms: None
+            }
+        );
+        assert_eq!(
+            from_system(&MediaControlEvent::SetPosition(MediaPosition(
+                Duration::from_millis(1_234)
+            ))),
+            MediaEvent::SetPosition(1_234)
+        );
+        assert_eq!(from_system(&MediaControlEvent::Quit), MediaEvent::Ignored);
+        assert_eq!(
+            from_system(&MediaControlEvent::OpenUri("x".to_owned())),
+            MediaEvent::Ignored
         );
     }
 
