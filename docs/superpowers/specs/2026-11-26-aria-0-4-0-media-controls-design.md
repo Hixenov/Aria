@@ -1,7 +1,7 @@
 # Aria 0.4.0: Media keys and the system's media controls
 
 On 2026-11-26 the user said "phase 4", chose "Media keys first", then "Use souvlaki".
-**This design is not approved yet.**
+Approved by the user 2026-11-26 ("Approve").
 
 ## Intent
 
