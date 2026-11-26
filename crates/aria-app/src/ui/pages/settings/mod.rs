@@ -158,6 +158,16 @@ fn general(ui: &mut Ui, tr: &Localizer, p: &Palette, s: &mut Settings) {
         });
         caption(ui, p, &hint, TextStyle::Small);
         divider(ui);
+        let close = tr.tr("settings-close-to-tray");
+        let hint = tr.tr("settings-close-to-tray-hint");
+        row(ui, p, &close, |ui| {
+            let checkbox = Checkbox::without_text(&mut s.close_to_tray);
+            let response = ui.add(checkbox).accessible_name(&*close);
+            ui.ctx()
+                .accesskit_node_builder(response.id, |node| node.set_description(&*hint));
+        });
+        caption(ui, p, &hint, TextStyle::Small);
+        divider(ui);
         let media = tr.tr("settings-media-controls");
         let hint = tr.tr("settings-media-controls-hint");
         row(ui, p, &media, |ui| {
@@ -565,6 +575,26 @@ mod tests {
     }
 
     #[test]
+    fn the_close_to_tray_switch_updates_settings() {
+        let mut harness = page();
+        let label = harness.state().english("settings-close-to-tray");
+        assert_eq!(label, "Close to tray");
+        click_on(&mut harness, Role::CheckBox, &label);
+        harness.run();
+        let [PageAction::UpdateSettings(settings)] = harness.state().out.as_slice() else {
+            panic!("expected one UpdateSettings, got {:?}", harness.state().out);
+        };
+        assert!(settings.close_to_tray);
+    }
+
+    #[test]
+    fn the_minimize_to_tray_hint_no_longer_waits_for_phase_4() {
+        let harness = page();
+        let hint = harness.state().english("settings-minimize-to-tray-hint");
+        assert!(!hint.contains("Phase 4"), "{hint}");
+    }
+
+    #[test]
     fn the_media_controls_switch_updates_settings() {
         let mut harness = page();
         let label = harness.state().english("settings-media-controls");
@@ -593,9 +623,8 @@ mod tests {
     fn replay_gain_is_chosen_in_the_playback_card() {
         let mut harness = page();
         let label = harness.state().english("settings-replay-gain");
-        harness
-            .get_by_role_and_label(Role::ComboBox, &label)
-            .click();
+        // The card may sit below the fold, where its list would open out of sight.
+        click_on(&mut harness, Role::ComboBox, &label);
         harness.run();
         let by_album = harness.state().english("settings-replay-gain-album");
         harness

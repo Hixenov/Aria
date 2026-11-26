@@ -1,6 +1,6 @@
 # Aria 0.4.2: the system tray
 
-Status: draft for the user's approval.
+Status: approved by the user on 2026-11-26 ("Approve").
 
 ## Intent
 

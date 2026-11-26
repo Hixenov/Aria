@@ -293,6 +293,11 @@ fn lenient_media_controls<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Er
     lenient(d, MEDIA_CONTROLS_DEFAULT)
 }
 
+/// [`lenient`] for [`Settings::close_to_tray`]: anything odd keeps the close button quitting.
+fn lenient_close_to_tray<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient(d, false)
+}
+
 /// [`lenient`] for [`Settings::history_enabled`].
 fn lenient_history_enabled<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     lenient(d, HISTORY_ENABLED_DEFAULT)
@@ -435,7 +440,8 @@ pub struct Settings {
     /// Accent override for the light theme.
     #[serde(deserialize_with = "lenient_rgb")]
     pub accent_light: Option<Rgb>,
-    /// Minimize to the tray instead of the taskbar (enforced in Phase 4).
+    /// Minimizing the main window hides it to the tray instead (since 0.4.2; only while Aria has
+    /// a tray icon).
     pub minimize_to_tray: bool,
     /// Log verbosity.
     pub log_level: LogLevel,
@@ -534,6 +540,10 @@ pub struct Settings {
     /// Windows, Now Playing on macOS, MPRIS on Linux) control Aria and show what plays.
     #[serde(deserialize_with = "lenient_media_controls")]
     pub media_controls: bool,
+    /// Whether the main window's close button hides Aria to the tray instead of quitting
+    /// (only while Aria has a tray icon).
+    #[serde(deserialize_with = "lenient_close_to_tray")]
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -576,6 +586,7 @@ impl Default for Settings {
             update_checks: UpdateChecks::NotAsked,
             update_checked_at: None,
             media_controls: MEDIA_CONTROLS_DEFAULT,
+            close_to_tray: false,
         }
     }
 }
@@ -636,6 +647,19 @@ mod tests {
         assert!(!off.media_controls);
         let odd: Settings = toml::from_str("media_controls = \"x\"").unwrap();
         assert!(odd.media_controls);
+    }
+
+    #[test]
+    fn close_to_tray_defaults_off() {
+        assert!(!Settings::default().close_to_tray);
+    }
+
+    #[test]
+    fn close_to_tray_reads_on_and_falls_back() {
+        let on: Settings = toml::from_str("close_to_tray = true").unwrap();
+        assert!(on.close_to_tray);
+        let odd: Settings = toml::from_str("close_to_tray = \"x\"").unwrap();
+        assert!(!odd.close_to_tray);
     }
 
     #[test]
