@@ -3148,18 +3148,20 @@ music/two.flac
         use aria_spotify::fake::{FakeSpotify, Reply};
         use aria_update::{Endpoints, InstallKind, Version};
 
-        const LATEST: &str = "/repos/Hixenov/Aria/releases/latest";
-        const RELEASE: &str = include_str!("../../aria-update/tests/fixtures/release.json");
+        const LATEST: &str = "/Hixenov/Aria/releases/latest";
+        const TAG: &str = "/Hixenov/Aria/releases/tag/";
 
         /// A backend whose update service asks `fake`, as Aria 0.3.6 (so the release is not
         /// newer), starting from `settings`.
         fn backend(fake: &FakeSpotify, dir: &Path, settings: Settings) -> BackendHandle {
-            fake.reply("GET", LATEST, Reply::json(200, RELEASE));
+            let page = format!("{}{TAG}v0.3.6", fake.base());
+            fake.reply("GET", LATEST, Reply::empty(302).header("Location", &page));
             let mut services = services(None);
             services.settings = settings;
             services.update = Some(UpdateDeps {
                 endpoints: Endpoints {
                     latest: format!("{}{LATEST}", fake.base()),
+                    tag_prefix: format!("{}{TAG}", fake.base()),
                     download_prefix: format!("{}/Hixenov/Aria/releases/download/", fake.base()),
                 },
                 running: Version::new(0, 3, 6),

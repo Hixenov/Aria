@@ -135,6 +135,7 @@ update-open-page = Open the release page
 update-not-ready = Aria { $version } is still being published
 update-failed = Couldn't check: { $reason }
 update-reason-offline = no connection to GitHub
+update-reason-busy = GitHub is busy right now, try again later
 update-reason-answer = GitHub's answer didn't make sense
 update-reason-too-big = the download is too big
 update-reason-checksum = the download didn't match its checksum

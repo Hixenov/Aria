@@ -168,9 +168,12 @@ disconnect, it makes no request to Spotify or anyone else.
   you answer "Turn on", Aria checks nothing by itself. "Not now" and Settings, Updates, "Check for
   updates automatically" turn it off; "Check for updates" checks once, when you click it.
 - **What is sent.** With checks on, at most once a day (and 10 seconds after start, if a day has
-  passed), Aria asks `https://api.github.com/repos/Hixenov/Aria/releases/latest` for the latest
-  full release. When GitHub cannot be reached, gives an answer Aria cannot use, or the release is
-  still being published, the next automatic check is an hour later instead. A click on "Check
+  passed), Aria opens `https://github.com/Hixenov/Aria/releases/latest` without following it:
+  GitHub answers with the address of the latest full release's page, and its tag is the version.
+  (Until 0.4.0 Aria asked GitHub's API, `api.github.com`, which allows only 60 questions an hour
+  per IP address; 0.4.1 no longer uses it.) When GitHub cannot be reached, is busy (it refused for
+  now), gives an answer Aria cannot use, or the release is still being published, the next
+  automatic check is an hour later instead. A click on "Check
   for updates" is that one check and is not repeated. On the installed Windows Aria, when that release is newer, it then downloads that
   release's `SHA256SUMS.txt` and `Aria-<version>-setup.exe` from
   `https://github.com/Hixenov/Aria/releases/download/` (GitHub sends the files from its own file

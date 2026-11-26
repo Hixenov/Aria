@@ -31,7 +31,10 @@ pub fn launch_installer(installer: &Path) -> io::Result<()> {
 fn reason_key(error: &UpdateError) -> &'static str {
     match error {
         UpdateError::Offline => "update-reason-offline",
-        UpdateError::Answer | UpdateError::NotARelease => "update-reason-answer",
+        UpdateError::Busy => "update-reason-busy",
+        UpdateError::Answer | UpdateError::NotARelease | UpdateError::Missing => {
+            "update-reason-answer"
+        }
         UpdateError::TooBig => "update-reason-too-big",
         UpdateError::Checksum => "update-reason-checksum",
         UpdateError::Disk(_) => "update-reason-disk",
@@ -127,6 +130,10 @@ mod tests {
         let tr = Localizer::new(Language::En).unwrap();
         for (error, reason) in [
             (UpdateError::Offline, "no connection to GitHub"),
+            (
+                UpdateError::Busy,
+                "GitHub is busy right now, try again later",
+            ),
             (
                 UpdateError::NotARelease,
                 "GitHub's answer didn't make sense",

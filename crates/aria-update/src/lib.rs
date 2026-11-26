@@ -1,4 +1,4 @@
-//! Aria's update checker, without Aria: reading GitHub's answer about the latest release, comparing
+//! Aria's update checker, without Aria: finding GitHub's latest release, comparing
 //! versions, reading `SHA256SUMS.txt`, telling an installed Aria from any other, and a small HTTP
 //! client that never fetches more than it was told to.
 //!
@@ -9,16 +9,19 @@ mod release;
 
 pub use client::Client;
 pub use release::{
-    Asset, InstallKind, Release, install_kind, installer_name, is_newer, parse_release,
+    Asset, InstallKind, Release, install_kind, installer_name, is_newer, release_for_tag,
     sha256_file, sha256_for,
 };
 pub use semver::Version;
 
-/// Where Aria asks for releases. Tests point both at a local fake.
+/// Where Aria asks for releases. Tests point them at a local fake.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoints {
-    /// The latest full release (no drafts, no pre-releases).
+    /// The page that redirects to the latest full release (no drafts, no pre-releases).
+    /// GitHub's web pages, not its API: the API allows 60 questions an hour per IP address.
     pub latest: String,
+    /// The latest release's page must start with this; the rest is its tag.
+    pub tag_prefix: String,
     /// Every file Aria downloads must start with this.
     pub download_prefix: String,
 }
@@ -27,7 +30,8 @@ impl Endpoints {
     /// GitHub, for Aria's own repository.
     pub fn github() -> Endpoints {
         Endpoints {
-            latest: "https://api.github.com/repos/Hixenov/Aria/releases/latest".to_owned(),
+            latest: "https://github.com/Hixenov/Aria/releases/latest".to_owned(),
+            tag_prefix: "https://github.com/Hixenov/Aria/releases/tag/".to_owned(),
             download_prefix: "https://github.com/Hixenov/Aria/releases/download/".to_owned(),
         }
     }
@@ -42,6 +46,12 @@ pub enum UpdateError {
     /// GitHub answered something Aria does not understand or will not use.
     #[error("an answer that makes no sense")]
     Answer,
+    /// GitHub refused for now (403 or 429): too many questions from this IP address.
+    #[error("GitHub is busy")]
+    Busy,
+    /// A file of the release is not there (404), as while the release is being published.
+    #[error("the release's file is not there")]
+    Missing,
     /// The latest release's tag is not a plain version.
     #[error("the latest release is not a plain version")]
     NotARelease,

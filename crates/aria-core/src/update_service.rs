@@ -305,8 +305,8 @@ impl Service {
                 self.emit(UpdateEvent::Status(UpdateStatus::UpToDate));
                 self.checked();
             }
-            // GitHub out of reach, or an answer that may be better soon: in an hour.
-            Err(error @ (UpdateError::Offline | UpdateError::Answer)) => {
+            // GitHub out of reach, busy, or an answer that may be better soon: in an hour.
+            Err(error @ (UpdateError::Offline | UpdateError::Busy | UpdateError::Answer)) => {
                 tracing::info!(%error, "update check failed");
                 self.emit(UpdateEvent::Status(UpdateStatus::Failed(error)));
                 self.retry();
@@ -349,16 +349,20 @@ impl Service {
                 page: release.page,
             });
         }
-        let (Some(installer), Some(sums)) = (release.installer, release.sums) else {
-            return Ok(Found::NotReady(version));
-        };
         let dir = self
             .dir()
             .ok_or(UpdateError::Disk(io::ErrorKind::NotFound))?;
         fs::create_dir_all(&dir).map_err(disk)?;
-        let sums = self.client.text(&sums, SUMS_CAP)?;
-        let want = sha256_for(&sums, &installer.name).ok_or(UpdateError::Answer)?;
-        let path = self.download(&dir, &version, &installer, want)?;
+        // The checksums are attached last, a few minutes after the release appears: until then
+        // the release is still being published.
+        let sums = match self.client.text(&release.sums, SUMS_CAP) {
+            Err(UpdateError::Missing) => return Ok(Found::NotReady(version)),
+            sums => sums?,
+        };
+        let Some(want) = sha256_for(&sums, &release.installer.name) else {
+            return Ok(Found::NotReady(version));
+        };
+        let path = self.download(&dir, &version, &release.installer, want)?;
         Ok(Found::Ready(version, path))
     }
 
@@ -376,10 +380,11 @@ impl Service {
         let on_event = &self.on_event;
         self.client
             .download(installer, &part, INSTALLER_CAP, &mut |done, total| {
+                // An unknown size (0) shows 0% until the end.
                 let percent = done
                     .saturating_mul(100)
                     .checked_div(total)
-                    .map_or(100, |p| u8::try_from(p.min(100)).unwrap_or(100));
+                    .map_or(0, |p| u8::try_from(p.min(100)).unwrap_or(100));
                 if shown != Some(percent) {
                     shown = Some(percent);
                     on_event(UpdateEvent::Status(UpdateStatus::Downloading {
@@ -517,9 +522,9 @@ mod tests {
     use super::*;
     use aria_spotify::fake::{FakeSpotify, Reply};
 
-    const LATEST: &str = "/repos/Hixenov/Aria/releases/latest";
+    const LATEST: &str = "/Hixenov/Aria/releases/latest";
+    const TAG: &str = "/Hixenov/Aria/releases/tag/";
     const DOWNLOADS: &str = "/Hixenov/Aria/releases/download/v0.3.6/";
-    const FIXTURE: &str = include_str!("../../aria-update/tests/fixtures/release.json");
     const INSTALLER: &[u8] = b"hello world";
     const INSTALLER_SHA: &str = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
     const NOW: u64 = 1_800_000_000;
@@ -541,6 +546,7 @@ mod tests {
             let deps = UpdateDeps {
                 endpoints: Endpoints {
                     latest: format!("{}{LATEST}", fake.base()),
+                    tag_prefix: format!("{}{TAG}", fake.base()),
                     download_prefix: format!("{}/Hixenov/Aria/releases/download/", fake.base()),
                 },
                 running,
@@ -634,9 +640,14 @@ mod tests {
                 .count()
         }
 
+        /// GitHub's "latest release" page, redirecting to the release tagged `tag`.
+        fn redirect(&self, tag: &str) -> Reply {
+            Reply::empty(302).header("Location", &format!("{}{TAG}{tag}", self.fake.base()))
+        }
+
         /// The release v0.3.6 with its installer (`body`) and checksums (`sums`).
         fn serve_release(&self, body: &[u8], sums: Option<&str>) {
-            self.fake.reply("GET", LATEST, Reply::json(200, FIXTURE));
+            self.fake.reply("GET", LATEST, self.redirect("v0.3.6"));
             self.fake.reply(
                 "GET",
                 &format!("{DOWNLOADS}Aria-0.3.6-setup.exe"),
@@ -669,15 +680,6 @@ mod tests {
             "{INSTALLER_SHA}  Aria-0.3.6-setup.exe\n{}  aria.exe\n",
             "00".repeat(32)
         )
-    }
-
-    fn release_without_sums() -> String {
-        let value: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
-        let mut value = value;
-        if let Some(assets) = value["assets"].as_array_mut() {
-            assets.retain(|a| a["name"] != "SHA256SUMS.txt");
-        }
-        value.to_string()
     }
 
     fn status(event: &UpdateEvent) -> Option<&UpdateStatus> {
@@ -821,13 +823,15 @@ mod tests {
 
     #[test]
     fn a_short_download_is_not_kept() {
+        // GitHub gives the size with the file itself, so a shorter file arrives whole and its
+        // checksum is what refuses it. (A download cut short is refused by the client.)
         let h = Harness::installed();
         h.serve_release(b"hello", Some(&good_sums()));
         h.send(UpdateRequest::CheckNow);
         let seen = h.until(is_final);
         assert_eq!(
             seen.last().and_then(status),
-            Some(&UpdateStatus::Failed(UpdateError::Answer))
+            Some(&UpdateStatus::Failed(UpdateError::Checksum))
         );
         assert_eq!(h.files(), Vec::<String>::new());
     }
@@ -848,10 +852,8 @@ mod tests {
     #[test]
     fn missing_sums_means_not_ready_and_a_retry() {
         let h = Harness::installed();
-        h.fake
-            .reply("GET", LATEST, Reply::json(200, &release_without_sums()));
-        h.fake
-            .reply("GET", LATEST, Reply::json(200, &release_without_sums()));
+        // Its checksums are not there yet: GitHub answers 404.
+        h.fake.reply("GET", LATEST, h.redirect("v0.3.6"));
         h.settings(UpdateChecks::On, None);
         let first = h.until(is_final);
         assert_eq!(
@@ -876,10 +878,8 @@ mod tests {
     #[test]
     fn a_click_with_checks_off_is_one_check_only() {
         let h = Harness::installed();
-        h.fake
-            .reply("GET", LATEST, Reply::json(200, &release_without_sums()));
-        h.fake
-            .reply("GET", LATEST, Reply::json(200, &release_without_sums()));
+        // Its checksums are not there yet: GitHub answers 404.
+        h.fake.reply("GET", LATEST, h.redirect("v0.3.6"));
         h.settings(UpdateChecks::Off, None);
         h.send(UpdateRequest::CheckNow);
         let seen = h.until(is_final);
@@ -908,12 +908,8 @@ mod tests {
     #[test]
     fn an_odd_tag_counts_as_up_to_date() {
         let h = Harness::installed();
-        h.fake.reply(
-            "GET",
-            LATEST,
-            Reply::json(200, &FIXTURE.replace("\"v0.3.6\"", "\"latest\"")),
-        );
-        h.fake.reply("GET", LATEST, Reply::json(200, FIXTURE));
+        h.fake.reply("GET", LATEST, h.redirect("latest"));
+        h.fake.reply("GET", LATEST, h.redirect("v0.3.6"));
         h.settings(UpdateChecks::On, None);
         let seen = h.until(|e| matches!(e, UpdateEvent::Checked(_)));
         assert_eq!(
@@ -932,7 +928,7 @@ mod tests {
     fn a_failed_check_is_retried_while_on() {
         let h = Harness::start(InstallKind::Installed, Version::new(0, 3, 6), |_| {});
         h.fake.reply("GET", LATEST, Reply::json(500, "{}"));
-        h.fake.reply("GET", LATEST, Reply::json(200, FIXTURE));
+        h.fake.reply("GET", LATEST, h.redirect("v0.3.6"));
         h.settings(UpdateChecks::On, None);
         let first = h.until(is_final);
         assert_eq!(
@@ -947,6 +943,64 @@ mod tests {
     }
 
     #[test]
+    fn sums_without_the_installer_are_not_ready() {
+        let h = Harness::installed();
+        h.serve_release(INSTALLER, Some(&format!("{}  aria.exe\n", "00".repeat(32))));
+        h.settings(UpdateChecks::Off, None);
+        h.send(UpdateRequest::CheckNow);
+        let seen = h.until(is_final);
+        assert_eq!(
+            seen.last().and_then(status),
+            Some(&UpdateStatus::NotReady(v036()))
+        );
+        assert!(
+            !h.fake
+                .requests()
+                .iter()
+                .any(|seen| seen.path.ends_with("setup.exe")),
+            "nothing is downloaded without its checksum"
+        );
+    }
+
+    #[test]
+    fn a_busy_github_is_retried_while_on() {
+        let h = Harness::start(InstallKind::Installed, Version::new(0, 3, 6), |_| {});
+        h.fake.reply("GET", LATEST, Reply::empty(429));
+        h.fake.reply("GET", LATEST, h.redirect("v0.3.6"));
+        h.settings(UpdateChecks::On, None);
+        let first = h.until(is_final);
+        assert_eq!(
+            first.last().and_then(status),
+            Some(&UpdateStatus::Failed(UpdateError::Busy))
+        );
+        assert!(
+            !first.iter().any(|e| matches!(e, UpdateEvent::Checked(_))),
+            "a refusal is not a finished check"
+        );
+        let second = h.until(is_final);
+        assert_eq!(
+            second.last().and_then(status),
+            Some(&UpdateStatus::UpToDate)
+        );
+        assert_eq!(h.latest_count(), 2);
+    }
+
+    #[test]
+    fn a_busy_click_is_one_check() {
+        let h = Harness::installed();
+        h.fake.reply("GET", LATEST, Reply::empty(403));
+        h.settings(UpdateChecks::Off, None);
+        h.send(UpdateRequest::CheckNow);
+        let seen = h.until(is_final);
+        assert_eq!(
+            seen.last().and_then(status),
+            Some(&UpdateStatus::Failed(UpdateError::Busy))
+        );
+        assert_eq!(h.quiet(), []);
+        assert_eq!(h.latest_count(), 1);
+    }
+
+    #[test]
     fn tell_only_never_downloads() {
         let h = Harness::start(InstallKind::TellOnly, Version::new(0, 3, 5), |_| {});
         h.serve_good_release();
@@ -956,7 +1010,7 @@ mod tests {
             seen.last().and_then(status),
             Some(&UpdateStatus::Available {
                 version: v036(),
-                page: "https://github.com/Hixenov/Aria/releases/tag/v0.3.6".to_owned()
+                page: format!("{}{TAG}v0.3.6", h.fake.base())
             })
         );
         assert_eq!(h.fake.requests().len(), 1);

@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-26 (update check fix)
+
+The first real check by 0.3.5, against 0.4.0, failed with "GitHub's answer didn't make sense". GitHub's API allows 60 questions an hour per IP address, something else on the same network had used them up, and Aria showed GitHub's refusal as an answer that made no sense. Checked with automated tests against a local fake GitHub, and once by hand against the real one (see `docs/testing/0.4.1-manual-check.md`).
+
+### Fixed
+
+- **The update check no longer uses GitHub's API.** Aria reads where `github.com/Hixenov/Aria/releases/latest` redirects to, and takes the release's `SHA256SUMS.txt` and installer from its download links, as before. Neither has the API's limit of 60 an hour.
+- **A refusal is called what it is.** When GitHub refuses for now (403 or 429), Settings, Updates says "GitHub is busy right now, try again later", and automatic checks try again an hour later.
+
+### Changed
+
+- Version 0.4.1. The installer's size now comes with the download itself; the checksum check before keeping it and before starting it is unchanged.
+- `aria-update` no longer depends on `serde` or `serde_json`.
+
 ## [0.4.0] - 2026-11-26 (media keys)
 
 The first part of Phase 4, the desktop experience. Checked with automated tests on Windows against a stand-in for the system's media controls only: nobody has pressed a media key or opened the volume pop-up with Aria yet. See `docs/testing/0.4.0-manual-check.md`.

@@ -4,7 +4,6 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use semver::Version;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::{Endpoints, UpdateError};
@@ -16,11 +15,10 @@ const UNINSTALLER: &str = "unins000.exe";
 /// The folder that makes Aria portable (as in `aria-core`'s paths).
 const PORTABLE_DIR: &str = "AriaData";
 
-/// One file of a release.
+/// One file of a release. Its size is learned while downloading it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asset {
     pub name: String,
-    pub size: u64,
     pub url: String,
 }
 
@@ -30,64 +28,33 @@ pub struct Release {
     pub version: Version,
     /// Its page on GitHub.
     pub page: String,
-    /// `Aria-<version>-setup.exe`, if attached.
-    pub installer: Option<Asset>,
-    /// `SHA256SUMS.txt`, if attached yet.
-    pub sums: Option<Asset>,
+    /// Where `Aria-<version>-setup.exe` would be. It may not be there.
+    pub installer: Asset,
+    /// Where `SHA256SUMS.txt` would be. It is not there while the release is being published.
+    pub sums: Asset,
 }
 
-#[derive(Deserialize)]
-struct RawRelease {
-    tag_name: String,
-    html_url: String,
-    #[serde(default)]
-    assets: Vec<RawAsset>,
-}
-
-#[derive(Deserialize)]
-struct RawAsset {
-    name: String,
-    size: u64,
-    browser_download_url: String,
-}
-
-/// Reads GitHub's answer for the latest release. Refuses a tag that is not a plain version and any
-/// file Aria would use that is not under `endpoints.download_prefix`.
-pub fn parse_release(body: &str, endpoints: &Endpoints) -> Result<Release, UpdateError> {
-    let raw: RawRelease = serde_json::from_str(body).map_err(|_| UpdateError::Answer)?;
-    let tag = raw.tag_name.strip_prefix('v').unwrap_or(&raw.tag_name);
-    let version = Version::parse(tag).map_err(|_| UpdateError::NotARelease)?;
+/// The release tagged `tag`, whose page is `page`. Refuses a tag that is not a plain version.
+pub fn release_for_tag(
+    tag: &str,
+    page: String,
+    endpoints: &Endpoints,
+) -> Result<Release, UpdateError> {
+    let plain = tag.strip_prefix('v').unwrap_or(tag);
+    let version = Version::parse(plain).map_err(|_| UpdateError::NotARelease)?;
     if !version.pre.is_empty() || !version.build.is_empty() {
         return Err(UpdateError::NotARelease);
     }
-    let wanted = installer_name(&version);
-    let mut installer = None;
-    let mut sums = None;
-    for asset in raw.assets {
-        let slot = if asset.name == wanted {
-            &mut installer
-        } else if asset.name == SUMS {
-            &mut sums
-        } else {
-            continue;
-        };
-        if !asset
-            .browser_download_url
-            .starts_with(&endpoints.download_prefix)
-        {
-            return Err(UpdateError::Answer);
-        }
-        *slot = Some(Asset {
-            name: asset.name,
-            size: asset.size,
-            url: asset.browser_download_url,
-        });
-    }
+    // A plain version has no `/`, `?` or `#`, so the tag is safe to put in a path.
+    let asset = |name: String| Asset {
+        url: format!("{}{tag}/{name}", endpoints.download_prefix),
+        name,
+    };
     Ok(Release {
+        installer: asset(installer_name(&version)),
+        sums: asset(SUMS.to_owned()),
         version,
-        page: raw.html_url,
-        installer,
-        sums,
+        page,
     })
 }
 
@@ -155,80 +122,55 @@ pub fn install_kind(exe_dir: &Path, windows: bool) -> InstallKind {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = include_str!("../tests/fixtures/release.json");
-
     fn ep(base: &str) -> Endpoints {
         Endpoints {
-            latest: format!("{base}/repos/Hixenov/Aria/releases/latest"),
+            latest: format!("{base}/Hixenov/Aria/releases/latest"),
+            tag_prefix: format!("{base}/Hixenov/Aria/releases/tag/"),
             download_prefix: format!("{base}/Hixenov/Aria/releases/download/"),
         }
     }
 
-    fn body(base: &str) -> String {
-        FIXTURE.replace("{base}", base)
-    }
-
-    fn with_tag(tag: &str) -> String {
-        body("http://x").replace("\"v0.3.6\"", &format!("\"{tag}\""))
-    }
-
     #[test]
-    fn the_release_is_read() {
-        let r = parse_release(&body("http://x"), &ep("http://x")).unwrap();
+    fn a_tag_gives_the_release_and_its_files() {
+        let r = release_for_tag("v0.3.6", "page".to_owned(), &ep("http://x")).unwrap();
         assert_eq!(r.version, Version::new(0, 3, 6));
+        assert_eq!(r.page, "page");
         assert_eq!(
-            r.installer.as_ref().map(|a| (a.name.as_str(), a.size)),
-            Some(("Aria-0.3.6-setup.exe", 11))
+            r.installer,
+            Asset {
+                name: "Aria-0.3.6-setup.exe".to_owned(),
+                url: "http://x/Hixenov/Aria/releases/download/v0.3.6/Aria-0.3.6-setup.exe"
+                    .to_owned(),
+            }
         );
         assert_eq!(
-            r.sums.as_ref().map(|a| a.name.as_str()),
-            Some("SHA256SUMS.txt")
-        );
-        assert_eq!(
-            r.page,
-            "https://github.com/Hixenov/Aria/releases/tag/v0.3.6"
+            r.sums.url,
+            "http://x/Hixenov/Aria/releases/download/v0.3.6/SHA256SUMS.txt"
         );
     }
 
     #[test]
     fn odd_tags_are_not_offered() {
-        for tag in ["v0.4.0-beta.1", "latest", "", "v0.3.6+build"] {
+        for tag in [
+            "v0.4.0-beta.1",
+            "latest",
+            "",
+            "v0.3.6+build",
+            "v0.3.6/../x",
+            "v0.3.6?x",
+        ] {
             assert_eq!(
-                parse_release(&with_tag(tag), &ep("http://x")),
+                release_for_tag(tag, String::new(), &ep("http://x")),
                 Err(UpdateError::NotARelease),
                 "{tag}"
             );
         }
-        // No leading v is fine too; the installer is then looked up by the same version.
-        let r = parse_release(&with_tag("0.3.6"), &ep("http://x")).unwrap();
+        // No leading v is fine too; the files keep the tag as it is.
+        let r = release_for_tag("0.3.6", String::new(), &ep("http://x")).unwrap();
         assert_eq!(r.version, Version::new(0, 3, 6));
-        assert!(r.installer.is_some());
-    }
-
-    #[test]
-    fn an_asset_elsewhere_is_refused() {
-        let body = body("http://x").replace(
-            "http://x/Hixenov/Aria/releases/download/v0.3.6/Aria-0.3.6-setup.exe",
-            "https://evil.example/Aria-0.3.6-setup.exe",
-        );
         assert_eq!(
-            parse_release(&body, &ep("http://x")),
-            Err(UpdateError::Answer)
-        );
-    }
-
-    #[test]
-    fn a_release_without_its_files_has_none() {
-        let body = r#"{"tag_name":"v0.3.6","html_url":"p","assets":[]}"#;
-        let r = parse_release(body, &ep("http://x")).unwrap();
-        assert_eq!((r.installer, r.sums), (None, None));
-    }
-
-    #[test]
-    fn garbage_is_an_odd_answer() {
-        assert_eq!(
-            parse_release("<html>", &ep("http://x")),
-            Err(UpdateError::Answer)
+            r.sums.url,
+            "http://x/Hixenov/Aria/releases/download/0.3.6/SHA256SUMS.txt"
         );
     }
 

@@ -139,6 +139,7 @@ update-open-page = Открыть страницу релиза
 update-not-ready = Aria { $version } ещё публикуется
 update-failed = Не удалось проверить: { $reason }
 update-reason-offline = нет связи с GitHub
+update-reason-busy = GitHub сейчас занят, попробуйте позже
 update-reason-answer = ответ GitHub непонятен
 update-reason-too-big = файл слишком большой
 update-reason-checksum = загруженный файл не совпал с контрольной суммой

@@ -478,6 +478,7 @@ mod tests {
         "update-not-ready",
         "update-failed",
         "update-reason-offline",
+        "update-reason-busy",
         "update-reason-answer",
         "update-reason-too-big",
         "update-reason-checksum",
