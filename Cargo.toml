@@ -68,6 +68,9 @@ global-hotkey = "0.10"
 # The tray icon and its menu. Without its default `libappindicator` (GTK) backend; Linux uses
 # `ksni`, pure Rust over D-Bus, set in aria-app.
 tray-icon = { version = "0.26.1", default-features = false }
+# The Windows registry, for "Start with the system" (the Run key). Already in the tree through
+# embed-resource.
+winreg = "0.56"
 # One Aria at a time: the second copy asks the first to show its window, over a local named pipe.
 interprocess = "2.4.7"
 # Builds Aria's icon into aria.exe on Windows, at build time only.

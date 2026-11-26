@@ -4,6 +4,7 @@ use std::time::Duration;
 
 pub mod app;
 pub mod artwork;
+pub mod autostart;
 mod folders;
 mod hotkeys;
 pub mod icon;

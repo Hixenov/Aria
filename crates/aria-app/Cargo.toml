@@ -45,6 +45,10 @@ rfd = { workspace = true, features = ["xdg-portal"] }
 # The tray through the StatusNotifierItem D-Bus protocol, without GTK.
 tray-icon = { workspace = true, features = ["ksni"] }
 
+# The Run key, for "Start with the system".
+[target.'cfg(windows)'.dependencies]
+winreg = { workspace = true }
+
 [lints]
 workspace = true
 
