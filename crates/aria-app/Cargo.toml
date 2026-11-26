@@ -31,6 +31,7 @@ open = { workspace = true }
 pollster = { workspace = true }
 raw-window-handle = { workspace = true }
 souvlaki = { workspace = true }
+tray-icon = { workspace = true }
 # The folder picker and the fatal-startup message box. No Linux backend is compiled in unless
 # one is chosen below.
 rfd = { workspace = true }
@@ -41,6 +42,8 @@ tracing = { workspace = true }
 # `wayland` feature, which only sets the dialog's parent window, is left off for the same reason.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 rfd = { workspace = true, features = ["xdg-portal"] }
+# The tray through the StatusNotifierItem D-Bus protocol, without GTK.
+tray-icon = { workspace = true, features = ["ksni"] }
 
 [lints]
 workspace = true

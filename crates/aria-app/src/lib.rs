@@ -11,6 +11,7 @@ pub mod media_controls;
 pub mod nav;
 mod shortcuts;
 pub mod spotify;
+pub mod tray;
 pub mod ui;
 pub mod update;
 
