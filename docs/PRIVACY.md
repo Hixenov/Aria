@@ -217,6 +217,17 @@ disconnect, it makes no request to Spotify or anyone else.
   Aria asks Spotify for what plays every 15 seconds, and when the track should have ended, while
   its window is minimized (otherwise it stops asking while minimized).
 
+## The tray (since 0.4.2)
+
+- **What it shows.** The tray icon's tooltip shows the title and artist of what plays, and its
+  menu shows whether it plays. That is handed to the operating system's tray on this computer
+  only: Windows' notification area, macOS's menu bar, or, on Linux, the desktop's tray through
+  the session's D-Bus (the StatusNotifierItem protocol). Nothing goes over the network for it.
+- **What is kept.** Nothing new beyond the setting `close_to_tray` in `settings.toml`
+  (`minimize_to_tray` was there already).
+- **While in the tray.** Aria counts as not shown, as when minimized, so it stops asking Spotify
+  for what plays, apart from the occasional question described under "System media controls".
+
 ## The microphone (since 0.2.3)
 
 Before 0.2.3 Aria never opened a microphone. Since 0.2.3 it can, and only like this:

@@ -33,8 +33,9 @@ Aria opens, the one route Spotify allows for other apps.
 4. **Desktop experience.** System tray (including the minimize-to-tray preference stored in
    Phase 1), media keys, shortcuts, notifications, startup integration and the mini-player.
    The mini-player came in 0.3.2; media keys and the system's media controls in 0.4.0; 0.4.1
-   made the update check stop using GitHub's API, whose hourly limit made it fail. Next:
-   the tray, starting with the system, and track-change notifications.
+   made the update check stop using GitHub's API, whose hourly limit made it fail; the tray,
+   with "Minimize to tray" and "Close to tray", came in 0.4.2. Next: starting with the system,
+   and track-change notifications.
 5. **Advanced functionality.** LRCLIB lyrics, an equalizer and audio visualizer for local
    playback, crossfading between tracks, additional themes, advanced queue management, and optional Winamp skin support.
 6. **Production release.** Full testing, performance profiling, security and dependency

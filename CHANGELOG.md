@@ -5,6 +5,31 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-26 (the tray)
+
+The second part of Phase 4. Checked with automated tests against a stand-in for the tray only: nobody has clicked Aria's tray icon yet, on any system. See `docs/testing/0.4.2-manual-check.md`.
+
+### Added
+
+- **A tray icon.** While Aria runs, its icon is in Windows' notification area, macOS's menu bar, or the Linux desktop's tray.
+  - Hovering shows what plays.
+  - A left click shows or hides Aria. On macOS a click opens the menu.
+  - The menu has Show/Hide Aria, Play/Pause, Next, Previous and Quit Aria, in Aria's language.
+- **"Minimize to tray" works.** It has been in Settings, General since the first version, doing nothing. Minimizing now hides Aria off the taskbar and Alt+Tab, and the tray brings it back.
+- **"Close to tray"** (Settings, General, off by default). The window's close button hides Aria to the tray and the music keeps playing. "Quit Aria" in the tray's menu, and "Restart to update", still quit.
+
+### Changed
+
+- Version 0.4.2. A new setting, `close_to_tray`.
+- While Aria sits in the tray it counts as not shown, as when minimized: it stops asking Spotify for updates, apart from the occasional question that keeps the system's media controls current.
+- Starting Aria again brings a hidden Aria back, as it already did for a minimized one.
+- New dependency: `tray-icon` 0.26.1 (MIT or Apache-2.0) with `muda` for the menu. On Linux it uses `ksni` (Unlicense; StatusNotifierItem over D-Bus, without GTK).
+
+### Limits
+
+- On a Linux desktop that shows no tray icons (GNOME without an extension), the icon can't be seen. Hiding Aria there leaves it running out of sight, and starting Aria again brings it back.
+- macOS and Linux are built and tested in CI, but nobody has tried them.
+
 ## [0.4.1] - 2026-11-26 (update check fix)
 
 The first real check by 0.3.5, against 0.4.0, failed with "GitHub's answer didn't make sense". GitHub's API allows 60 questions an hour per IP address, something else on the same network had used them up, and Aria showed GitHub's refusal as an answer that made no sense. Checked with automated tests against a local fake GitHub, and once by hand against the real one (see `docs/testing/0.4.1-manual-check.md`).

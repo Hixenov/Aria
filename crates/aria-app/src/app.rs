@@ -129,6 +129,9 @@ pub struct AppDeps {
     pub launcher: Option<crate::update::Launcher>,
     /// Makes the system's media controls. Without it media keys do nothing.
     pub media: Option<crate::media_controls::MediaFactory>,
+    /// Makes the tray icon. Without it there is none, and minimizing and closing stay as
+    /// they are whatever the settings say.
+    pub tray: Option<crate::tray::TrayFactory>,
 }
 
 impl AppDeps {
@@ -273,6 +276,21 @@ pub struct AriaApp {
     monitors_at: Option<f64>,
     /// How many times the mini-player asked for the main window, for tests.
     main_window_asked: u32,
+    /// The tray icon, once made.
+    tray: Option<Box<dyn crate::tray::TrayBackend>>,
+    /// What the tray's clicks ask, queued by its handlers.
+    tray_events: Option<std::sync::mpsc::Receiver<crate::tray::TrayEvent>>,
+    /// Making the tray failed; it is not tried again.
+    tray_failed: bool,
+    /// What the tray was last told.
+    tray_sent: Option<crate::tray::TrayState>,
+    /// The main window is hidden to the tray (off the taskbar and Alt+Tab).
+    hidden: bool,
+    /// Aria quits for real: a close is never turned into hiding.
+    quitting: bool,
+    /// The main window read as minimized last frame, so "Minimize to tray" hides once per
+    /// minimize.
+    was_minimized: bool,
 }
 
 /// How long the mini-player's window must be still before its place is saved, in seconds.
@@ -364,6 +382,13 @@ impl AriaApp {
             monitors: Vec::new(),
             monitors_at: None,
             main_window_asked: 0,
+            tray: None,
+            tray_events: None,
+            tray_failed: false,
+            tray_sent: None,
+            hidden: false,
+            quitting: false,
+            was_minimized: false,
         }
     }
 
@@ -455,11 +480,16 @@ impl AriaApp {
 
         let palette = Palette::for_theme(ctx.theme(), &self.settings);
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-        if minimized && self.mini.is_open() {
+        if (minimized || self.hidden) && self.mini.is_open() {
             // Nothing of the main window can be seen. The mini-player is drawn alone and last:
             // the textures and glyphs of this frame go up with the last window painted.
             self.run_hotkeys(&ctx);
             self.show_mini(&ctx, &palette);
+            return;
+        }
+        if self.hidden {
+            // In the tray: nothing to draw.
+            self.run_hotkeys(&ctx);
             return;
         }
         if self.vinyl.is_open() && !self.vinyl.follow_os(&ctx) {
@@ -486,7 +516,12 @@ impl AriaApp {
     /// What [`eframe::App::logic`] does: it runs before every drawn frame, and alone while the
     /// window is minimized.
     pub fn logic_frame(&mut self, ctx: &egui::Context) {
-        for command in self.window_requests() {
+        let requests = self.window_requests();
+        if !requests.is_empty() {
+            // Another Aria was started: the window comes back, from the tray too.
+            self.hidden = false;
+        }
+        for command in requests {
             ctx.send_viewport_cmd(command);
         }
         self.open_requested();
@@ -494,6 +529,115 @@ impl AriaApp {
         self.tell_window_shown(ctx);
         self.run_hotkeys(ctx);
         self.run_media_controls(ctx);
+        self.run_tray(ctx);
+    }
+
+    /// Makes the tray icon once, acts on its clicks, hides the window for "Minimize to tray"
+    /// and "Close to tray", and tells the tray what changed.
+    fn run_tray(&mut self, ctx: &egui::Context) {
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        if self.tray.is_none() && !self.tray_failed {
+            let Some(factory) = &self.deps.tray else {
+                return;
+            };
+            let (events_tx, events) = std::sync::mpsc::channel();
+            let state = self.tray_state(minimized);
+            match factory(events_tx, ctx.clone(), &state) {
+                Ok(tray) => {
+                    self.tray = Some(tray);
+                    self.tray_events = Some(events);
+                    self.tray_sent = Some(state);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the tray icon is not available");
+                    self.tray_failed = true;
+                }
+            }
+        }
+        // Without a tray Aria never hides: nothing could bring it back.
+        if self.tray.is_none() {
+            return;
+        }
+        let events: Vec<_> = self
+            .tray_events
+            .as_ref()
+            .map(|events| events.try_iter().collect())
+            .unwrap_or_default();
+        for event in events {
+            self.tray_action(ctx, event, minimized);
+        }
+        if minimized && !self.was_minimized && !self.hidden && self.settings.minimize_to_tray {
+            self.hide_main_window(ctx);
+        }
+        self.was_minimized = minimized;
+        let close = ctx.input(|i| i.viewport().close_requested());
+        if close && self.settings.close_to_tray && !self.quitting {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
+            self.hide_main_window(ctx);
+        }
+        let state = self.tray_state(minimized);
+        if self.tray_sent.as_ref() != Some(&state) {
+            if let Some(tray) = &mut self.tray {
+                tray.update(&state);
+            }
+            self.tray_sent = Some(state);
+        }
+    }
+
+    /// What the tray shows now.
+    fn tray_state(&self, minimized: bool) -> crate::tray::TrayState {
+        let now = self.now_playing();
+        crate::tray::TrayState {
+            window_shown: !(minimized || self.hidden),
+            playing: now.as_ref().is_some_and(|now| now.playing),
+            tooltip: crate::tray::tooltip(now.as_ref()),
+            labels: crate::tray::TrayLabels::new(&self.localizer),
+        }
+    }
+
+    fn tray_action(&mut self, ctx: &egui::Context, event: crate::tray::TrayEvent, minimized: bool) {
+        use crate::tray::TrayEvent;
+        match event {
+            TrayEvent::Toggle => {
+                if self.hidden || minimized {
+                    self.show_main_window(ctx);
+                } else {
+                    self.hide_main_window(ctx);
+                }
+            }
+            TrayEvent::TogglePlay => self.send(Command::TogglePlay),
+            TrayEvent::Next => self.send(Command::Next),
+            TrayEvent::Previous => self.send(Command::Previous),
+            TrayEvent::Quit => self.quit(ctx),
+        }
+    }
+
+    /// Hides the main window to the tray: off the taskbar and Alt+Tab. Only while there is a
+    /// tray to bring it back.
+    fn hide_main_window(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd_to(
+            egui::ViewportId::ROOT,
+            egui::ViewportCommand::Visible(false),
+        );
+        self.hidden = true;
+    }
+
+    /// Shows the main window, restored and in front, from the tray or minimized.
+    fn show_main_window(&mut self, ctx: &egui::Context) {
+        for command in [
+            egui::ViewportCommand::Visible(true),
+            egui::ViewportCommand::Minimized(false),
+            egui::ViewportCommand::Focus,
+        ] {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+        }
+        self.hidden = false;
+    }
+
+    /// Closes Aria for real, whatever "Close to tray" says.
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
     }
 
     /// Makes or drops the system's media controls as the setting says, acts on what they asked,
@@ -587,15 +731,7 @@ impl AriaApp {
                 settings.volume = volume;
                 self.update_settings(ctx, settings);
             }
-            MediaAction::Raise => {
-                for command in [
-                    egui::ViewportCommand::Visible(true),
-                    egui::ViewportCommand::Minimized(false),
-                    egui::ViewportCommand::Focus,
-                ] {
-                    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
-                }
-            }
+            MediaAction::Raise => self.show_main_window(ctx),
         }
     }
 
@@ -667,8 +803,8 @@ impl AriaApp {
     /// while nobody can see it. The first frame tells it the window is shown.
     fn tell_window_shown(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-        // The mini-player shows what plays while the main window is minimized.
-        let shown = !minimized || self.mini.is_open();
+        // The mini-player shows what plays while the main window is minimized or in the tray.
+        let shown = !(minimized || self.hidden) || self.mini.is_open();
         if self.window_shown != Some(shown) {
             self.window_shown = Some(shown);
             self.send(Command::WindowShown(shown));
@@ -948,13 +1084,7 @@ impl AriaApp {
             MiniAction::Player(action) => self.handle_player_action(ctx, action),
             MiniAction::Close => self.close_mini(ctx),
             MiniAction::ShowMain => {
-                for command in [
-                    egui::ViewportCommand::Visible(true),
-                    egui::ViewportCommand::Minimized(false),
-                    egui::ViewportCommand::Focus,
-                ] {
-                    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
-                }
+                self.show_main_window(ctx);
                 self.main_window_asked += 1;
             }
             MiniAction::SetOnTop(on) => {
@@ -1264,7 +1394,7 @@ impl AriaApp {
             UpdateEvent::Install(installer) => {
                 // Aria closes as on any quit, saving everything; `on_exit` starts the installer.
                 self.install_on_exit = Some(installer);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.quit(ctx);
             }
             UpdateEvent::Notice(notice) => self.notify(ctx, notice),
         }
@@ -1931,9 +2061,12 @@ impl eframe::App for AriaApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Aria leaves the system's media controls first, so no stale entry stays behind.
+        // Aria leaves the system's media controls and the tray first, so no stale entry stays
+        // behind.
         self.media = None;
         self.media_events = None;
+        self.tray = None;
+        self.tray_events = None;
         if let Some(backend) = self.deps.backend.take() {
             let clean = backend.shutdown(SHUTDOWN_TIMEOUT);
             tracing::debug!(clean, "backend stopped");
@@ -2902,6 +3035,336 @@ mod tests {
             "the dialog stayed open"
         );
         assert!(!harness.state().modal_open());
+    }
+
+    mod tray {
+        use super::*;
+        use crate::tray::{TrayBackend, TrayEvent, TrayFactory, TrayState};
+        use std::sync::Mutex;
+
+        struct Fake(Arc<Mutex<Vec<TrayState>>>);
+
+        impl TrayBackend for Fake {
+            fn update(&mut self, state: &TrayState) {
+                self.0.lock().unwrap().push(state.clone());
+            }
+        }
+
+        /// What the fake tray saw: every state it showed (the first at its making), how often
+        /// it was made, and its event sender.
+        #[derive(Clone, Default)]
+        struct System {
+            states: Arc<Mutex<Vec<TrayState>>>,
+            made: Arc<Mutex<usize>>,
+            events: Arc<Mutex<Option<std::sync::mpsc::Sender<TrayEvent>>>>,
+        }
+
+        impl System {
+            fn factory(&self, works: bool) -> TrayFactory {
+                let system = self.clone();
+                Box::new(move |events, _ctx, state| {
+                    *system.made.lock().unwrap() += 1;
+                    if !works {
+                        return Err("no tray here".to_owned());
+                    }
+                    *system.events.lock().unwrap() = Some(events);
+                    system.states.lock().unwrap().push(state.clone());
+                    Ok(Box::new(Fake(Arc::clone(&system.states))) as Box<dyn TrayBackend>)
+                })
+            }
+
+            fn click(&self, event: TrayEvent) {
+                if let Some(events) = &*self.events.lock().unwrap() {
+                    events.send(event).unwrap();
+                }
+            }
+
+            fn made(&self) -> usize {
+                *self.made.lock().unwrap()
+            }
+
+            fn states(&self) -> Vec<TrayState> {
+                self.states.lock().unwrap().clone()
+            }
+        }
+
+        fn tray_app(system: &System, works: bool, minimize: bool, close: bool) -> AriaApp {
+            let settings = Settings {
+                language: Some(Language::En),
+                minimize_to_tray: minimize,
+                close_to_tray: close,
+                ..Settings::default()
+            };
+            let deps = AppDeps {
+                tray: Some(system.factory(works)),
+                clock: Some(Arc::new(aria_core::PlaybackClock::default())),
+                ..AppDeps::none()
+            };
+            AriaApp::new(
+                settings,
+                Localizer::new(Language::En).unwrap(),
+                deps,
+                vec![],
+            )
+        }
+
+        /// One `logic_frame` with the main window `minimized` and, if `close`, its close
+        /// button pressed. What it asked of the main window.
+        fn frame(
+            app: &mut AriaApp,
+            ctx: &egui::Context,
+            minimized: bool,
+            close: bool,
+        ) -> Vec<egui::ViewportCommand> {
+            let mut raw = egui::RawInput::default();
+            let info = egui::ViewportInfo {
+                minimized: Some(minimized),
+                events: if close {
+                    vec![egui::ViewportEvent::Close]
+                } else {
+                    Vec::new()
+                },
+                ..egui::ViewportInfo::default()
+            };
+            raw.viewports.insert(egui::ViewportId::ROOT, info);
+            ctx.begin_pass(raw);
+            app.logic_frame(ctx);
+            let mut out = ctx.end_pass();
+            // No painter here to take the fonts' textures.
+            out.textures_delta.clear();
+            out.viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map(|viewport| viewport.commands.clone())
+                .unwrap_or_default()
+        }
+
+        fn has(commands: &[egui::ViewportCommand], command: &egui::ViewportCommand) -> bool {
+            commands.contains(command)
+        }
+
+        const HIDE: egui::ViewportCommand = egui::ViewportCommand::Visible(false);
+
+        fn shows(commands: &[egui::ViewportCommand]) -> bool {
+            let wanted = [
+                egui::ViewportCommand::Visible(true),
+                egui::ViewportCommand::Minimized(false),
+                egui::ViewportCommand::Focus,
+            ];
+            commands.windows(3).any(|three| three == wanted)
+        }
+
+        /// A library track "Song" by "Ann", loaded and playing.
+        fn playing_song(app: &mut AriaApp) {
+            let mut track = opened_track(1, "Song");
+            track.artist = Some(Arc::from("Ann"));
+            track.duration_ms = 60_000;
+            app.library.snapshot = Arc::new(aria_library::LibrarySnapshot {
+                tracks: vec![track],
+                ..aria_library::LibrarySnapshot::default()
+            });
+            app.player.current = Some(aria_library::TrackId(1));
+            app.player.token = 7;
+            app.player.duration_ms = 60_000;
+            app.player.playing = true;
+        }
+
+        #[test]
+        fn the_tray_is_made_once_with_the_state() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            frame(&mut app, &ctx, false, false);
+            assert_eq!(system.made(), 1);
+            let states = system.states();
+            assert_eq!(states.len(), 1, "nothing changed, nothing sent again");
+            assert_eq!(states[0].tooltip, "Aria");
+            assert!(states[0].window_shown);
+            assert!(!states[0].playing);
+            assert_eq!(states[0].labels.show, "Show Aria");
+        }
+
+        #[test]
+        fn minimize_to_tray_hides_the_window() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, true, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            let commands = frame(&mut app, &ctx, true, false);
+            assert!(has(&commands, &HIDE), "{commands:?}");
+            assert!(app.hidden);
+            let last = system.states().last().cloned().unwrap();
+            assert!(!last.window_shown);
+        }
+
+        #[test]
+        fn minimize_without_the_setting_stays_minimized() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            let commands = frame(&mut app, &ctx, true, false);
+            assert!(!has(&commands, &HIDE));
+            assert!(!app.hidden);
+        }
+
+        #[test]
+        fn minimize_hides_once_per_minimize() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, true, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            assert!(has(&frame(&mut app, &ctx, true, false), &HIDE));
+            system.click(TrayEvent::Toggle);
+            // The system has not caught up yet: the window still reads as minimized.
+            let commands = frame(&mut app, &ctx, true, false);
+            assert!(shows(&commands), "{commands:?}");
+            assert!(!has(&commands, &HIDE), "shown again, not hidden at once");
+            assert!(!app.hidden);
+            frame(&mut app, &ctx, false, false);
+            assert!(has(&frame(&mut app, &ctx, true, false), &HIDE));
+        }
+
+        #[test]
+        fn close_to_tray_cancels_the_close_and_hides() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, true);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            let commands = frame(&mut app, &ctx, false, true);
+            assert!(has(&commands, &egui::ViewportCommand::CancelClose));
+            assert!(has(&commands, &HIDE));
+            assert!(app.hidden);
+        }
+
+        #[test]
+        fn close_without_the_setting_quits() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, true, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            let commands = frame(&mut app, &ctx, false, true);
+            assert!(!has(&commands, &egui::ViewportCommand::CancelClose));
+            assert!(!has(&commands, &HIDE));
+        }
+
+        #[test]
+        fn two_close_requests_both_hide() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, true);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            for _ in 0..2 {
+                let commands = frame(&mut app, &ctx, false, true);
+                assert!(has(&commands, &egui::ViewportCommand::CancelClose));
+            }
+        }
+
+        #[test]
+        fn without_a_tray_close_and_minimize_stay_as_they_are() {
+            let system = System::default();
+            let mut app = tray_app(&system, false, true, true);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            let commands = frame(&mut app, &ctx, true, true);
+            assert!(!has(&commands, &egui::ViewportCommand::CancelClose));
+            assert!(!has(&commands, &HIDE));
+            assert!(!app.hidden);
+            assert_eq!(system.made(), 1, "a failing tray is tried once");
+        }
+
+        #[test]
+        fn toggle_hides_a_shown_window_and_shows_a_hidden_one() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            system.click(TrayEvent::Toggle);
+            assert!(has(&frame(&mut app, &ctx, false, false), &HIDE));
+            assert!(app.hidden);
+            system.click(TrayEvent::Toggle);
+            assert!(shows(&frame(&mut app, &ctx, false, false)));
+            assert!(!app.hidden);
+            // A minimized window is shown too, not hidden.
+            frame(&mut app, &ctx, true, false);
+            system.click(TrayEvent::Toggle);
+            let commands = frame(&mut app, &ctx, true, false);
+            assert!(shows(&commands));
+            assert!(!has(&commands, &HIDE));
+        }
+
+        #[test]
+        fn quit_from_the_tray_closes_for_real() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, true);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            system.click(TrayEvent::Toggle);
+            frame(&mut app, &ctx, false, false);
+            system.click(TrayEvent::Quit);
+            let commands = frame(&mut app, &ctx, false, false);
+            assert!(has(&commands, &egui::ViewportCommand::Close));
+            let commands = frame(&mut app, &ctx, false, true);
+            assert!(!has(&commands, &egui::ViewportCommand::CancelClose));
+        }
+
+        #[test]
+        fn an_update_install_is_never_cancelled() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, true);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            ctx.begin_pass(egui::RawInput::default());
+            app.update_event(
+                &ctx,
+                UpdateEvent::Install(std::path::PathBuf::from("Aria-9.9.9-setup.exe")),
+            );
+            ctx.end_pass().textures_delta.clear();
+            let commands = frame(&mut app, &ctx, false, true);
+            assert!(!has(&commands, &egui::ViewportCommand::CancelClose));
+        }
+
+        #[test]
+        fn tray_play_next_previous_become_commands() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            for event in [TrayEvent::TogglePlay, TrayEvent::Next, TrayEvent::Previous] {
+                system.click(event);
+            }
+            frame(&mut app, &ctx, false, false);
+            for command in [Command::TogglePlay, Command::Next, Command::Previous] {
+                assert_eq!(sent_like(&app, &command), 1, "{command:?}");
+            }
+        }
+
+        #[test]
+        fn a_hidden_window_counts_as_not_shown() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            system.click(TrayEvent::Toggle);
+            frame(&mut app, &ctx, false, false);
+            frame(&mut app, &ctx, false, false);
+            assert_eq!(sent_like(&app, &Command::WindowShown(false)), 1);
+        }
+
+        #[test]
+        fn the_tray_follows_the_track_and_playing() {
+            let system = System::default();
+            let mut app = tray_app(&system, true, false, false);
+            let ctx = egui::Context::default();
+            frame(&mut app, &ctx, false, false);
+            playing_song(&mut app);
+            frame(&mut app, &ctx, false, false);
+            frame(&mut app, &ctx, false, false);
+            let states = system.states();
+            assert_eq!(states.len(), 2, "one change, one update");
+            assert_eq!(states[1].tooltip, "Song – Ann");
+            assert!(states[1].playing);
+        }
     }
 
     mod media {

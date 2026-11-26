@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "aria-app"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "aria-core",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "aria-audio"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aria-audio",
  "cpal",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "aria-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aria-audio",
  "aria-library",
@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "aria-library"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aria-audio",
  "image",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "aria-spotify"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "aria-update"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aria-spotify",
  "hex",
